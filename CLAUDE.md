@@ -16,5 +16,4 @@
 ## 约定
 - 动手前后都跑 cargo test（当前基线 76 项全绿）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
-- rustc ≥1.85 可删 muster-provider/Cargo.toml 的 version-steering pin 块（README 有说明）
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改

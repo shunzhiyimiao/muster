@@ -2,7 +2,7 @@
 name = "muster-route"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 description = "Muster E1/E2 — 敏感度标签模型 + 路由决策器 v0(标签跟数据走;fail-closed;绝不静默升云)"
 
 [dependencies]

@@ -32,14 +32,12 @@ let resp = provider.chat(req).await?;                       // 或 chat_stream(.
 - `cargo test --test live_api -- --ignored`：真实 API 联调（需 `DEEPSEEK_API_KEY` / 本地 Ollama），
   其中 Ollama 用例兼作 A6 每周保活冒烟。
 
-## 工具链注记（重要）
+## 工具链注记
 
-`Cargo.toml` 里有一块 **version-steering pins**（`zeroize`/`ring`/`rustls`/`hyper`/`quinn`/`indexmap` 等，
-全部 `default-features = false`）。它们唯一的作用是让本 crate 能在 **cargo 1.75** 上解析依赖图
-（1.75 无法读取 2025 年后大量出现的 edition-2024 manifest）。
-
-**团队标准工具链 rustc ≥ 1.85 时：删掉整个 pin 块，并解除 `reqwest` / `url` 的精确锁定。**
-代码本身不依赖任何被 pin 的版本行为。
+曾有一块 **version-steering pins**（`zeroize`/`ring`/`rustls`/`hyper`/`quinn` 等）专为让
+cargo 1.75 解析依赖图而设。团队工具链标准化到 **rustc ≥ 1.85** 后已整体删除——连同
+`reqwest`/`url` 的精确锁定与未被代码引用的 `url` 直接依赖，`rust-version` 相应升至 1.85。
+代码从未依赖任何被 pin 的版本行为；细节见 git 历史。
 
 ## 已知边界（诚实清单）
 
