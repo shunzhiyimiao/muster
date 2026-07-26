@@ -1,0 +1,15 @@
+[package]
+name = "muster-eval"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Muster A7 — 工具调用评测集：20 个固定样本，双 provider 成功率报告（G0′ 闸门证据）"
+
+[dependencies]
+muster-provider = { path = "../muster-provider" }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
+# Pinned for the same container-toolchain reason as muster-provider's pin block.
+chrono = { version = "=0.4.38", default-features = false, features = ["clock"] }

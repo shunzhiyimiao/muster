@@ -1,0 +1,30 @@
+# Muster provider registry — example.
+# 密钥永远不写在这里：api_key_env 填环境变量名，启动时解析，缺失即快速失败。
+
+default = "deepseek"
+
+[providers.deepseek]
+kind = "openai_compat"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+locality = "cloud"
+display_name = "云端·DeepSeek"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[providers.qwen]
+kind = "openai_compat"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "qwen-plus"
+locality = "cloud"
+display_name = "云端·Qwen"
+api_key_env = "DASHSCOPE_API_KEY"
+
+# 本地保活通道（A5）：演示机上的 Ollama。restricted 仓库的任务只允许落在
+# locality = "local" 的 provider 上 —— 这由 E2 路由强制，非约定。
+[providers.local-ollama]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen3:8b"
+locality = "local"
+display_name = "本地·Ollama"
+timeout_secs = 300
