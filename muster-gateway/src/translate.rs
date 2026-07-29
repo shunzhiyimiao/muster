@@ -36,16 +36,29 @@ pub struct ResponsesRequest {
     pub temperature: Option<f32>,
 }
 
-/// 翻译结果附带被丢弃的项(调用方记日志 / 回给上层)。
+/// 翻译结果附带被丢弃的项(调用方记日志 / 回给上层)与名字反查表。
 pub struct Translated {
     pub request: ChatRequest,
     pub dropped: Vec<String>,
+    /// 扁平工具名 → 原始 (namespace, name);出向还原 FunctionCall 用。
+    pub names: NameMap,
 }
 
-/// namespace 展平分隔符。OpenAI 函数名约束为 `[A-Za-z0-9_-]`,`__` 安全且罕见。
+/// namespace 展平分隔符。函数名的通行约束是 `^[a-zA-Z0-9_-]{1,64}$`
+/// (`.`/`/`/`:` 均非法),故用 `__`——与 Docker MCP Gateway 等实现同一选择。
 pub const NS_SEP: &str = "__";
 
-/// 把 namespace 前缀拆回 `(namespace, name)`——出向还原 FunctionCall 用。
+/// 函数名长度上限(同上游约束)。超限会被后端直接拒绝,必须在网关侧收敛。
+pub const MAX_NAME_LEN: usize = 64;
+
+/// 扁平名 → 原始 `(namespace, name)` 的反查表。
+///
+/// 名字编码是"猜",查表是"记"。工具名自身含 `__` 时(如无 namespace 的
+/// `my__tool`)编码会歧义;截断长名后更是无法还原。参考 Roo-Code 的
+/// `sanitizedNameRegistry`:入向建表,出向查表,查不到才退回启发式拆分。
+pub type NameMap = std::collections::HashMap<String, (Option<String>, String)>;
+
+/// 启发式拆分——**仅在反查表缺失时兜底**(如无状态复用场景)。
 pub fn split_ns(flat: &str) -> (Option<&str>, &str) {
     match flat.split_once(NS_SEP) {
         Some((ns, name)) if !ns.is_empty() && !name.is_empty() => (Some(ns), name),
@@ -53,13 +66,46 @@ pub fn split_ns(flat: &str) -> (Option<&str>, &str) {
     }
 }
 
-fn fn_tool(t: &Value, ns: Option<&str>) -> ToolSpec {
+/// 优先查表,查不到退回启发式。出向还原 FunctionCall 用。
+pub fn resolve_name<'a>(map: &'a NameMap, flat: &'a str) -> (Option<&'a str>, &'a str) {
+    match map.get(flat) {
+        Some((ns, name)) => (ns.as_deref(), name.as_str()),
+        None => split_ns(flat),
+    }
+}
+
+/// 展平并登记。超长时截断尾部并追加短哈希后缀,保证唯一且可反查。
+fn flat_name(ns: Option<&str>, raw: &str, map: &mut NameMap) -> String {
+    let joined = match ns {
+        Some(ns) => format!("{ns}{NS_SEP}{raw}"),
+        None => raw.to_owned(),
+    };
+    let flat = if joined.len() <= MAX_NAME_LEN {
+        joined
+    } else {
+        // 稳定短后缀:同名同结果,不同名极小概率相撞;撞了也只是两个工具
+        // 共用一个键,反查表以后登记者为准——比被后端整体拒绝好。
+        let mut h: u64 = 1469598103934665603;
+        for b in joined.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(1099511628211);
+        }
+        let suffix = format!("_{:x}", h & 0xffff_ffff);
+        let keep = MAX_NAME_LEN - suffix.len();
+        let mut cut = keep;
+        while !joined.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}{suffix}", &joined[..cut])
+    };
+    map.insert(flat.clone(), (ns.map(str::to_owned), raw.to_owned()));
+    flat
+}
+
+fn fn_tool(t: &Value, ns: Option<&str>, map: &mut NameMap) -> ToolSpec {
     let raw = t.get("name").and_then(Value::as_str).unwrap_or_default();
     ToolSpec {
-        name: match ns {
-            Some(ns) => format!("{ns}{NS_SEP}{raw}"),
-            None => raw.to_owned(),
-        },
+        name: flat_name(ns, raw, map),
         description: t.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(),
         parameters: t.get("parameters").cloned().unwrap_or_else(|| json!({"type": "object"})),
     }
@@ -84,6 +130,7 @@ fn content_text(content: &Value) -> String {
 pub fn to_chat(req: &ResponsesRequest, run_id: Option<String>) -> Translated {
     let mut messages = Vec::new();
     let mut dropped = Vec::new();
+    let mut names = NameMap::new();
 
     if !req.instructions.is_empty() {
         messages.push(ChatMessage::system(req.instructions.clone()));
@@ -105,11 +152,12 @@ pub fn to_chat(req: &ResponsesRequest, run_id: Option<String>) -> Translated {
                 });
             }
             "function_call" => {
-                // 历史轮次回灌:namespace 要重新拼回扁平名,与本轮工具表一致。
+                // 历史轮次回灌:namespace 要重新拼回扁平名(走与工具表同一条
+                // flat_name 路径,截断/后缀规则因此天然一致)。
                 let raw = item.get("name").and_then(Value::as_str).unwrap_or_default();
                 let name = match item.get("namespace").and_then(Value::as_str) {
-                    Some(ns) if !ns.is_empty() => format!("{ns}{NS_SEP}{raw}"),
-                    _ => raw.to_owned(),
+                    Some(ns) if !ns.is_empty() => flat_name(Some(ns), raw, &mut names),
+                    _ => flat_name(None, raw, &mut names),
                 };
                 let call = ToolCall {
                     id: item.get("call_id").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -151,7 +199,7 @@ pub fn to_chat(req: &ResponsesRequest, run_id: Option<String>) -> Translated {
     for t in req.tools.iter().flatten() {
         let ty = t.get("type").and_then(Value::as_str).unwrap_or("");
         match ty {
-            "function" => tools.push(fn_tool(t, None)),
+            "function" => tools.push(fn_tool(t, None, &mut names)),
             // Codex 把工具装进 namespace 容器({type:"namespace", name, tools:[…]}),
             // chat 协议没有这一层:展平为 `ns__tool`,回传时再拆回 namespace 字段。
             // 丢掉整个 namespace 等于抽掉 agent 的手脚,必须展平。
@@ -160,7 +208,7 @@ pub fn to_chat(req: &ResponsesRequest, run_id: Option<String>) -> Translated {
                 for inner in t.get("tools").and_then(Value::as_array).into_iter().flatten() {
                     let ity = inner.get("type").and_then(Value::as_str).unwrap_or("");
                     if ity == "function" {
-                        tools.push(fn_tool(inner, Some(ns)));
+                        tools.push(fn_tool(inner, Some(ns), &mut names));
                     } else {
                         dropped.push(format!("tool:{ns}/{ity}"));
                     }
@@ -187,6 +235,7 @@ pub fn to_chat(req: &ResponsesRequest, run_id: Option<String>) -> Translated {
             run_id,
         },
         dropped,
+        names,
     }
 }
 
@@ -224,8 +273,8 @@ pub fn ev_message_done(item_id: &str, text: &str) -> Value {
     })
 }
 
-pub fn ev_function_call_done(item_id: &str, call: &ToolCall) -> Value {
-    let (ns, name) = split_ns(&call.name);
+pub fn ev_function_call_done(item_id: &str, call: &ToolCall, names: &NameMap) -> Value {
+    let (ns, name) = resolve_name(names, &call.name);
     let mut item = json!({
         "type": "function_call",
         "id": item_id,
@@ -339,13 +388,55 @@ mod tests {
 
         // 出向:拆回 name + namespace
         let call = ToolCall { id: "c2".into(), name: "shell__run".into(), arguments: "{}".into() };
-        let ev = ev_function_call_done("i1", &call);
+        let ev = ev_function_call_done("i1", &call, &t.names);
         assert_eq!(ev["item"]["name"], "run");
         assert_eq!(ev["item"]["namespace"], "shell");
 
         // 无 namespace 的工具不该凭空长出该字段
         let plain = ToolCall { id: "c3".into(), name: "grep".into(), arguments: "{}".into() };
-        assert!(ev_function_call_done("i2", &plain)["item"].get("namespace").is_none());
+        assert!(ev_function_call_done("i2", &plain, &t.names)["item"].get("namespace").is_none());
+    }
+
+    /// 反查表存在的意义:名字编码会歧义,查表不会。
+    /// `my__tool` 无 namespace,启发式会误拆成 ns=my/name=tool;查表则还原正确。
+    #[test]
+    fn registry_beats_heuristic_on_ambiguous_names() {
+        let r = req(
+            json!([]),
+            Some(json!([{ "type": "function", "name": "my__tool", "parameters": { "type": "object" } }])),
+        );
+        let t = to_chat(&r, None);
+        assert_eq!(t.request.tools[0].name, "my__tool");
+
+        let call = ToolCall { id: "c1".into(), name: "my__tool".into(), arguments: "{}".into() };
+        let ev = ev_function_call_done("i1", &call, &t.names);
+        assert_eq!(ev["item"]["name"], "my__tool", "查表必须还原原名");
+        assert!(ev["item"].get("namespace").is_none(), "不该凭空造出 namespace");
+
+        // 对照:没有表时的启发式确实会误拆(记录这一事实,故表是必需的)
+        assert_eq!(split_ns("my__tool"), (Some("my"), "tool"));
+    }
+
+    /// 函数名上限 64 字符(同上游约束):超长必须在网关侧收敛,
+    /// 否则后端整体拒绝;截断后仍要能反查回原名。
+    #[test]
+    fn overlong_names_are_truncated_and_still_resolvable() {
+        let long = "t".repeat(80);
+        let r = req(
+            json!([]),
+            Some(json!([{ "type": "namespace", "name": "verylongnamespace", "tools": [
+                { "type": "function", "name": long, "parameters": { "type": "object" } }
+            ]}])),
+        );
+        let t = to_chat(&r, None);
+        let flat = &t.request.tools[0].name;
+        assert!(flat.len() <= MAX_NAME_LEN, "实际 {} 字符", flat.len());
+        assert!(flat.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+
+        let call = ToolCall { id: "c1".into(), name: flat.clone(), arguments: "{}".into() };
+        let ev = ev_function_call_done("i1", &call, &t.names);
+        assert_eq!(ev["item"]["name"], long, "截断名必须能查回完整原名");
+        assert_eq!(ev["item"]["namespace"], "verylongnamespace");
     }
 
     #[test]
@@ -356,7 +447,7 @@ mod tests {
         let done = ev_message_done("i1", "文本");
         assert_eq!(done["item"]["content"][0]["type"], "output_text");
         let call = ToolCall { id: "c9".into(), name: "grep".into(), arguments: "{}".into() };
-        let fc = ev_function_call_done("i2", &call);
+        let fc = ev_function_call_done("i2", &call, &NameMap::new());
         assert_eq!(fc["item"]["type"], "function_call");
         assert_eq!(fc["item"]["call_id"], "c9");
         let c = ev_completed("r1", Some(Usage { input_tokens: 3, output_tokens: 4, total_tokens: 7 }));

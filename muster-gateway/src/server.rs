@@ -104,6 +104,7 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
         "收到 Responses 请求"
     );
     let model = st.provider.metadata().model.clone();
+    let names = translated.names;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let provider = st.provider.clone();
@@ -179,7 +180,7 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
         let calls = acc.finish();
         let call_names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
         for (i, call) in calls.iter().enumerate() {
-            let _ = tx.send(ev_function_call_done(&format!("{id_base}_fc{i}"), call));
+            let _ = tx.send(ev_function_call_done(&format!("{id_base}_fc{i}"), call, &names));
         }
         tracing::info!(
             %rid,

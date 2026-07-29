@@ -26,11 +26,23 @@
 //! # codex 侧:base_url = http://127.0.0.1:8787/v1  wire_api = "responses"
 //! ```
 //!
+//! ## 实测得到的两条硬约束(踩坑记录,勿轻易回退)
+//!
+//! - **namespace 必须展平**:Codex 把 shell 等核心工具装进
+//!   `{type:"namespace", tools:[…]}` 容器,chat 协议没有这一层。早期版本把
+//!   整个 namespace 当"不支持项"丢掉,结果 agent 无工具可用、空转到超时。
+//!   现按 `ns__tool` 展平并**建反查表**([`translate::NameMap`]):名字编码
+//!   是猜、查表是记,工具名自身含 `__` 或超 64 字符被截断时靠表才能还原。
+//!   分隔符与长度上限的取值同 Docker MCP Gateway 等实现(`[A-Za-z0-9_-]{1,64}`)。
+//! - **必须有空闲看门狗**:上游可能"已开流但不再吐字节"(实测静默 64 分钟),
+//!   A2 的总超时管不住这种挂起流。见 [`server::DEFAULT_IDLE_TIMEOUT_SECS`]。
+//!
 //! ## 诚实边界
 //!
 //! - 无鉴权:面向 127.0.0.1 的本机进程;暴露到网络前必须加(A8 白名单同理)。
 //! - 无 `/responses` 的非流式分支(Codex 恒用 `stream: true`)。
 //! - 多轮 previous_response_id / store 语义不实现:Codex 每轮回传完整 input。
+//! - 不做治理:密级路由属 E2、审计属 A9;网关是哑管道(见设计决策 4)。
 
 pub mod server;
 pub mod translate;
