@@ -16,6 +16,11 @@ use crate::types::{
     ChatMessage, ChatRequest, ChatResponse, FinishReason, StreamEvent, TokenUsage, ToolCall,
 };
 
+/// 脚本内部的哨兵:`chat_stream` 见到它就转入永久 pending(见 [`MockProvider::with_hang`])。
+/// 用一个不可能被真实后端产出的 finish 值,避免与正常事件混淆。
+static HANG_MARKER: std::sync::LazyLock<StreamEvent> =
+    std::sync::LazyLock::new(|| StreamEvent::TextDelta("\u{0}__mock_hang__\u{0}".into()));
+
 pub struct MockProvider {
     meta: ProviderMetadata,
     healthy: AtomicBool,
@@ -120,6 +125,22 @@ impl MockProvider {
         self
     }
 
+    /// Script a turn that opens, emits one event, then **hangs forever**.
+    /// Real backends do this (observed in the wild: 64 minutes of silence after
+    /// the first chunk); consumers need it to test idle watchdogs.
+    pub fn with_hang(self) -> Self {
+        self.enqueue(MockTurn {
+            response: ChatResponse {
+                message: ChatMessage::assistant(""),
+                usage: None,
+                finish_reason: FinishReason::Other,
+                model: "mock-model".into(),
+            },
+            stream_events: vec![StreamEvent::TextDelta(String::new()), HANG_MARKER.clone()],
+        });
+        self
+    }
+
     fn next_turn(&self) -> Result<MockTurn, ProviderError> {
         if !self.healthy.load(Ordering::SeqCst) {
             return Err(ProviderError::Unreachable("mock marked unhealthy".into()));
@@ -147,6 +168,13 @@ impl ModelProvider for MockProvider {
         _req: ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
         let turn = self.next_turn()?;
+        // 遇到挂起标记:发完前面的事件后永远 pending(既不产出也不结束)。
+        if let Some(pos) = turn.stream_events.iter().position(|e| *e == *HANG_MARKER) {
+            let head: Vec<_> = turn.stream_events[..pos].to_vec();
+            return Ok(futures::stream::iter(head.into_iter().map(Ok))
+                .chain(futures::stream::pending())
+                .boxed());
+        }
         Ok(futures::stream::iter(turn.stream_events.into_iter().map(Ok)).boxed())
     }
 

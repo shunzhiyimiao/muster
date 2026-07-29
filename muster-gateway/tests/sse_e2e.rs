@@ -5,14 +5,20 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use muster_gateway::{server::router, GatewayState};
+#[allow(unused_imports)]
+use muster_provider::StreamEvent;
 use muster_provider::{MockProvider, ModelProvider};
 use serde_json::{json, Value};
 
 async fn spawn(provider: Arc<dyn ModelProvider>) -> String {
+    spawn_with(GatewayState::new(provider)).await
+}
+
+async fn spawn_with(state: GatewayState) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, router(GatewayState::new(provider))).await.unwrap();
+        axum::serve(listener, router(state)).await.unwrap();
     });
     format!("http://{addr}")
 }
@@ -116,6 +122,31 @@ async fn provider_failure_surfaces_as_response_failed() {
     assert_eq!(k.first(), Some(&"response.created"));
     assert_eq!(k.last(), Some(&"response.failed"), "失败必须显式告知,不能静默截断:{k:?}");
     assert!(evs.last().unwrap()["response"]["error"]["message"].is_string());
+}
+
+/// 上游"已开流但不再吐字节"的挂起流:A2 的总超时管不住它(实测踩到 64 分钟
+/// 无响应),网关的空闲看门狗必须在限期内显式失败,不能让客户端假死。
+#[tokio::test]
+async fn hung_upstream_trips_idle_watchdog() {
+    let mock = MockProvider::cloud("mock").with_hang();
+    let state = GatewayState::new(Arc::new(mock) as Arc<dyn ModelProvider>)
+        .with_idle_timeout(std::time::Duration::from_millis(300));
+    let base = spawn_with(state).await;
+
+    let started = std::time::Instant::now();
+    let evs = post_responses(
+        &base,
+        json!({ "model": "m", "stream": true,
+                "input": [{ "type": "message", "role": "user", "content": "x" }] }),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(elapsed < std::time::Duration::from_secs(5), "必须由看门狗掐断,而非无限等待:{elapsed:?}");
+    let k = kinds(&evs);
+    assert_eq!(k.last(), Some(&"response.failed"), "{k:?}");
+    let msg = evs.last().unwrap()["response"]["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("空闲"), "失败原因要说清是挂起而非其它:{msg}");
 }
 
 #[tokio::test]

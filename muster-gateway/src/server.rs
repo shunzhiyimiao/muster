@@ -21,15 +21,30 @@ use crate::translate::{
     to_chat, ResponsesRequest, Usage,
 };
 
+/// 流式空闲看门狗默认值。A2 的总超时管不住"已开流但不再吐字节"的挂起流
+/// (README 早已登记该边界);网关是必须补上它的地方——否则一个挂死的上游
+/// 会永久占住 Codex 的一轮,agent 直接僵死。实测踩到过 64 分钟无响应。
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 120;
+
 #[derive(Clone)]
 pub struct GatewayState {
     pub provider: Arc<dyn ModelProvider>,
+    pub idle_timeout: std::time::Duration,
     seq: Arc<AtomicU64>,
 }
 
 impl GatewayState {
     pub fn new(provider: Arc<dyn ModelProvider>) -> Self {
-        Self { provider, seq: Arc::new(AtomicU64::new(0)) }
+        Self {
+            provider,
+            idle_timeout: std::time::Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS),
+            seq: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn with_idle_timeout(mut self, d: std::time::Duration) -> Self {
+        self.idle_timeout = d;
+        self
     }
     fn next_id(&self, prefix: &str) -> String {
         format!("{prefix}_{:08}", self.seq.fetch_add(1, Ordering::SeqCst))
@@ -94,6 +109,7 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
     let provider = st.provider.clone();
     let rid = response_id.clone();
     let id_base = st.next_id("item");
+    let idle = st.idle_timeout;
 
     tokio::spawn(async move {
         let started = std::time::Instant::now();
@@ -113,7 +129,21 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
         let mut usage: Option<Usage> = None;
         let mut first_token_logged = false;
 
-        while let Some(ev) = stream.next().await {
+        loop {
+            // 空闲看门狗:上游静默超过 idle 即判定挂起并显式失败,
+            // 绝不让 Codex 无限等待(fail-fast 优于假死)。
+            let ev = match tokio::time::timeout(idle, stream.next()).await {
+                Ok(Some(ev)) => ev,
+                Ok(None) => break,
+                Err(_) => {
+                    let secs = idle.as_secs();
+                    tracing::error!(%rid, idle_secs = secs, "上游流空闲超时,判定挂起");
+                    let _ = tx.send(ev_failed(&format!(
+                        "上游流空闲超过 {secs}s 未发送数据,判定挂起(网关空闲看门狗)"
+                    )));
+                    return;
+                }
+            };
             if !first_token_logged {
                 first_token_logged = true;
                 tracing::info!(%rid, elapsed_ms = started.elapsed().as_millis(), "上游首个事件");
