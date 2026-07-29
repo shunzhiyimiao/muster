@@ -1,0 +1,1367 @@
+CONSTELLATION CODEX
+完全本地团队协作系统
+可执行开发计划与实施手册
+Rust-first · Codex Fork · Group / Channel / Chat · Workflow Registry · Local Runner
+
+核心实施原则 中心服务器负责共享事实与治理；Runner 负责代码执行与副作用；客户端负责交互与展示。所有组件均可部署在企业内网或隔离网，运行时不依赖公网。
+
+文档版本：1.0  |  日期：2026 年 7 月 19 日  |  建议团队：4–6 人核心团队
+
+文档导航
+• 1. 决策摘要与范围
+• 2. 总体架构与部署边界
+• 3. 技术选型
+• 4. 账号、组织、群组与权限
+• 5. 即时通讯实现
+• 6. 工作流共享与版本管理
+• 7. Codex Task 与 Runner 执行链路
+• 8. 完全本地与安全设计
+• 9. 数据模型与接口契约
+• 10. 仓库与代码结构
+• 11. 团队分工与责任矩阵
+• 12. 16 周开发路线图
+• 13. 开发任务清单
+• 14. 前 10 个工作日行动计划
+• 15. 验收标准与 Definition of Done
+• 16. 风险、决策与上线检查表
+• 附录 A. 核心事件与 API 示例
+• 附录 B. 部署参数与参考资料
+使用方式 项目负责人每周更新路线图与风险表；技术负责人维护架构决策；各工程师依据任务 ID 开发；任何阶段只有在“验收标准”全部通过后才可进入下一阶段。
+
+1. 决策摘要与范围
+本项目不是简单地为 Codex 增加聊天室，而是构建一个可完全本地部署的 AI 原生团队开发协作系统。它将人员、群组、频道、消息、工作流、Codex Agent、Git Worktree、审批和审计组织为统一的执行平台。
+已确定的架构决策 Fork Codex，但保持协作系统与 Codex Fork 分仓；Rust 是核心语言；客户端采用 Tauri 2，前端允许 React + TypeScript；服务器、Runner、模型与数据可全部部署在企业内网；工作流是可版本化、可审批、可验证的软件对象。
+
+1.1 第一版必须跑通的业务闭环
+用户登录   ↓ 进入 Group / Channel   ↓ 发送消息或选择共享 Workflow   ↓ 创建 Codex Task   ↓ 中心服务器选择 Runner   ↓ Runner 创建独立 Git Worktree   ↓ Forked Codex 调用本地模型执行   ↓ 过程通过 WebSocket 返回 Channel   ↓ 高风险操作进入 Approval   ↓ 输出摘要、证据、Diff、测试与审计记录
+1.2 第一版明确不做
+• 语音和视频会议
+• 移动端原生应用
+• 跨组织共享频道
+• 插件市场和计费系统
+• 完整 Kubernetes 调度
+• 复杂端到端加密群聊
+• 自研 Git 引擎
+• 自动合并生产分支
+• 所有 Teams 功能的复刻
+1.3 产品形态
+形态
+部署方式
+目标用户
+第一版支持
+个人本地版
+所有组件运行在单台电脑，SQLite + Local Runner + 本地模型
+个人开发者、技术验证
+是
+企业内网版
+中心服务、PostgreSQL、模型服务器位于内网；Runner 可集中或本地
+研发团队、金融、制造、医疗
+是
+隔离网版
+无公网出口，包含离线依赖、内部 Git、内部镜像与签名升级包
+政府、军工、高保密研发
+架构支持，后期交付
+
+2. 总体架构与部署边界
+
+图 1：Rust-first Codex 团队协作系统总体架构
+2.1 三类运行边界
+边界
+职责
+可信程度
+典型组件
+中心服务器
+保存共享事实、身份、权限、消息、工作流、任务状态、审批与审计
+最高，必须受控
+Axum API、WebSocket Gateway、PostgreSQL、Workflow Registry、Scheduler
+Runner 节点
+执行 Codex、Shell、文件修改、构建、测试、Git 和模型调用
+高，但需要沙箱和审计
+Constellation Codex Fork、Worktree Manager、Sandbox、Runner Agent
+本地客户端
+用户界面、草稿、缓存、本地通知、可选 Local Runner
+不作为权限真相来源
+Tauri Desktop、React UI、SQLite Cache、OS Keychain
+
+2.2 服务器部署清单
+模块
+是否必须在服务器
+说明
+Identity / OIDC Integration
+是
+统一账号来源，可连接 Keycloak、LDAP、AD 或企业 OIDC
+Organization / Group / Channel
+是
+多人共享的组织结构和权限范围
+Message Service
+是
+消息历史、搜索、回复线程、已读状态
+Workflow Registry
+是
+工作流版本、发布、范围和运行快照
+Task Scheduler
+是
+分配 Runner、控制并发、预算与超时
+Approval & Audit
+是
+审批和审计不能由普通客户端保存
+Realtime Gateway
+是
+WebSocket 会话、事件推送和断线补拉
+PostgreSQL
+是
+团队共享事实的唯一主数据库
+NATS JetStream
+后期
+多服务节点或可靠异步事件时引入
+MinIO
+按需
+附件、Diff、日志和大型结果对象存储
+
+2.3 可在服务器或本地运行的模块
+模块
+服务器运行
+本地运行
+默认策略
+Codex Runner
+集中执行、环境统一
+代码不离开开发者电脑
+企业可按仓库策略选择
+Codex Fork
+安装在服务器 Runner
+随桌面应用或本地服务安装
+Runner 所在位置安装
+Git Worktree
+服务器任务目录
+用户本地任务目录
+每任务独立目录
+Model Gateway
+统一内网模型入口
+单机 localhost 模型代理
+企业版服务器，个人版本地
+模型推理
+GPU 服务器
+本地工作站
+由管理员配置允许的 Provider
+MCP / Tools
+内网工具服务
+本机工具进程
+白名单 + 能力声明
+
+2.4 推荐部署拓扑
+开发者电脑 └── Tauri Desktop     ├── UI / SQLite Cache     └── 可选 Local Runner  企业内网服务器 ├── collab-server ├── realtime-gateway ├── workflow-registry ├── scheduler ├── PostgreSQL ├── Keycloak（或对接企业 IdP） ├── MinIO（可选） └── NATS JetStream（扩展阶段）  Runner Node × N ├── constellation-codex ├── Git Worktree ├── Build Environment └── Local Model Gateway Client  Model Cluster ├── Responses API Gateway └── vLLM / Ollama / 其他推理引擎
+3. 技术选型
+领域
+主选技术
+备选
+决策依据
+核心语言
+Rust
+无
+与 Codex 同语言；适合进程、并发、文件、Git、沙箱和高可靠服务
+异步运行时
+Tokio
+async-std
+Codex 与 Rust 服务生态匹配，支持网络和进程管理
+HTTP / WebSocket
+Axum + Tower
+Actix Web
+类型安全、Tokio 原生、中间件清晰
+序列化 / Schema
+Serde + schemars
+Protobuf
+MVP 采用 JSON，方便桌面端与协议调试
+中心数据库
+PostgreSQL
+CockroachDB
+事务、JSONB、全文搜索、成熟运维
+数据访问
+SQLx
+SeaORM / Diesel
+编译期 SQL 校验，易控制查询与事务
+客户端本地库
+SQLite
+sled
+缓存、草稿和个人版持久化
+桌面框架
+Tauri 2
+Electron
+Rust 核心、安装包较小、系统集成好
+前端 UI
+React + TypeScript
+Dioxus / Leptos
+Monaco、Diff、聊天虚拟列表和组件生态成熟
+身份服务
+Keycloak / 企业 OIDC
+自研账号
+支持 OIDC、SAML、LDAP/AD、Group Claim
+即时通讯
+WebSocket + REST
+SSE
+双向事件、任务流式输出与 Presence
+单节点事件
+Tokio broadcast
+内存 channel
+MVP 快速，但不作为持久化来源
+多节点事件
+NATS JetStream
+Kafka / Redis Streams
+较轻量，支持持久化 Consumer 和至少一次投递
+附件 / 大日志
+MinIO
+文件系统
+S3 兼容，便于私有部署
+模型协议
+OpenAI Responses API Gateway
+直接适配各引擎
+Codex 当前以 Responses API 为主，网关统一兼容差异
+可观测性
+tracing + OpenTelemetry
+仅文本日志
+按 organization / task / runner 追踪
+起步部署
+Docker Compose
+裸机 systemd
+易在企业内网复现和升级
+后期集群
+Kubernetes
+Nomad
+只在多 Runner、多模型、多租户阶段引入
+
+3.1 技术边界原则
+• Rust 核心是业务真相来源；UI 不复制权限、预算、任务状态机和审批规则。
+• Codex Fork 只包含 Agent Runtime、本地 Provider、离线模式、安全 Hook 和必要协议扩展；Group/Channel/Chat 不写进 Codex Core。
+• PostgreSQL 是服务器共享事实来源；Tokio broadcast、NATS 和 WebSocket 都只是事件传输机制。
+• 所有外部工具必须通过声明能力、权限策略和审计日志接入。
+• 先调用系统 Git CLI；只有明确遇到性能或可移植性瓶颈时再引入 git2。
+4. 账号、组织、群组与权限
+4.1 身份关联模型
+Identity Provider   ↓  iss + sub ExternalIdentity   ↓ User   ↓ OrganizationMember   ↓ GroupMember   ↓ ChannelMember / RoleBinding
+身份主键规则 不能只使用邮箱作为用户唯一标识。外部身份使用 OIDC 的 issuer（iss）与 subject（sub）组合作为稳定键；邮箱和显示名称只作为可变资料。
+
+4.2 账号与群组同步模式
+模式
+组织与用户来源
+项目群组来源
+适用场景
+Local Managed
+系统本地账号
+系统本地创建
+个人版、PoC、小团队
+IdP Managed
+Keycloak / AD / LDAP
+外部 Group 自动映射
+严格企业治理
+Hybrid（推荐）
+员工与部门来自 IdP
+项目 Group / Channel 在系统内创建
+大多数企业研发团队
+
+4.3 核心角色
+角色
+主要权限
+限制
+Organization Owner
+组织策略、管理员、审计、部署配置
+高风险操作仍需策略约束
+Organization Admin
+用户、Group、模型与 Runner 策略
+不能修改系统签名与根审计
+Group Admin
+管理 Group、Channel、成员、仓库绑定
+范围仅限所属 Group
+Workflow Publisher
+提交、评审和发布工作流
+不得绕过审批和权限模板
+Approver
+批准命令、网络、Secret、Push 等操作
+只能批准授权范围
+Member
+发消息、创建任务、运行允许的工作流
+不能修改组织策略
+Guest
+受限频道只读或有限发言
+不能调用敏感 Runner
+Bot / Integration
+发系统消息、触发自动化
+使用独立服务账号
+Runner Service Account
+注册、心跳、领取和回传任务
+不能作为人类账号登录 UI
+
+4.4 权限计算顺序
+组织级禁止策略（最高优先级）   ↓ Group 角色与仓库范围   ↓ Channel 可见性和成员关系   ↓ Workflow 权限模板   ↓ Task 发起人权限   ↓ Runner 能力与环境限制   ↓ 具体 Tool / Shell / 文件 / 网络操作审批
+5. 即时通讯实现
+5.1 协议分工
+通道
+负责内容
+禁止承担
+REST API
+登录、消息历史、分页、搜索、附件、管理操作、断线补拉
+长时间 Agent 流式输出
+WebSocket
+新消息、Task 事件、审批、Presence、Typing、流式输出
+作为唯一持久化来源
+NATS JetStream（后期）
+服务间可靠事件、跨节点 WebSocket 广播、Runner 调度
+直接暴露给桌面客户端
+
+5.2 消息写入与广播顺序
+客户端发送 message.create   ↓ 服务器校验 Token、Channel Membership 与权限   ↓ 开启 PostgreSQL 事务   ↓ 写入 message + channel_sequence + outbox_event   ↓ 提交事务   ↓ Outbox Dispatcher 广播到 WebSocket / NATS   ↓ 其他客户端确认 event_id   ↓ 断线时通过 after_event_id 补拉
+必须采用 Transactional Outbox 先入库、再广播仍可能在两者之间崩溃。第一版也建议在同一事务写入 outbox_events，由后台 Dispatcher 可靠发布；客户端使用 event_id 幂等处理。
+
+5.3 事件结构
+{   "event_id": "evt_01...",   "type": "channel.message.created",   "organization_id": "org_01...",   "channel_id": "chn_01...",   "sequence": 1842,   "occurred_at": "2026-07-19T12:00:00Z",   "payload": { ... } }
+5.4 持久化策略
+事件 / 数据
+持久化
+保存位置
+处理方式
+聊天消息
+必须
+PostgreSQL
+逐条保存，支持分页与搜索
+Codex 最终回复
+必须
+PostgreSQL
+作为消息或 Task Result 保存
+Task 状态
+必须
+PostgreSQL
+状态机转换 + 审计
+审批请求和决定
+必须
+PostgreSQL
+不可删除，记录策略快照
+Token 流式增量
+可合并
+内存 + 周期性快照
+客户端实时显示，完成后聚合
+Shell 完整日志
+必须/按策略
+MinIO / 日志系统
+数据库保存索引和哈希
+Diff / 构建产物
+必须/按策略
+MinIO + PostgreSQL 索引
+结果卡片引用对象
+Typing / Presence
+不持久化
+内存 / NATS KV
+使用 TTL
+
+5.5 WebSocket 会话规则
+• 连接建立后立即完成身份认证，并返回 connection_id、server_time 和 heartbeat_interval。
+• 客户端订阅 Organization / Channel / Task topic；服务端再次检查权限，不能信任客户端提交的范围。
+• 所有可重放事件都有 event_id；客户端按 event_id 去重。
+• 断线重连提交 last_event_id；若保留窗口已过，则调用 REST 进行全量同步。
+• 心跳只表示连接存活，不等于用户在线；Presence 采用多设备会话聚合。
+• 对 Agent 流式内容实施背压、批量合并和速率限制，避免每个 Token 一次数据库写入。
+6. 工作流共享与版本管理
+工作流不是一段 Prompt，而是由 Trigger、Goal、Procedure、Capabilities、Verification、Stop Conditions、Permissions、Budget、Outputs 和 Escalation 构成的可执行对象。
+6.1 工作流对象结构
+workflow.yaml ├── metadata: id / name / owner / version ├── trigger ├── goal ├── procedure[] ├── capabilities[] ├── verification[] ├── stop_conditions[] ├── permissions ├── budget ├── outputs[] └── escalation
+6.2 分享范围与生命周期
+范围
+可见对象
+发布权限
+典型用途
+Private
+创建者
+创建者
+个人实验、草稿
+Group
+指定 Group
+Workflow Publisher / Group Admin
+团队代码审查、构建、文档流程
+Organization
+全组织
+Organization Admin / Publisher
+统一安全扫描、发布流程
+System
+所有组织或本部署实例
+系统管理员
+预装、签名、不可普通修改
+
+Draft → Review → Approved → Published → Deprecated → Removed
+6.3 存储和版本规则
+内容
+位置
+规则
+工作流源码
+Git 仓库
+人可审阅、可签名、可回滚
+元数据与权限
+PostgreSQL
+记录 scope、publisher、状态和版本
+大型模板与附件
+MinIO
+内容寻址或哈希校验
+运行快照
+PostgreSQL / MinIO
+执行时固化不可变版本
+执行日志与证据
+MinIO + 审计索引
+由 retention policy 管理
+
+6.4 运行快照必须保存
+• workflow_id 与 semantic_version
+• workflow_content_hash
+• 工作流完整内容或不可变对象引用
+• 输入消息与文件选择范围
+• 模型、Provider 与能力声明
+• 权限策略与审批策略快照
+• Runner、仓库、分支和 Worktree
+• 预算、超时和停止条件
+• 最终结果、验证证据与审计记录
+6.5 Channel 中的共享方式
+#architecture  Architecture Review 1.2.0 Scope: Group Publisher: 林远 Capabilities: read_repository, run_tests [Run]  [View]  [Fork]
+Fork 语义 用户 Fork 工作流时创建新的 workflow_id 与 0.x 版本，不允许直接修改已发布的原工作流。运行中的 Task 永远绑定启动时的不可变快照。
+
+7. Codex Task 与 Runner 执行链路
+7.1 Task 状态机
+Draft → Queued → Assigned → Preparing → Running                                       ├→ WaitingApproval → Running                                       ├→ Verifying                                       ├→ Succeeded                                       ├→ Failed                                       ├→ Cancelled                                       └→ TimedOut
+7.2 Runner 注册与调度
+阶段
+服务器动作
+Runner 动作
+验证
+注册
+验证服务账号和 mTLS，写入 runner_registry
+上报 OS、架构、并发、模型、工具、workspace roots
+Runner 状态 Online
+排队
+根据仓库、权限、能力和并发选择候选
+无
+产生 assignment_id
+领取
+发送任务租约
+确认 lease 并开始准备
+防止重复执行
+准备
+记录 Preparing
+创建 Worktree、加载配置、检查模型与工具
+环境预检通过
+执行
+接收流式事件并转发
+启动 Codex App Server / Core，执行 Turn
+事件带 task_id/run_id
+审批
+冻结危险动作
+等待 Approve / Reject
+审批超时可终止
+验证
+等待证据
+运行测试、检查 Diff、生成结果
+满足 verification / stop condition
+完成
+持久化结果并释放租约
+上传日志和证据，清理环境
+状态不可逆地完成
+
+7.3 第一版调度规则
+• 1. Runner 在线且心跳有效
+• 2. 有空闲并发槽位
+• 3. 允许访问目标仓库
+• 4. 操作系统和架构满足工作流要求
+• 5. workspace root 与构建环境可用
+• 6. 模型 Provider 与工具能力满足要求
+• 7. 安全策略和网络策略允许
+• 8. 在候选中按最少负载 + FIFO 选择
+7.4 Worktree 规则
+• 一个 Task Run 对应一个独立 Worktree；禁止多个并行任务共享同一可写目录。
+• 分支名称包含 task_id，但对用户展示可读别名。
+• 执行前检测基础仓库是否存在未提交改动、分支是否可用。
+• 所有 Shell 命令的 cwd 被约束到 Worktree 或声明的 workspace roots。
+• 任务结束后先保存 Diff、日志、证据与 Commit，再依据保留策略清理。
+• 自动 Push 和 PR 创建必须单独授权，不属于默认完成动作。
+8. 完全本地与安全设计
+“完全本地”必须同时覆盖运行时、模型推理、身份、数据存储、工具服务、更新机制和软件供应链，而不是只把 Codex CLI 安装在本机。
+8.1 Offline Mode 强制策略
+控制项
+默认
+管理员可否放开
+执行位置
+OpenAI / ChatGPT 登录
+禁止
+仅非隔离部署可选
+Codex Fork + Server Policy
+公网模型 Endpoint
+禁止
+按 Allowlist
+Model Gateway / Network Policy
+Web Search
+禁止
+按 Workflow 权限
+Runner Tool Policy
+公网 MCP / Skill 下载
+禁止
+按内部镜像 Allowlist
+Runner / Codex Fork
+自动更新与遥测
+禁止
+仅内部升级服务
+客户端与服务器
+工具进程公网访问
+禁止
+按域名、端口和任务审批
+OS Firewall / Container
+Secret 明文输出
+禁止
+不可放开
+Runner Redaction
+仓库外文件写入
+禁止
+显式审批和路径策略
+Sandbox / Runner
+
+8.2 安全控制层
+应用策略：角色、Workflow、Task、Tool 权限   ↓ Runner 策略：路径、命令、Secret、预算、审批   ↓ Codex Sandbox：文件和进程限制   ↓ 容器 / VM：资源和系统调用隔离   ↓ 操作系统防火墙：最终网络出口控制   ↓ 不可变审计：所有决定和副作用留痕
+8.3 审计字段
+• 谁创建任务、引用了哪些消息和文件
+• 使用的 Workflow 版本与哈希
+• 使用的模型、Provider 和配置
+• 由哪个 Runner、哪个 Worktree 执行
+• 运行了哪些命令、退出码和耗时
+• 读取、创建、修改和删除了哪些文件
+• 发起和批准了哪些高风险操作
+• 是否发生网络请求，目的地与策略结果
+• 最终 Diff、测试、验证证据和 Commit / PR
+• 取消、失败、超时和重试原因
+8.4 供应链要求（隔离网）
+资产
+要求
+Rust crates
+内部 Cargo Registry 或 vendor 目录，锁定 Cargo.lock
+npm / pnpm 依赖
+内部 npm Registry，锁定 lockfile
+容器镜像
+内部 Registry，生成 SBOM 并签名
+模型权重
+内部模型仓库，哈希与许可证记录
+安装包
+离线签名包，可验证发布者和版本
+漏洞数据
+定期导入离线漏洞数据库
+源代码
+内部 Git，保护分支和强制评审
+
+9. 数据模型与接口契约
+9.1 核心实体
+领域
+实体
+身份
+User, ExternalIdentity, ServiceAccount, Session
+组织
+Organization, OrganizationMember, Group, GroupMember, Channel, ChannelMember, RoleBinding
+通讯
+Message, MessageThread, Attachment, ReadCursor, Reaction
+工作流
+Workflow, WorkflowVersion, WorkflowRelease, WorkflowScope, WorkflowRunSnapshot
+执行
+CodexTask, TaskRun, TaskEvent, Runner, RunnerCapability, TaskLease, Workspace
+治理
+ApprovalRequest, ApprovalDecision, Policy, AuditEvent, SecretReference
+代码
+Repository, RepositoryBinding, Worktree, DiffArtifact, CommitReference, PullRequestReference
+
+9.2 关键唯一键与索引
+表 / 对象
+关键约束
+external_identities
+UNIQUE(provider_issuer, provider_subject)
+organization_members
+UNIQUE(organization_id, user_id)
+group_members
+UNIQUE(group_id, user_id)
+channel_members
+UNIQUE(channel_id, user_id)
+messages
+UNIQUE(channel_id, channel_sequence)
+events
+PRIMARY KEY(event_id)，INDEX(organization_id, occurred_at)
+workflow_versions
+UNIQUE(workflow_id, semantic_version)，UNIQUE(content_hash)
+task_runs
+UNIQUE(task_id, run_number)
+task_leases
+一个 Task Run 同时只有一个有效租约
+audit_events
+只追加，禁止 UPDATE / DELETE
+
+9.3 主要 API
+方法
+路径
+用途
+GET
+/v1/me
+当前用户、组织和角色
+GET/POST
+/v1/groups
+列出或创建 Group
+GET/POST
+/v1/groups/{id}/channels
+频道管理
+GET/POST
+/v1/channels/{id}/messages
+消息分页与发送
+POST
+/v1/tasks
+从消息或 Workflow 创建 Task
+GET
+/v1/tasks/{id}
+读取 Task、Run、结果和证据
+POST
+/v1/tasks/{id}/cancel
+请求取消
+POST
+/v1/approvals/{id}/approve
+批准操作
+POST
+/v1/approvals/{id}/reject
+拒绝操作
+GET/POST
+/v1/workflows
+浏览或创建 Workflow
+POST
+/v1/workflows/{id}/publish
+发布经过评审的版本
+POST
+/v1/runners/register
+Runner 注册
+POST
+/v1/runners/{id}/heartbeat
+Runner 心跳
+GET
+/v1/events?after={event_id}
+断线补拉
+WS
+/v1/realtime
+实时事件与订阅
+
+10. 仓库与代码结构
+10.1 三仓策略
+constellation-collab/        # 独立协作系统 ├── crates/ ├── services/ └── apps/  constellation-codex/         # OpenAI Codex 的受控 Fork ├── upstream code ├── offline mode ├── local provider policy ├── enterprise audit hooks └── minimal protocol extensions  constellation-deploy/        # 私有化部署与离线交付 ├── docker-compose/ ├── keycloak/ ├── postgres/ ├── minio/ ├── nats/ ├── model-gateway/ └── airgap/
+10.2 constellation-collab Rust Workspace
+constellation-collab/ ├── Cargo.toml ├── crates/ │   ├── domain │   ├── protocol │   ├── auth │   ├── messaging │   ├── workflow │   ├── scheduler │   ├── permissions │   ├── audit │   ├── storage │   ├── realtime │   ├── codex-client │   └── git-workspace ├── services/ │   ├── collab-server │   ├── runner │   └── model-gateway ├── apps/ │   ├── desktop │   └── cli ├── migrations/ └── docs/
+10.3 第一阶段精简目录
+不要一次建立全部 crate P0–P1 只创建 domain、protocol、codex-client、task-manager、git-workspace、apps/cli 和 apps/desktop。服务器、auth、messaging、workflow 等在本地闭环跑通后再拆分。
+
+11. 团队分工与责任矩阵
+建议 4–6 人核心团队；个人开发时按同一顺序兼任角色，不改变模块边界。
+角色代码
+角色
+主要责任
+ARCH
+产品 / 架构负责人
+范围、领域模型、协议、权限、验收、架构决策
+CORE
+Rust Core 工程师
+Task 状态机、事件、协议、Workflow Runtime、策略
+RUN
+Runner / Codex 工程师
+Codex Fork、App Server、进程、Worktree、沙箱、模型
+SRV
+协作服务器工程师
+Axum、PostgreSQL、账号、Group、消息、WebSocket、审批
+UI
+桌面客户端工程师
+Tauri、聊天 UI、Task 卡片、Diff、日志、审批界面
+OPS
+运维 / 安全 / QA
+CI、部署、离线包、监控、备份、安全测试
+
+11.1 RACI 矩阵
+工作域
+ARCH
+CORE
+RUN
+SRV
+UI
+OPS
+领域模型 / 协议
+A
+R
+C
+C
+C
+I
+Codex Fork / 本地模型
+C
+C
+R/A
+I
+I
+C
+Task / Workflow Runtime
+A
+R
+C
+C
+I
+I
+账号 / Group / 权限
+A
+C
+I
+R
+C
+C
+即时通讯
+C
+C
+I
+R/A
+R
+C
+桌面 UI
+C
+C
+C
+C
+R/A
+I
+部署 / 安全 / 备份
+A
+C
+C
+C
+I
+R
+验收 / 发布
+A
+R
+R
+R
+R
+R
+
+R = Responsible（执行）  A = Accountable（最终负责）  C = Consulted（协商）  I = Informed（知会）
+12. 16 周开发路线图
+阶段
+时间
+任务范围
+阶段验收
+负责人
+P0 技术验证
+第 1–2 周
+Fork 并编译 Codex；本地 Responses API；Offline Mode；零公网验证
+本地模型完成一次完整代码任务；网络出口为 0
+RUN / CORE
+P1 本地闭环
+第 3–5 周
+CLI/Tauri；单 Group/Channel；Local Runner；Task；Worktree；Diff；SQLite
+本机从 Channel 创建 Task，看到流式输出、Diff 和最终状态
+CORE / RUN / UI
+P2 中心服务器
+第 6–8 周
+Axum；PostgreSQL；OIDC；Organization；Group；Channel；RoleBinding
+两名用户登录同一内网服务并进入不同权限范围
+SRV / ARCH
+P3 即时通讯
+第 9–10 周
+Message API；WebSocket；Outbox；event_id；断线补拉；附件
+两台客户端可靠收发消息和 Task 事件，重连不丢失
+SRV / UI
+P4 工作流共享
+第 11–12 周
+Workflow Schema；Git Registry；版本；Review/Publish；Fork；运行快照
+Group 可发布、分享、Fork 并执行固定版本工作流
+CORE / SRV
+P5 企业执行
+第 13–14 周
+Runner 注册、心跳、调度、审批、审计、服务账号、超时
+中心服务调度多个 Runner，危险操作可审批和追溯
+RUN / CORE / SRV
+P6 私有化交付
+第 15–16 周
+Docker Compose；备份；离线依赖；签名包；安全与恢复测试
+在无公网环境完成安装、升级、备份恢复和任务执行
+OPS / ALL
+
+12.1 阶段闸门
+• P0 未证明本地模型可稳定执行且无公网请求，不得开始多人功能。
+• P1 未跑通 Task → Worktree → Codex → Diff，不得先投入完整账号与消息系统。
+• P2 身份与权限未确定，不得允许 Runner 执行团队任务。
+• P3 消息可靠性、幂等和补拉未通过，不得加入多服务器扩展。
+• P4 工作流没有版本快照和停止条件，不得允许自动化长期运行。
+• P5 审批与审计不完整，不得启用自动 Push、生产访问或敏感工具。
+13. 开发任务清单
+以下任务可直接创建为 Issue。状态建议使用 Backlog / Ready / In Progress / Review / Done / Blocked。
+ID
+任务
+负责人
+依赖
+完成标准
+阶段
+P0-01
+Fork openai/codex 并建立 upstream 同步策略
+RUN
+无
+可原样 cargo build；origin/upstream 正确
+P0
+P0-02
+编写 Third-party Notice 与许可证清单
+ARCH/OPS
+P0-01
+Apache-2.0 声明和依赖许可证记录
+P0
+P0-03
+接入本地 Responses API Provider
+RUN
+P0-01
+断网情况下可完成模型请求
+P0
+P0-04
+实现强制 Offline Mode
+RUN
+P0-03
+禁止 OpenAI 登录、遥测、公网 Endpoint
+P0
+P0-05
+执行网络抓包和出口验证
+OPS
+P0-04
+任务全程无公网连接
+P0
+P0-06
+验证 thread/start、turn/start、stream events
+RUN/CORE
+P0-03
+可打印完整事件流
+P0
+P0-07
+初始化 constellation-collab Rust Workspace
+CORE
+无
+CI 可 fmt、clippy、test
+P0
+P0-08
+定义 TaskEvent 与错误协议
+CORE
+P0-06/P0-07
+协议可序列化并有测试
+P0
+P1-01
+定义 Channel、Message、CodexTask、TaskRun
+CORE
+P0-07
+领域模型与状态机测试通过
+P1
+P1-02
+实现 Codex JSON-RPC Client
+RUN
+P0-06
+支持 initialize/thread/turn/interrupt
+P1
+P1-03
+实现 Local Task Manager
+CORE
+P1-01/P1-02
+create/start/cancel 完整
+P1
+P1-04
+实现 Git Worktree Manager
+RUN
+P1-03
+每 Task 独立 Worktree，可获取 Diff
+P1
+P1-05
+实现 SQLite 本地存储
+CORE
+P1-01
+重启后可恢复消息与 Task
+P1
+P1-06
+建立 CLI 端到端原型
+CORE/RUN
+P1-03/P1-04
+命令行完成完整任务
+P1
+P1-07
+初始化 Tauri Desktop
+UI
+P0-07
+应用可构建并调用 Rust Command
+P1
+P1-08
+实现单 Group / Channel UI
+UI
+P1-07
+可发送本地消息
+P1
+P1-09
+实现 Task 卡片与流式输出
+UI
+P1-03/P1-08
+Running/Failed/Succeeded 可视化
+P1
+P1-10
+实现 Diff 与 Logs 面板
+UI
+P1-04/P1-09
+可查看文件变更和日志
+P1
+P2-01
+初始化 Axum collab-server
+SRV
+P1 闸门
+健康检查、配置、tracing
+P2
+P2-02
+接入 PostgreSQL 与 migrations
+SRV
+P2-01
+自动迁移与回滚脚本
+P2
+P2-03
+部署 Keycloak 或对接企业 OIDC
+SRV/OPS
+P2-01
+OIDC 登录成功
+P2
+P2-04
+实现 ExternalIdentity 映射
+SRV
+P2-03
+iss+sub 唯一，重复登录不重复建人
+P2
+P2-05
+实现 Organization / Membership
+SRV
+P2-02/P2-04
+组织隔离测试通过
+P2
+P2-06
+实现 Group / GroupMember
+SRV
+P2-05
+角色范围测试通过
+P2
+P2-07
+实现 Channel / ChannelMember
+SRV
+P2-06
+私有/公开频道权限正确
+P2
+P2-08
+实现 RoleBinding / Policy Evaluation
+ARCH/SRV
+P2-06
+权限矩阵单元测试通过
+P2
+P2-09
+实现 Runner Service Account
+SRV/RUN
+P2-03
+mTLS 或受控凭据注册
+P2
+P3-01
+实现 Message API 与分页
+SRV
+P2-07
+发送、读取、分页正确
+P3
+P3-02
+实现 Transactional Outbox
+SRV
+P3-01
+事务后可靠发布，无幽灵消息
+P3
+P3-03
+实现 WebSocket Gateway
+SRV
+P3-02
+认证、订阅、心跳
+P3
+P3-04
+实现 event_id / channel_sequence
+SRV
+P3-01
+并发写入顺序唯一
+P3
+P3-05
+实现断线补拉与幂等
+SRV/UI
+P3-03/P3-04
+模拟断网不丢不重
+P3
+P3-06
+实现 Task 事件实时转发
+CORE/SRV/UI
+P3-03
+流式输出跨两台客户端同步
+P3
+P3-07
+实现 Read Cursor / Presence / Typing
+SRV/UI
+P3-03
+TTL 和多设备聚合正确
+P3
+P3-08
+实现附件和 MinIO（可选）
+SRV/OPS
+P3-01
+上传、权限、哈希校验
+P3
+P4-01
+定义 Workflow Schema v0.1
+ARCH/CORE
+P1-01
+包含 goal/verify/stop/budget/permissions
+P4
+P4-02
+实现 Workflow Registry
+CORE/SRV
+P4-01/P2-02
+CRUD 与 scope 权限
+P4
+P4-03
+实现 Workflow Git Source
+CORE
+P4-02
+可读取固定 commit/tag
+P4
+P4-04
+实现 Draft/Review/Publish 生命周期
+SRV
+P4-02
+非法转换被拒绝
+P4
+P4-05
+实现 Workflow Fork
+CORE/SRV
+P4-04
+新 workflow_id + 0.x 版本
+P4
+P4-06
+实现 Workflow Run Snapshot
+CORE/SRV
+P4-03
+每次运行可复现版本和策略
+P4
+P4-07
+实现 Verification / Stop Conditions
+CORE/RUN
+P4-01/P1-03
+完成标准机器可验证
+P4
+P4-08
+实现 Channel Workflow Card
+UI
+P4-02/P3-01
+View/Run/Fork 可用
+P4
+P5-01
+实现 Runner Registry 与 Heartbeat
+RUN/SRV
+P2-09
+Online/Offline/Draining 状态
+P5
+P5-02
+实现 Runner Capability 声明
+RUN
+P5-01
+OS/模型/工具/并发可查询
+P5
+P5-03
+实现 Task Lease 与调度器
+CORE/SRV
+P5-01/P1-03
+无重复领取，租约可恢复
+P5
+P5-04
+实现并发、超时与预算
+CORE/RUN
+P5-03
+限制可被强制执行
+P5
+P5-05
+实现 Approval Request / Decision
+CORE/SRV
+P2-08
+危险操作暂停并可审批
+P5
+P5-06
+实现文件、Shell、网络策略
+RUN
+P5-05
+越界操作被拒绝或进入审批
+P5
+P5-07
+实现不可变 Audit Event
+SRV/OPS
+P5-05
+普通用户不能修改删除
+P5
+P5-08
+实现 Runner 失联与任务恢复
+CORE/RUN
+P5-03
+失联后任务进入可恢复状态
+P5
+P6-01
+编写 Docker Compose 私有部署
+OPS
+P5 闸门
+一条命令启动核心服务
+P6
+P6-02
+实现配置和 Secret 管理
+OPS/SRV
+P6-01
+无 Secret 写入镜像和日志
+P6
+P6-03
+PostgreSQL / MinIO 备份恢复
+OPS
+P6-01
+完成恢复演练并记录 RPO/RTO
+P6
+P6-04
+制作离线依赖与镜像包
+OPS
+P6-01
+无公网环境可安装
+P6
+P6-05
+生成 SBOM、签名和许可证清单
+OPS
+P6-04
+安装包和镜像可验证
+P6
+P6-06
+安全测试与渗透检查
+OPS/ALL
+P6-01
+高危问题为 0
+P6
+P6-07
+性能与故障注入测试
+OPS/ALL
+P5-08
+断网、重启、Runner 失联可恢复
+P6
+P6-08
+完成企业验收手册
+ARCH/OPS
+全部
+部署、升级、回滚、审计可操作
+P6
+
+14. 前 10 个工作日行动计划
+前 10 天只验证最危险的技术链路，不做完整账号、服务器和 UI。
+日期
+主要任务
+负责人
+当日验收
+Day 1
+Fork Codex；配置 upstream；原样 cargo build
+RUN
+本地可执行文件产生
+Day 2
+分析 Provider 配置；准备本地 Responses API 服务
+RUN
+curl 可获得流式 Responses
+Day 3
+Codex 指向本地 Provider；完成一次只读代码分析
+RUN
+断网可返回结果
+Day 4
+实现 Offline Mode 初版；禁用登录、遥测和公网 Endpoint
+RUN/OPS
+抓包无公网请求
+Day 5
+验证 thread/start、turn/start、interrupt 与流式事件
+RUN/CORE
+保存一份事件样本
+Day 6
+创建 collab Rust Workspace；定义 Task / Event / Error
+CORE
+cargo test 通过
+Day 7
+实现 Codex Client 最小 JSON-RPC Transport
+CORE/RUN
+Rust 程序可启动并控制 Codex
+Day 8
+实现 Task 状态机和 Local Task Manager
+CORE
+create/start/cancel 测试通过
+Day 9
+实现 Git Worktree 创建、Diff 与清理
+RUN
+任务在独立目录执行
+Day 10
+CLI 完整闭环演示与技术评审
+ALL
+输入任务→Codex→Diff→结果完整
+
+14.1 第 10 天必须回答的问题
+☐ 本地模型能否可靠产生 Codex 所需的 Tool Call 与流式事件？
+☐ 模型能力不足时，系统应该如何降级：只读分析、Patch-only 或串行工具？
+☐ Codex Fork 需要修改哪些点，哪些可通过 config / provider 完成？
+☐ 断网模式下是否存在任何隐藏公网请求或依赖？
+☐ 一个 Task 的 Thread、Worktree、日志和 Diff 是否可以稳定关联？
+☐ 当前架构是否需要内嵌 Codex crates，还是独立进程已经足够？
+15. 验收标准与 Definition of Done
+15.1 功能 DoD
+☐ 代码包含单元测试或集成测试，CI 通过 fmt、clippy 和 test。
+☐ 权限校验在服务器或 Runner 的可信边界执行，不能仅依赖 UI。
+☐ 所有状态转换经过状态机，非法转换有测试。
+☐ 对外 API 和事件 Schema 有版本和示例。
+☐ 失败路径、取消、超时、重试和幂等行为已验证。
+☐ 关键动作产生结构化 tracing 和 audit event。
+☐ 文档包含配置、启动、回滚和常见故障。
+15.2 安全 DoD
+☐ 运行时无未授权公网请求。
+☐ Secret 不进入日志、消息、Diff 或审计正文。
+☐ Runner 使用服务账号，不复用个人 Token。
+☐ 文件和命令越界操作被拒绝或进入审批。
+☐ 审计记录不可由普通用户更新或删除。
+☐ 依赖、镜像和安装包有版本锁定与许可证记录。
+15.3 阶段验收测试
+测试
+通过条件
+断网本地任务
+拔掉公网后仍可完成读取、修改、测试和 Diff
+消息可靠性
+随机断开 WebSocket，重连后不丢消息、不重复 Task 状态
+权限隔离
+不同 Organization / Group 用户无法读取越权对象
+重复投递
+同一 event_id / assignment_id 重复发送不会重复执行
+Runner 失联
+任务租约过期后进入明确恢复状态，不产生双执行
+审批暂停
+危险命令在批准前绝不执行；拒绝后终止或安全恢复
+工作流复现
+给定 run snapshot 能定位确切源码、模型、策略和输入
+备份恢复
+从备份恢复后消息、工作流、任务和审计一致
+
+16. 风险、决策与上线检查表
+16.1 主要风险
+风险
+概率
+影响
+缓解措施
+Owner
+本地模型 Tool Call 能力不足
+高
+高
+建立 ModelCapabilities；支持 Patch-only / 串行工具降级；优先做 P0 验证
+RUN
+Codex 上游快速变化导致 Fork 维护困难
+高
+中高
+最小化修改；保持 upstream；定期 rebase；协作层独立分仓
+RUN/ARCH
+即时通讯丢消息或重复事件
+中
+高
+Transactional Outbox、event_id、幂等、补拉测试
+SRV
+Runner 执行越权
+中
+极高
+多层沙箱、路径策略、网络防火墙、审批和审计
+RUN/OPS
+过早实现全功能 Teams
+中
+高
+以 Task 闭环为唯一主线，非目标冻结
+ARCH
+全 Rust UI 拖慢交付
+中
+中
+Rust 核心 + React 视图层；全 Rust UI 后评估
+UI/ARCH
+企业 IdP 差异大
+中
+中
+OIDC 为统一边界，LDAP/AD 通过 Keycloak 或适配器接入
+SRV
+隔离网供应链复杂
+高
+高
+从 P0 锁依赖；P6 构建内部 Registry、SBOM 和签名包
+OPS
+
+16.2 架构决策记录（ADR）清单
+☐ ADR-001：协作系统与 Codex Fork 分仓。
+☐ ADR-002：Rust 是核心语言，React 仅作为可替换视图层。
+☐ ADR-003：PostgreSQL 是共享事实来源，事件总线不是数据库。
+☐ ADR-004：Message / Event 使用 Transactional Outbox。
+☐ ADR-005：每个 Task Run 使用独立 Git Worktree。
+☐ ADR-006：工作流以不可变版本与运行快照执行。
+☐ ADR-007：完全本地模式由应用策略与网络层共同强制。
+☐ ADR-008：Runner 使用 Service Account + mTLS，不使用个人会话。
+16.3 MVP 上线检查表
+☐ 核心服务和 Runner 可在干净的内网环境安装。
+☐ 至少两名用户、两个 Group 和两个权限角色通过测试。
+☐ 消息、Task、审批和工作流可断线恢复。
+☐ 本地模型在目标硬件上达到可接受的响应时间和成功率。
+☐ 网络出口策略已验证，未授权公网请求为 0。
+☐ 备份、恢复、升级和回滚步骤已演练。
+☐ 审计日志能回答“谁、何时、在哪个 Runner、执行了什么、批准了什么”。
+☐ 第三方许可证、SBOM、安装包签名和安全报告完整。
+16.4 下一步
+立即执行 今天创建三个仓库和 P0-01～P0-08 Issue；第一周只完成 Codex Fork、本地 Provider、Offline Mode 和事件验证。第二周完成 Rust Codex Client、TaskEvent 与 CLI 端到端闭环。
+
+界面参考
+
+图 2：假想桌面端 UI（Channel、Codex Task、Approval、Diff 与 Logs）
+该界面仅作为信息架构参考。第一版 UI 只实现左侧 Channel、中间消息与任务卡片、右侧 Task / Diff、底部 Logs 四个区域。
+附录 A. 核心事件与 API 示例
+A.1 TaskEvent 示例
+enum TaskEvent {     TaskQueued { task_id, run_id },     TaskAssigned { task_id, runner_id },     AgentMessageDelta { task_id, text },     CommandStarted { task_id, command, cwd },     CommandCompleted { task_id, exit_code },     FileChanged { task_id, path, change_type },     ApprovalRequired { task_id, approval_id, action },     VerificationCompleted { task_id, evidence },     TaskCompleted { task_id, result },     TaskFailed { task_id, error_code, message }, }
+A.2 RunnerCapabilities 示例
+struct RunnerCapabilities {     operating_system: OperatingSystem,     architecture: Architecture,     max_concurrent_tasks: u16,     model_providers: Vec<ModelProviderCapability>,     tools: Vec<ToolCapability>,     workspace_roots: Vec<PathBuf>,     network_profile: NetworkProfile, }
+A.3 Workflow v0.1 示例
+id: code-review version: 1.0.0 name: Code Review trigger:   type: manual goal:   description: Review selected changes procedure:   - inspect_diff   - run_static_checks   - produce_findings capabilities:   - read_repository   - run_tests verification:   - findings_have_file_and_line   - tests_are_recorded stop_conditions:   - review_report_generated   - fatal_error permissions:   filesystem: read_only   shell:     allow: ["cargo check", "cargo test"] budget:   max_turns: 20   timeout_seconds: 1800 outputs:   - review_report   - evidence
+附录 B. 部署参数与参考资料
+B.1 建议配置参数
+参数
+示例
+说明
+OFFLINE_MODE
+true
+强制禁止公网与 OpenAI 登录
+DATABASE_URL
+postgres://...
+中心数据库连接
+OIDC_ISSUER
+https://id.internal/...
+企业身份发行者
+MODEL_GATEWAY_URL
+http://model.internal:8000/v1
+内网 Responses API
+RUNNER_MAX_CONCURRENCY
+2
+单 Runner 最大并发
+WORKSPACE_ROOT
+/var/lib/constellation/worktrees
+任务目录根
+NATS_URL
+nats://nats.internal:4222
+扩展阶段事件总线
+MINIO_ENDPOINT
+http://minio.internal:9000
+对象存储
+AUDIT_RETENTION_DAYS
+365
+审计保留期
+EVENT_RETENTION_HOURS
+168
+实时事件补拉窗口
+
+B.2 参考资料
+• OpenAI Codex GitHub Repository：https://github.com/openai/codex
+• Codex App Server README：https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md
+• Codex Apache 2.0 License：https://github.com/openai/codex/blob/main/LICENSE
+• Tauri 2 Architecture：https://v2.tauri.app/concept/architecture/
+• Axum Documentation：https://docs.rs/axum/latest/axum/
+• SQLx Documentation：https://docs.rs/sqlx/latest/sqlx/
+• Keycloak Server Administration Guide：https://www.keycloak.org/docs/latest/server_admin/
+• NATS JetStream Consumers：https://docs.nats.io/nats-concepts/jetstream/consumers
+本文件是执行基线。任何改变部署边界、身份模型、消息可靠性、工作流语义、Runner 权限或 Codex Fork 范围的决策，都必须新增 ADR 并更新相应阶段验收标准。

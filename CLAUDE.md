@@ -17,3 +17,4 @@
 - 动手前后都跑 cargo test（当前基线 76 项全绿）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
+- 总体规划在 docs/（16 周 P0–P6，任务号 P0-01…P6-08）；A2/A7/E1–E3/A9 等是其细化分解；codex fork 分仓在 ../muster-codex
