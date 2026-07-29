@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use muster_eval::orchestrate::run_eval;
 use muster_eval::report::render_markdown;
+use muster_eval::runner::GenParams;
 use muster_eval::samples::{samples, Sample};
 use muster_provider::{ModelProvider, ProviderRegistry};
 
@@ -18,6 +19,7 @@ struct Args {
     trials: usize,
     threshold: f64,
     delay_ms: u64,
+    gen: GenParams,
     filter: Option<String>,
     out_dir: String,
     list_only: bool,
@@ -30,6 +32,7 @@ fn parse_args() -> Result<Args, String> {
         trials: 1,
         threshold: 0.90,
         delay_ms: 500,
+        gen: GenParams::default(),
         filter: None,
         out_dir: "eval-reports".into(),
         list_only: false,
@@ -51,6 +54,14 @@ fn parse_args() -> Result<Args, String> {
                 args.threshold = take("--threshold")?.parse().map_err(|e| format!("--threshold: {e}"))?
             }
             "--delay-ms" => args.delay_ms = take("--delay-ms")?.parse().map_err(|e| format!("--delay-ms: {e}"))?,
+            // 思考型模型(如 Kimi K3 仅接受 temperature=1、思考计入输出 token)用这两项
+            // 显式偏离默认口径;取值会写入 report.md / results.json 公示。
+            "--temperature" => {
+                args.gen.temperature = take("--temperature")?.parse().map_err(|e| format!("--temperature: {e}"))?
+            }
+            "--max-tokens" => {
+                args.gen.max_tokens = take("--max-tokens")?.parse().map_err(|e| format!("--max-tokens: {e}"))?
+            }
             "--filter" => args.filter = Some(take("--filter")?),
             "--out" => args.out_dir = take("--out")?,
             "--list" => args.list_only = true,
@@ -116,7 +127,7 @@ async fn main() {
         }
     }
 
-    let report = run_eval(&providers, &selected, args.trials, args.threshold, args.delay_ms).await;
+    let report = run_eval(&providers, &selected, args.trials, args.threshold, args.delay_ms, args.gen).await;
 
     std::fs::create_dir_all(&args.out_dir).expect("创建输出目录");
     let json_path = format!("{}/results.json", args.out_dir);

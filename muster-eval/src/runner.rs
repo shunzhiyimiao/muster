@@ -43,10 +43,26 @@ pub struct TrialRecord {
 /// provider 级致命错误(密钥错等),调用方应终止该 provider 的整轮评测。
 pub struct FatalProvider(pub String);
 
+/// 生成参数。默认值即本评测的历史口径:temperature=0、max_tokens=512。
+/// 思考型模型(如 Kimi K3:仅接受 temperature=1,且思考计入 completion tokens)
+/// 需放开两者;实际取值写入报告一并披露,不允许静默偏离口径。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct GenParams {
+    pub temperature: f32,
+    pub max_tokens: u32,
+}
+
+impl Default for GenParams {
+    fn default() -> Self {
+        Self { temperature: 0.0, max_tokens: 512 }
+    }
+}
+
 pub async fn run_trial(
     provider: &Arc<dyn ModelProvider>,
     sample: &Sample,
     trial: usize,
+    gen: &GenParams,
 ) -> Result<TrialRecord, FatalProvider> {
     let tools = crate::samples::tools_by_name(&sample.tools);
     let mut messages = vec![ChatMessage::system(SYSTEM_PROMPT)];
@@ -69,8 +85,8 @@ pub async fn run_trial(
             messages: messages.clone(),
             tools: tools.clone(),
             tool_choice: Some(ToolChoice::Auto),
-            temperature: Some(0.0),
-            max_tokens: Some(512),
+            temperature: Some(gen.temperature),
+            max_tokens: Some(gen.max_tokens),
             run_id: Some(format!("eval:{}:{}", sample.id, trial)),
         };
 

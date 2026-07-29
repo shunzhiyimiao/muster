@@ -27,6 +27,8 @@ cargo run -p muster-eval --example demo_report
    字段值/类型/枚举、跨调用覆盖,全部代码断言,规则随报告附录 A 公开。
 3. **走流式生产路径**(chat_stream + 增量重组),评的是我们实际要用的通道。
 4. **temperature=0**,多 trial 仍可能波动(采样以外的非确定性),trials=3 取全体试次统计。
+   思考型模型按其硬约束显式偏离(如 Kimi K3 仅接受 temperature=1:`--temperature 1 --max-tokens 4096`,
+   思考计入输出 token),实际取值随报告公示,不允许静默偏离。
 5. Auth/配置错误 → provider 级作废,当场报变量名,不静默重试。
 
 ## 评测集构成(8 类 × 20 样本)

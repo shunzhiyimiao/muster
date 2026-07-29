@@ -47,7 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         }],
         tool_choice: Some(ToolChoice::Auto),
-        temperature: Some(0.0),
+        // 不指定温度:冒烟只验通道;思考型模型(如 Kimi K3)仅接受固定温度。
+        temperature: None,
         max_tokens: Some(256),
         run_id: Some("smoke".into()),
     };

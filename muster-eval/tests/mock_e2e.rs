@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use muster_eval::orchestrate::run_eval;
 use muster_eval::report::render_markdown;
-use muster_eval::runner::TrialStatus;
+use muster_eval::runner::{GenParams, TrialStatus};
 use muster_eval::samples::samples;
 use muster_provider::{MockProvider, ModelProvider};
 
@@ -44,7 +44,7 @@ async fn end_to_end_math_and_gate() {
         .with_text("31 度。");
 
     let providers: Vec<Arc<dyn ModelProvider>> = vec![Arc::new(good), Arc::new(flaky)];
-    let report = run_eval(&providers, &selected, 1, 0.90, 0).await;
+    let report = run_eval(&providers, &selected, 1, 0.90, 0, GenParams::default()).await;
 
     let a = &report.providers[0];
     assert_eq!(a.summary.passed, 4);
@@ -79,7 +79,7 @@ async fn unhealthy_provider_yields_infra_and_invalidates() {
     sick.set_healthy(false); // 所有调用 Unreachable → 重试耗尽 → Infra
     let providers: Vec<Arc<dyn ModelProvider>> = vec![Arc::new(sick)];
 
-    let report = run_eval(&providers, &selected, 1, 0.90, 0).await;
+    let report = run_eval(&providers, &selected, 1, 0.90, 0, GenParams::default()).await;
     let p = &report.providers[0];
     assert_eq!(p.summary.infra, 2);
     assert_eq!(p.summary.passed + p.summary.failed, 0);

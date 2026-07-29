@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use muster_eval::orchestrate::run_eval;
 use muster_eval::report::render_markdown;
+use muster_eval::runner::GenParams;
 use muster_eval::samples::samples;
 use muster_provider::{MockProvider, ModelProvider};
 
@@ -31,7 +32,7 @@ async fn main() {
         .with_text("31 度。");
 
     let providers: Vec<Arc<dyn ModelProvider>> = vec![Arc::new(good), Arc::new(flaky)];
-    let report = run_eval(&providers, &selected, 1, 0.90, 0).await;
+    let report = run_eval(&providers, &selected, 1, 0.90, 0, GenParams::default()).await;
 
     std::fs::create_dir_all("eval-reports-demo").unwrap();
     std::fs::write("eval-reports-demo/report.md", render_markdown(&report, &selected)).unwrap();

@@ -19,6 +19,17 @@ locality = "cloud"
 display_name = "云端·Qwen"
 api_key_env = "DASHSCOPE_API_KEY"
 
+# Kimi for Coding 套餐端点(非 Moonshot 开放平台)。模型强制思考
+# (响应含 reasoning_content),故超时放宽;模型 id "kimi-k3" 与 "k3" 等价。
+[providers.kimi]
+kind = "openai_compat"
+base_url = "https://api.kimi.com/coding/v1"
+model = "kimi-k3"
+locality = "cloud"
+display_name = "云端·Kimi K3"
+api_key_env = "KIMI_API_KEY"
+timeout_secs = 300
+
 # 本地保活通道（A5）：演示机上的 Ollama。restricted 仓库的任务只允许落在
 # locality = "local" 的 provider 上 —— 这由 E2 路由强制，非约定。
 [providers.local-ollama]

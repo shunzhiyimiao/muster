@@ -1,0 +1,237 @@
+{
+  "generated_at": "2026-07-29 16:12:56 +0900",
+  "trials_per_sample": 1,
+  "threshold": 0.9,
+  "gen": {
+    "temperature": 1.0,
+    "max_tokens": 4096
+  },
+  "system_prompt": "你是 Muster 的代码协作 Agent。需要外部信息或执行操作时,必须调用已声明的工具,参数严格符合工具 schema;能直接回答的问题就直接用文本回答,不要调用无关工具。",
+  "providers": [
+    {
+      "id": "kimi",
+      "display_name": "云端·Kimi K3",
+      "model": "kimi-k3",
+      "endpoint": "https://api.kimi.com/coding/v1",
+      "locality": "Cloud",
+      "fatal": null,
+      "trials": [
+        {
+          "sample_id": "basic_weather",
+          "category": "basic",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 get_weather({\"city\":\"上海\"})"
+          ]
+        },
+        {
+          "sample_id": "basic_path",
+          "category": "basic",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 read_file({\"path\":\"src/server/auth.rs\"})"
+          ]
+        },
+        {
+          "sample_id": "select_among_six",
+          "category": "selection",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 git_diff({\"base\":\"main\",\"head\":\"feature/login\"})"
+          ]
+        },
+        {
+          "sample_id": "extract_line_range",
+          "category": "extraction",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 read_file({\"path\":\"src/lib.rs\",\"start_line\":40,\"end_line\":80})"
+          ]
+        },
+        {
+          "sample_id": "typing_line_int",
+          "category": "typing",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 create_review_comment({\"body\":\"这里缺少错误处理，建议补充相应的错误处理逻辑，避免异常情况未被捕获。\",\"line\":12,\"path\":\"src/api.rs\"})"
+          ]
+        },
+        {
+          "sample_id": "enum_scope_unit",
+          "category": "typing",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 run_tests({\"scope\":\"unit\"})"
+          ]
+        },
+        {
+          "sample_id": "enum_scope_all",
+          "category": "extraction",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 run_tests({\"scope\":\"all\"})"
+          ]
+        },
+        {
+          "sample_id": "optional_filter",
+          "category": "extraction",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 run_tests({\"filter\":\"login\",\"scope\":\"unit\"})"
+          ]
+        },
+        {
+          "sample_id": "glob_extraction",
+          "category": "extraction",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 search_code({\"query\":\"TODO\",\"glob\":\"*.rs\"})"
+          ]
+        },
+        {
+          "sample_id": "quotes_in_body",
+          "category": "robustness",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 create_review_comment({\"body\":\"标题应当是 \\\"Muster\\\"（保留英文双引号）\",\"line\":1,\"path\":\"README.md\"})"
+          ]
+        },
+        {
+          "sample_id": "chinese_path_content",
+          "category": "robustness",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 write_file({\"path\":\"docs/欢迎.md\",\"content\":\"欢迎使用 Muster\"})"
+          ]
+        },
+        {
+          "sample_id": "no_tool_explain",
+          "category": "negative",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 文本作答「# SSE（Server-Sent Events）简介\n\n**Server-Sent Events** 是一种让服务器主动向浏览器推送数据的技术，基于 HTTP 协议实现单向的、…」"
+          ]
+        },
+        {
+          "sample_id": "no_tool_out_of_scope",
+          "category": "negative",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 文本作答「当前环境没有提供 Git 操作工具，我无法直接替你执行合并。你可以在本地或 CI 里运行：\n\n```bash\ngit checkout main\ngit pull origin…」"
+          ]
+        },
+        {
+          "sample_id": "parallel_two_cities",
+          "category": "parallel",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 get_weather({\"city\":\"北京\"}) ; get_weather({\"city\":\"上海\"})"
+          ]
+        },
+        {
+          "sample_id": "mt_read_then_comment",
+          "category": "multi_turn",
+          "trial": 0,
+          "status": "fail",
+          "reasons": [
+            "期望调用 1..=1 次,实际 2 次"
+          ],
+          "transcript": [
+            "回合1: 调用 read_file({\"path\":\"src/auth.rs\"})",
+            "回合2: 调用 create_review_comment({\"body\":\"`unwrap()` 会在用户不存在时直接 panic，导致登录接口可被触发崩溃（DoS 风险）。建议改为返回 `Result<Token, AuthError>` …) ; create_review_comment({\"body\":\"这里直接把密码 `p` 传给 `issue_token` 就签发了 token，没有对密码做任何验证（如哈希比对 `verify_password(p, &user.password…)"
+          ]
+        },
+        {
+          "sample_id": "mt_result_to_answer",
+          "category": "multi_turn",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 get_weather({\"city\":\"上海\"})",
+            "回合2: 文本作答「上海现在约 **31°C**，天气 **多云**。」"
+          ]
+        },
+        {
+          "sample_id": "mt_list_then_read",
+          "category": "multi_turn",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 list_directory({\"path\":\".\"})",
+            "回合2: 调用 read_file({\"path\":\"Cargo.toml\"})"
+          ]
+        },
+        {
+          "sample_id": "long_context_needle",
+          "category": "robustness",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 create_review_comment({\"path\":\"src/routes.rs\",\"line\":88,\"body\":\"⚠️ **SQL 注入风险**:这里使用 `format!` 将用户可控的 `name` 查询参数直接拼接到 SQL 语句中…)"
+          ]
+        },
+        {
+          "sample_id": "pr_id_int",
+          "category": "typing",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 approve_merge({\"pr_id\":42,\"comment\":\"辛苦了\"})"
+          ]
+        },
+        {
+          "sample_id": "multiline_content",
+          "category": "robustness",
+          "trial": 0,
+          "status": "pass",
+          "reasons": [],
+          "transcript": [
+            "回合1: 调用 write_file({\"content\":\"hello\\nworld\\n\",\"path\":\"notes.txt\"})"
+          ]
+        }
+      ],
+      "summary": {
+        "passed": 19,
+        "failed": 1,
+        "infra": 0,
+        "success_rate": 0.95,
+        "infra_rate": 0.0,
+        "valid": true,
+        "meets_threshold": true
+      }
+    }
+  ],
+  "gate_passed": true
+}

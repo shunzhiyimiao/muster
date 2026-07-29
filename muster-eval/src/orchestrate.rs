@@ -6,7 +6,7 @@ use std::time::Duration;
 use muster_provider::ModelProvider;
 
 use crate::report::{summarize, EvalReport, ProviderReport};
-use crate::runner::{run_trial, TrialRecord, SYSTEM_PROMPT};
+use crate::runner::{run_trial, GenParams, TrialRecord, SYSTEM_PROMPT};
 use crate::samples::Sample;
 
 pub async fn run_eval(
@@ -15,6 +15,7 @@ pub async fn run_eval(
     trials: usize,
     threshold: f64,
     delay_ms: u64,
+    gen: GenParams,
 ) -> EvalReport {
     let mut provider_reports = Vec::new();
 
@@ -26,7 +27,7 @@ pub async fn run_eval(
 
         'provider: for sample in selected {
             for trial in 0..trials {
-                match run_trial(provider, sample, trial).await {
+                match run_trial(provider, sample, trial, &gen).await {
                     Ok(rec) => {
                         eprintln!("  [{}] {} trial {} -> {:?}", meta.id, sample.id, trial + 1, rec.status);
                         trial_records.push(rec);
@@ -63,6 +64,7 @@ pub async fn run_eval(
         generated_at: chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z").to_string(),
         trials_per_sample: trials,
         threshold,
+        gen,
         system_prompt: SYSTEM_PROMPT.to_owned(),
         providers: provider_reports,
         gate_passed,
