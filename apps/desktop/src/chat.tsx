@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, Play, Send } from "lucide-react";
-import { api, Channel, DonePayload, FailPayload, StartPayload } from "./api";
+import { api, Channel, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -12,6 +12,7 @@ export interface Msg {
   text: string;
   runId?: string;
   status: "streaming" | "done" | "failed" | "refused";
+  ts?: number;
 }
 
 export interface ChatState {
@@ -21,6 +22,8 @@ export interface ChatState {
   lastDone: DonePayload | null;
   lastFail: FailPayload | null;
   send: (channelId: string, text: string, asTask: boolean) => void;
+  /// C1:把持久化历史灌进尚未有内容的频道(避免与本次会话消息重复)。
+  hydrate: (rows: StoredMsg[]) => void;
 }
 
 export function useChat(onActivity: () => void): ChatState {
@@ -117,7 +120,28 @@ export function useChat(onActivity: () => void): ChatState {
     });
   };
 
-  return { msgs, busy, lastStart, lastDone, lastFail, send };
+  const hydrate = (rows: StoredMsg[]) => {
+    setMsgs((prev) => {
+      const next = { ...prev };
+      const grouped: Record<string, Msg[]> = {};
+      rows.forEach((r, i) => {
+        (grouped[r.channel_id] ??= []).push({
+          key: `db-${i}-${r.ts_ms}`,
+          role: r.role === "user" ? "user" : "agent",
+          text: r.text,
+          runId: r.run_id ?? undefined,
+          status: (["done", "failed", "refused"].includes(r.status) ? r.status : "done") as Msg["status"],
+          ts: r.ts_ms,
+        });
+      });
+      for (const [chan, list] of Object.entries(grouped)) {
+        if (!next[chan] || next[chan].length === 0) next[chan] = list;
+      }
+      return next;
+    });
+  };
+
+  return { msgs, busy, lastStart, lastDone, lastFail, send, hydrate };
 }
 
 /* ---------- 真实消息流 + 输入区(v4 皮肤) ---------- */

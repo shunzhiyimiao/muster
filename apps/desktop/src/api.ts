@@ -135,6 +135,14 @@ export interface AgentStats {
   total_egress_bytes: number;
   heat: DayBar[];
 }
+export interface StoredMsg {
+  channel_id: string;
+  role: string;
+  text: string;
+  run_id: string | null;
+  status: string;
+  ts_ms: number;
+}
 
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
@@ -146,6 +154,7 @@ export const api = {
   toggleDrill: (on: boolean) => invoke<DrillStatus>("toggle_drill", { on }),
   homeStats: () => invoke<HomeStats>("home_stats"),
   agentStats: () => invoke<AgentStats>("agent_stats"),
+  historyBulk: (limit: number) => invoke<StoredMsg[]>("history_bulk", { limit }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {

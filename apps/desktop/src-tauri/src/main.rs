@@ -113,6 +113,74 @@ fn label_sources(channel_id: &str) -> Vec<LabelSource> {
 
 // ---------------------------------------------------------------- 状态
 
+// ---------------------------------------------------------------- C1 会话持久化
+//
+// 桌面本地状态库,与审计库**刻意分离**:审计是证据层(只存哈希,append-only,
+// 防篡改);这里是会话正文的 run 存储侧,带自己的密级语义,可清除。
+
+#[derive(Serialize)]
+struct StoredMsg {
+    channel_id: String,
+    role: String,
+    text: String,
+    run_id: Option<String>,
+    status: String,
+    ts_ms: i64,
+}
+
+struct StateStore {
+    conn: rusqlite::Connection,
+}
+
+impl StateStore {
+    fn open(path: &str) -> rusqlite::Result<Self> {
+        let conn = rusqlite::Connection::open(path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS messages(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                run_id TEXT,
+                status TEXT NOT NULL,
+                ts_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_msg_chan ON messages(channel_id, id);",
+        )?;
+        Ok(Self { conn })
+    }
+
+    /// 状态库是便利层,写失败降级为日志,不阻断任务(与审计的 fail-closed 相反,刻意)。
+    fn insert(&self, channel_id: &str, role: &str, text: &str, run_id: Option<&str>, status: &str) {
+        if let Err(e) = self.conn.execute(
+            "INSERT INTO messages(channel_id, role, text, run_id, status, ts_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![channel_id, role, text, run_id, status, now_ms() as i64],
+        ) {
+            eprintln!("state 持久化失败(忽略):{e}");
+        }
+    }
+
+    fn bulk(&self, limit: u32) -> rusqlite::Result<Vec<StoredMsg>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT channel_id, role, text, run_id, status, ts_ms FROM messages
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit], |r| {
+            Ok(StoredMsg {
+                channel_id: r.get(0)?,
+                role: r.get(1)?,
+                text: r.get(2)?,
+                run_id: r.get(3)?,
+                status: r.get(4)?,
+                ts_ms: r.get(5)?,
+            })
+        })?;
+        let mut out: Vec<StoredMsg> = rows.collect::<Result<_, _>>()?;
+        out.reverse(); // 倒查取最近 N 条,再转回时间正序
+        Ok(out)
+    }
+}
+
 /// 进行中的演习(E6):id + 起始时刻,结束时用 drill_report 聚合窗口。
 struct DrillState {
     id: String,
@@ -122,6 +190,7 @@ struct DrillState {
 struct Backend {
     router: Arc<Router>,
     audit: Arc<Mutex<AuditStore>>,
+    state: Arc<Mutex<StateStore>>,
     run_seq: Arc<AtomicU64>,
     drill: Arc<Mutex<Option<DrillState>>>,
 }
@@ -367,10 +436,13 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {dir} 失败:{e}"))?;
         let db = format!("{dir}/desktop-audit.db");
         let audit = AuditStore::open(&db).map_err(|e| format!("审计库打开失败:{e}"))?;
+        let state_db = format!("{dir}/desktop-state.db");
+        let state = StateStore::open(&state_db).map_err(|e| format!("状态库打开失败:{e}"))?;
 
         *guard = Some(Backend {
             router,
             audit: Arc::new(Mutex::new(audit)),
+            state: Arc::new(Mutex::new(state)),
             run_seq: Arc::new(AtomicU64::new(0)),
             drill: Arc::new(Mutex::new(None)),
         });
@@ -404,10 +476,10 @@ async fn send_message(
     channel_id: String,
     text: String,
 ) -> Result<String, String> {
-    let (router, audit, run_seq) = {
+    let (router, audit, store, run_seq) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
-        (b.router.clone(), b.audit.clone(), b.run_seq.clone())
+        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
     };
     let channel = demo_channels()
         .into_iter()
@@ -416,6 +488,7 @@ async fn send_message(
     let sources = label_sources(&channel.id);
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let session_id = format!("session:{}", channel.id);
+    store.lock().unwrap().insert(&channel.id, "user", &text, None, "done");
 
     // ---- E2 路由决策(含探活,fail-closed)
     let route_req = RouteRequest {
@@ -426,9 +499,17 @@ async fn send_message(
     let resolution = match router.resolve(&route_req).await {
         Ok(r) => r,
         Err(e) => {
+            let msg = e.to_string();
+            store.lock().unwrap().insert(
+                &channel.id,
+                "agent",
+                &format!("⛔ 路由拒绝(fail-closed,绝不静默升云)\n{msg}"),
+                Some(&run_id),
+                "refused",
+            );
             app.emit(
                 "task-refused",
-                FailPayload { run_id: run_id.clone(), channel_id: channel.id.clone(), message: e.to_string() },
+                FailPayload { run_id: run_id.clone(), channel_id: channel.id.clone(), message: msg },
             )
             .ok();
             return Ok(run_id);
@@ -503,6 +584,7 @@ async fn send_message(
     let mut stream = match resolution.provider.chat_stream(req).await {
         Ok(s) => s,
         Err(e) => {
+            store.lock().unwrap().insert(&channel.id, "agent", &format!("⚠️ 开流失败:{e}"), Some(&run_id), "failed");
             app.emit(
                 "task-failed",
                 FailPayload { run_id: run_id.clone(), channel_id: channel.id.clone(), message: format!("开流失败:{e}") },
@@ -575,6 +657,13 @@ async fn send_message(
 
     match stream_err {
         Some(msg) => {
+            store.lock().unwrap().insert(
+                &channel.id,
+                "agent",
+                &format!("{full}\n\n⚠️ 中流失败:{msg}"),
+                Some(&run_id),
+                "failed",
+            );
             app.emit(
                 "task-failed",
                 FailPayload {
@@ -586,6 +675,7 @@ async fn send_message(
             .ok();
         }
         None => {
+            store.lock().unwrap().insert(&channel.id, "agent", &full, Some(&run_id), "done");
             app.emit(
                 "task-done",
                 DonePayload {
@@ -612,10 +702,10 @@ async fn run_workspace_task(
     channel_id: String,
     text: String,
 ) -> Result<String, String> {
-    let (router, audit, run_seq) = {
+    let (router, audit, store, run_seq) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
-        (b.router.clone(), b.audit.clone(), b.run_seq.clone())
+        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
     };
     let channel = demo_channels()
         .into_iter()
@@ -624,6 +714,9 @@ async fn run_workspace_task(
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    store.lock().unwrap().insert(&channel.id, "user", &format!("▶ 任务:{text}"), None, "done");
+    // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
+    let transcript = Arc::new(Mutex::new(String::new()));
 
     let spec = TaskSpec {
         run_id: run_id.clone(),
@@ -641,6 +734,7 @@ async fn run_workspace_task(
     let a = app.clone();
     let rid = run_id.clone();
     let chan = channel.id.clone();
+    let tr = transcript.clone();
     let result = run_task(&router, &audit, &cfg, spec, move |ev| match ev {
         RunnerEvent::Planned { plan, provider_id, provider_name, model, locality, attempts, .. } => {
             a.emit(
@@ -661,25 +755,23 @@ async fn run_workspace_task(
             .ok();
         }
         RunnerEvent::TextDelta { text } => {
+            tr.lock().unwrap().push_str(&text);
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text }).ok();
         }
         RunnerEvent::ToolCall { name, arguments, .. } => {
-            a.emit(
-                "task-delta",
-                DeltaPayload { run_id: rid.clone(), text: format!("\n🔧 {name} {arguments}\n") },
-            )
-            .ok();
+            let line = format!("\n🔧 {name} {arguments}\n");
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
         RunnerEvent::ToolResult { summary, .. } => {
-            a.emit(
-                "task-delta",
-                DeltaPayload { run_id: rid.clone(), text: format!("   ↳ {summary}\n") },
-            )
-            .ok();
+            let line = format!("   ↳ {summary}\n");
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
         RunnerEvent::Notice { text } => {
-            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: format!("\n⚠️ {text}\n") })
-                .ok();
+            let line = format!("\n⚠️ {text}\n");
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
         RunnerEvent::Finished { outcome, latency_ms, turns, prompt_tokens, completion_tokens } => {
             if outcome == "success" {
@@ -710,11 +802,33 @@ async fn run_workspace_task(
     })
     .await;
 
+    let saved = transcript.lock().unwrap().clone();
     match result {
-        Ok(s) => Ok(s.run_id),
+        Ok(s) => {
+            let status = if s.outcome == "success" { "done" } else { "failed" };
+            let text = if saved.is_empty() { s.final_text.clone() } else { saved };
+            store.lock().unwrap().insert(&channel.id, "agent", &text, Some(&run_id), status);
+            Ok(s.run_id)
+        }
         // Model 错误的 UI 反馈已由 Finished(failed:stream) 事件完成,不重复发。
-        Err(RunnerError::Model(_)) => Ok(run_id),
+        Err(RunnerError::Model(msg)) => {
+            store.lock().unwrap().insert(
+                &channel.id,
+                "agent",
+                &format!("{saved}\n\n⚠️ 中流失败(已重试一次):{msg}"),
+                Some(&run_id),
+                "failed",
+            );
+            Ok(run_id)
+        }
         Err(RunnerError::Refused(msg)) => {
+            store.lock().unwrap().insert(
+                &channel.id,
+                "agent",
+                &format!("⛔ 路由拒绝(fail-closed,绝不静默升云)\n{msg}"),
+                Some(&run_id),
+                "refused",
+            );
             app.emit(
                 "task-refused",
                 FailPayload { run_id: run_id.clone(), channel_id: channel.id, message: msg },
@@ -723,6 +837,7 @@ async fn run_workspace_task(
             Ok(run_id)
         }
         Err(e) => {
+            store.lock().unwrap().insert(&channel.id, "agent", &format!("⚠️ {e}"), Some(&run_id), "failed");
             app.emit(
                 "task-failed",
                 FailPayload { run_id: run_id.clone(), channel_id: channel.id, message: e.to_string() },
@@ -731,6 +846,15 @@ async fn run_workspace_task(
             Ok(run_id)
         }
     }
+}
+
+/// C1:启动时取回全部频道的历史消息(时间正序,总量截断)。
+#[tauri::command]
+fn history_bulk(state: State<'_, AppState>, limit: u32) -> Result<Vec<StoredMsg>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.state.lock().unwrap();
+    store.bulk(limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -889,7 +1013,8 @@ fn main() {
             verify_chain,
             toggle_drill,
             home_stats,
-            agent_stats
+            agent_stats,
+            history_bulk
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

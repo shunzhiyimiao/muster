@@ -77,6 +77,7 @@ export default function App() {
         setBoot(b);
         setDrillOn(b.egress_locked);
         refreshAll();
+        api.historyBulk(600).then(chat.hydrate).catch(() => {});
       })
       .catch((e) => setBootErr(String(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -330,9 +331,11 @@ export default function App() {
             {view === "audit" && <AuditCenter rows={audit} chain={chain} onRefresh={refreshAll} />}
             {view === "phome" && (
               <PersonalHome personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
+                allMsgs={chat.msgs} channels={channels}
                 onStream={() => setPicker(true)} onStop={() => setStreamed(false)}
                 goAgent={() => setView("agent")} goChat={goPersonalChat}
-                goChannel={() => goChannel("platform", "platform")} openConvo={() => setConvo("open")} />
+                goChannel={() => goChannel("platform", "platform")} openConvo={() => setConvo("open")}
+                onOpenChannel={(c) => (c.personal ? goPersonalChat() : goChannel(c.team_id, c.id))} />
             )}
             {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat} />}
             {view === "pchat" && personalChannel && (

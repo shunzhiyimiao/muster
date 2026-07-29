@@ -1898,6 +1898,7 @@ dependencies = [
  "muster-provider",
  "muster-route",
  "muster-runner",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",

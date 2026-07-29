@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { T, LV } from "../theme";
 import { Card, ChipDd, IBtn, RouteTag, Tag } from "../ui";
-import { AgentStats, HomeStats, fmtBytes, fmtDate } from "../api";
+import { AgentStats, Channel, HomeStats, fmtBytes, fmtDate } from "../api";
 import { Msg } from "../chat";
 import { MEMO } from "../data";
 
@@ -14,23 +14,29 @@ export function PersonalHome({
   agent,
   home,
   streamed,
+  allMsgs,
+  channels,
   onStream,
   onStop,
   goAgent,
   goChat,
   goChannel,
   openConvo,
+  onOpenChannel,
 }: {
   personalMsgs: Msg[];
   agent: AgentStats | null;
   home: HomeStats | null;
   streamed: boolean;
+  allMsgs: Record<string, Msg[]>;
+  channels: Channel[];
   onStream: () => void;
   onStop: () => void;
   goAgent: () => void;
   goChat: () => void;
   goChannel: () => void;
   openConvo: () => void;
+  onOpenChannel: (c: Channel) => void;
 }) {
   const lastUser = [...personalMsgs].reverse().find((m) => m.role === "user");
   const lastAgent = [...personalMsgs].reverse().find((m) => m.role === "agent" && m.text);
@@ -96,15 +102,43 @@ export function PersonalHome({
           </div>
         </Card>
 
-        {/* 近期对话(持久化 C1 落地前为诚实空态) */}
-        <Card className="px-5 pt-4 pb-4">
+        {/* 近期对话(C1 持久化,真实数据) */}
+        <Card className="px-5 pt-4 pb-2">
           <div className="flex items-center">
             <b className="text-[15px]">近期对话</b>
-            <Tag style={{ marginLeft: 8 }}>C1 持久化后展示</Tag>
+            <span className="ml-auto text-[10.5px]" style={{ color: T.faint }}>C1 · 重启不丢</span>
           </div>
-          <div className="text-xs mt-3 leading-relaxed" style={{ color: T.sub }}>
-            会话历史将在 SQLite 持久化(总规划 P1-05 / 细分 C1)落地后出现在这里;当前会话仅存在于本次运行的内存中。
-          </div>
+          {(() => {
+            const rows = channels
+              .map((c) => {
+                const list = allMsgs[c.id] ?? [];
+                const last = list[list.length - 1];
+                return last ? { c, count: list.length, last } : null;
+              })
+              .filter((x): x is { c: Channel; count: number; last: Msg } => x !== null)
+              .sort((a, b) => (b.last.ts ?? 0) - (a.last.ts ?? 0))
+              .slice(0, 5);
+            if (rows.length === 0)
+              return <div className="py-4 text-xs" style={{ color: T.sub }}>还没有对话记录。</div>;
+            return rows.map(({ c, count, last }) => (
+              <button key={c.id} onClick={() => onOpenChannel(c)} className="w-full flex items-center gap-3 py-2.5 text-left"
+                style={{ borderTop: `1px solid ${T.line}` }}>
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: T.soft, color: "#5A5E70" }}>
+                  <MessageSquare size={14} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold">{c.personal ? "与小七的私有会话" : `#${c.name}`}</div>
+                  <div className="text-[11px] mt-0.5 truncate" style={{ color: T.sub }}>
+                    {count} 条 · {last.text.replace(/\n/g, " ").slice(0, 42)}
+                  </div>
+                </div>
+                <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                  {last.ts && <span className="text-[10px]" style={{ color: T.faint }}>{fmtDate(last.ts)}</span>}
+                  <Tag tone={c.level === "open" ? undefined : c.level === "restricted" ? "red" : "amb"}>{c.level}</Tag>
+                </span>
+              </button>
+            ));
+          })()}
         </Card>
       </div>
 
