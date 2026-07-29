@@ -51,7 +51,9 @@ impl DowngradeReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+// Deserialize:A9 读路径需要(route.refuse 事件内嵌 RoutePlan),非破坏性,
+// 与 DowngradeReason 补读的先例一致。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Downgrade {
     /// 被拦下的目标(用户点名或默认值指向的云端 provider),None = 无明确目标、
     /// 仅密级/策略排除了云端类。
@@ -60,7 +62,7 @@ pub struct Downgrade {
 }
 
 /// 决策结果:可序列化,原样进审计(E4)与消息徽章(D6)。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct RoutePlan {
     pub effective: Sensitivity,
     /// 促成有效密级的标签来源(为什么是这个级别)。

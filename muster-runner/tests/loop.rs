@@ -83,7 +83,7 @@ async fn tool_loop_end_to_end_with_audit_chain() {
 }
 
 #[tokio::test]
-async fn restricted_with_cloud_only_is_refused_and_leaves_no_run_events() {
+async fn restricted_with_cloud_only_is_refused_and_audited() {
     let ws = workspace();
     let mock = MockProvider::cloud("mock-k").with_text("不应被调用");
     let router = Router::new(
@@ -104,8 +104,14 @@ async fn restricted_with_cloud_only_is_refused_and_leaves_no_run_events() {
     .expect_err("restricted + 仅云端必须拒绝");
 
     assert!(matches!(err, RunnerError::Refused(_)), "{err:?}");
-    // 已知缺口(lib.rs 登记):拒绝不落审计,因此零事件——这里锁死该行为,
-    // 未来补 route.refuse 时此断言应当反转。
+    // E4:拒绝也是证据——恰好一条 route.refuse,分类口径正确,哈希链完整。
     let store = audit.lock().unwrap();
-    assert!(recent_events(store.conn(), 10).unwrap().is_empty());
+    let events = recent_events(store.conn(), 10).unwrap();
+    assert_eq!(events.len(), 1);
+    let e = &events[0];
+    assert_eq!(e.payload["event_type"].as_str(), Some("route.refuse"));
+    assert_eq!(e.payload["class"].as_str(), Some("refused:no_local_provider"));
+    assert_eq!(e.run_id.as_deref(), Some("RUN-T2"));
+    assert!(e.payload["reason"].as_str().unwrap_or("").contains("绝不升云"));
+    assert_eq!(store.verify_chain().unwrap().unwrap(), 1);
 }

@@ -12,6 +12,7 @@
 |---|---|---|
 | 第 3 幕 会话锁定置灰 | 「会话曾引用 restricted 资源」+ 肇因 | `SQL_SESSION_LOCK`(`session_lock`,取该 session 最近一次抬升) |
 | 第 7 幕 徽章悬浮 | 「数据密级为 restricted:已强制本地执行…」 | `SQL_DOWNGRADES` + `DowngradeReason::text_zh()`(`downgrades_zh`) |
+| 第 7 幕 红色拒绝态 | 「本地不可用,fail-closed 拒绝」+ 逐落点失败轨迹 | `route.refuse` 事件(class + reason + attempts) |
 | 第 8 幕 演习报告 | 外发字节数 **0 B**、本地/云端调用数 | `SQL_DRILL_REPORT`(`drill_report`,fail-closed:任何 `unmetered` 判不达标) |
 | 工牌页三宫格 | 待审批 **1 项 → 0 项** | `SQL_PENDING_APPROVALS`(`pending_approvals`) |
 | Capsule 锻造入口 | RUN-2231 完整事件链 + ReplayRefs | `SQL_RUN_CHAIN`(`run_chain`) |
@@ -31,9 +32,11 @@
 
 `run.start`(携带 **ReplayRefs**,见下) / `run.finish` / `model.call`
 (**外发记账唯一来源**,A2 传输层计量) / `route.decide`(记依据:有效密级
-+促成来源+策略版本+DowngradeReason) / `approval.request`(记「申请能力 vs
-工牌能力」差值) / `approval.decision` / `badge.update` / `policy.update` /
-`session.lock.raise`(E3 棘轮抬升,记污染发生的**瞬间**) /
++促成来源+策略版本+DowngradeReason) / `route.refuse`(**拒绝也是证据**:
+分类 refused:\*/exhausted + 完整理由 + Exhausted 时内嵌决策与逐落点失败,
+构造经 `EventBody::route_refuse` 单一出处) / `approval.request`(记「申请
+能力 vs 工牌能力」差值) / `approval.decision` / `badge.update` /
+`policy.update` / `session.lock.raise`(E3 棘轮抬升,记污染发生的**瞬间**) /
 `drill.start` / `drill.end`。
 
 v1.x 预留(占位注释在 `lib.rs`,零成本):`capsule.forge/verify/adopt`、

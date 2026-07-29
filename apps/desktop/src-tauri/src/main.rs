@@ -499,6 +499,23 @@ async fn send_message(
     let resolution = match router.resolve(&route_req).await {
         Ok(r) => r,
         Err(e) => {
+            // 拒绝也是证据:route.refuse 落审计(E4),写失败按命令失败处理。
+            let (body, label, locality) = EventBody::route_refuse(&e, POLICY_VERSION);
+            audit
+                .lock()
+                .unwrap()
+                .append(NewEvent {
+                    ts_ms: None,
+                    actor: Actor::agent(AGENT_BADGE),
+                    scope: Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
+                    run_id: Some(run_id.clone()),
+                    session_id: Some(session_id.clone()),
+                    policy_version: Some(POLICY_VERSION.into()),
+                    label,
+                    locality,
+                    body,
+                })
+                .map_err(|er| format!("审计写入失败:{er}"))?;
             let msg = e.to_string();
             store.lock().unwrap().insert(
                 &channel.id,

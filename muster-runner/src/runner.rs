@@ -155,14 +155,34 @@ pub async fn run_task(
     let tools = ToolSet::new(&spec.workspace).map_err(|e| RunnerError::Workspace(e.to_string()))?;
     let started = Instant::now();
 
-    // ---- 路由(一次;拒绝目前不落审计,缺口已在 lib.rs 登记)
+    // ---- 路由(一次)。拒绝也是证据:落 route.refuse(E4),写失败按审计失败处理。
     let route_req = RouteRequest {
         sources: &spec.sources,
         requested_provider: spec.requested_provider.as_deref(),
         default_provider: spec.default_provider.as_deref(),
     };
-    let resolution =
-        router.resolve(&route_req).await.map_err(|e| RunnerError::Refused(e.to_string()))?;
+    let resolution = match router.resolve(&route_req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let (body, label, locality) = EventBody::route_refuse(&e, cfg.policy_version.clone());
+            audit
+                .lock()
+                .unwrap()
+                .append(NewEvent {
+                    ts_ms: None,
+                    actor: Actor::agent(&cfg.badge),
+                    scope: Scope { team: spec.team.clone(), channel: spec.channel.clone() },
+                    run_id: Some(spec.run_id.clone()),
+                    session_id: spec.session_id.clone(),
+                    policy_version: Some(cfg.policy_version.clone()),
+                    label,
+                    locality,
+                    body,
+                })
+                .map_err(|er| RunnerError::Audit(er.to_string()))?;
+            return Err(RunnerError::Refused(e.to_string()));
+        }
+    };
     let plan = resolution.plan.clone();
     let meta = resolution.provider.metadata().clone();
     on_event(RunnerEvent::Planned {

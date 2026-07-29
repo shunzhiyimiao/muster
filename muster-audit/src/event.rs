@@ -203,6 +203,22 @@ pub enum EventBody {
         turn: u64,
     },
 
+    /// 路由拒绝——fail-closed 的另一半证据:不仅要能回答"为什么落在这里",
+    /// 也要能回答"为什么没有落点"。第 7 幕红色拒绝态与合规叙事的拒绝计数由此出。
+    /// `reason` 为策略/基础设施文本(RouteError Display),不含用户正文,可入表。
+    #[serde(rename = "route.refuse")]
+    RouteRefuse {
+        /// 分类:`refused:unknown_provider` / `refused:no_local_provider` /
+        /// `refused:no_provider` / `exhausted`(链上探活全败)。
+        class: String,
+        reason: String,
+        /// Exhausted 时:已完成的决策(有效密级/促成来源/降落带全依据)。
+        plan: Option<muster_route::RoutePlan>,
+        /// Exhausted 时:逐落点失败摘要。
+        attempts: Vec<String>,
+        policy_version: String,
+    },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -228,8 +244,50 @@ impl EventBody {
             EventBody::BadgeUpdate { .. } => "badge.update",
             EventBody::PolicyUpdate { .. } => "policy.update",
             EventBody::SessionLockRaise { .. } => "session.lock.raise",
+            EventBody::RouteRefuse { .. } => "route.refuse",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
+        }
+    }
+
+    /// 从路由错误构造 `route.refuse` 事件体,并给出信封 label/locality
+    /// (Exhausted 有完整决策可回填;Refused 属决策前拒绝,信封留空)。
+    /// 单一出处:runner 与桌面壳共用,拒绝分类口径不许各写各的。
+    pub fn route_refuse(
+        err: &muster_route::RouteError,
+        policy_version: impl Into<String>,
+    ) -> (Self, Option<muster_route::Sensitivity>, Option<Locality>) {
+        use muster_route::{RouteError, RouteRefusal};
+        match err {
+            RouteError::Refused(r) => {
+                let class = match r {
+                    RouteRefusal::UnknownProvider { .. } => "refused:unknown_provider",
+                    RouteRefusal::NoLocalProvider { .. } => "refused:no_local_provider",
+                    RouteRefusal::NoProviderConfigured => "refused:no_provider",
+                };
+                (
+                    EventBody::RouteRefuse {
+                        class: class.into(),
+                        reason: err.to_string(),
+                        plan: None,
+                        attempts: Vec::new(),
+                        policy_version: policy_version.into(),
+                    },
+                    None,
+                    None,
+                )
+            }
+            RouteError::Exhausted { plan, attempts } => (
+                EventBody::RouteRefuse {
+                    class: "exhausted".into(),
+                    reason: err.to_string(),
+                    plan: Some(plan.clone()),
+                    attempts: attempts.iter().map(|a| format!("{a:?}")).collect(),
+                    policy_version: policy_version.into(),
+                },
+                Some(plan.effective),
+                Some(plan.primary_locality),
+            ),
         }
     }
 }
