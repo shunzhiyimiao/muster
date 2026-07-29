@@ -462,6 +462,10 @@ button {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.composer .task-btn {
+  background: var(--teal-soft);
+  color: var(--teal);
+}
 
 /* ---------------- 右栏 ---------------- */
 .right {

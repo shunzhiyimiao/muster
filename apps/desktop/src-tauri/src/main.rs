@@ -22,6 +22,7 @@ use muster_audit::{
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
 use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
+use muster_runner::{run_task, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 
 const POLICY_VERSION: &str = "policy-v1";
 const AGENT_BADGE: &str = "A-007";
@@ -448,6 +449,136 @@ async fn send_message(
     Ok(run_id)
 }
 
+/// B1 任务模式:在真实工作区上跑工具循环(muster-runner),事件转发给
+/// 与聊天模式相同的前端通道——工具活动以文本行形式流进任务卡。
+#[tauri::command]
+async fn run_workspace_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    channel_id: String,
+    text: String,
+) -> Result<String, String> {
+    let (router, audit, run_seq) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
+        (b.router.clone(), b.audit.clone(), b.run_seq.clone())
+    };
+    let channel = demo_channels()
+        .into_iter()
+        .find(|c| c.id == channel_id)
+        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
+    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+
+    let spec = TaskSpec {
+        run_id: run_id.clone(),
+        session_id: Some(format!("session:{}", channel.id)),
+        team: Some(channel.team.clone()),
+        channel: Some(channel.id.clone()),
+        sources: label_sources(&channel.id),
+        requested_provider: None,
+        default_provider: Some("kimi".into()),
+        prompt: text,
+        workspace: workspace.into(),
+    };
+    let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
+
+    let a = app.clone();
+    let rid = run_id.clone();
+    let chan = channel.id.clone();
+    let result = run_task(&router, &audit, &cfg, spec, move |ev| match ev {
+        RunnerEvent::Planned { plan, provider_id, provider_name, model, locality, attempts, .. } => {
+            a.emit(
+                "task-start",
+                StartPayload {
+                    run_id: rid.clone(),
+                    channel_id: chan.clone(),
+                    plan,
+                    provider: ProviderCard {
+                        id: provider_id,
+                        display_name: provider_name,
+                        model,
+                        locality,
+                    },
+                    attempts,
+                },
+            )
+            .ok();
+        }
+        RunnerEvent::TextDelta { text } => {
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text }).ok();
+        }
+        RunnerEvent::ToolCall { name, arguments, .. } => {
+            a.emit(
+                "task-delta",
+                DeltaPayload { run_id: rid.clone(), text: format!("\n🔧 {name} {arguments}\n") },
+            )
+            .ok();
+        }
+        RunnerEvent::ToolResult { summary, .. } => {
+            a.emit(
+                "task-delta",
+                DeltaPayload { run_id: rid.clone(), text: format!("   ↳ {summary}\n") },
+            )
+            .ok();
+        }
+        RunnerEvent::Notice { text } => {
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: format!("\n⚠️ {text}\n") })
+                .ok();
+        }
+        RunnerEvent::Finished { outcome, latency_ms, turns, prompt_tokens, completion_tokens } => {
+            if outcome == "success" {
+                a.emit(
+                    "task-done",
+                    DonePayload {
+                        run_id: rid.clone(),
+                        latency_ms,
+                        finish: format!("{turns} 回合"),
+                        prompt_tokens: Some(prompt_tokens),
+                        completion_tokens: Some(completion_tokens),
+                        chars: 0,
+                    },
+                )
+                .ok();
+            } else {
+                a.emit(
+                    "task-failed",
+                    FailPayload {
+                        run_id: rid.clone(),
+                        channel_id: chan.clone(),
+                        message: format!("任务未完成:{outcome}"),
+                    },
+                )
+                .ok();
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(s) => Ok(s.run_id),
+        // Model 错误的 UI 反馈已由 Finished(failed:stream) 事件完成,不重复发。
+        Err(RunnerError::Model(_)) => Ok(run_id),
+        Err(RunnerError::Refused(msg)) => {
+            app.emit(
+                "task-refused",
+                FailPayload { run_id: run_id.clone(), channel_id: channel.id, message: msg },
+            )
+            .ok();
+            Ok(run_id)
+        }
+        Err(e) => {
+            app.emit(
+                "task-failed",
+                FailPayload { run_id: run_id.clone(), channel_id: channel.id, message: e.to_string() },
+            )
+            .ok();
+            Ok(run_id)
+        }
+    }
+}
+
 #[tauri::command]
 fn audit_tail(state: State<'_, AppState>, limit: u64) -> Result<Vec<AuditRow>, String> {
     let guard = state.0.lock().unwrap();
@@ -565,6 +696,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             send_message,
+            run_workspace_task,
             audit_tail,
             verify_chain,
             toggle_drill

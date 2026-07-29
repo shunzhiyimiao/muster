@@ -24,7 +24,7 @@
 | P0-08 TaskEvent 与错误协议 | A9(证据侧已就绪) | 半:Runner 侧 TaskEvent 未定 |
 | 风险 #1"本地模型 Tool Call 能力不足" | A7 muster-eval | 测量仪已备,待真机(需 API key / 本地 Ollama) |
 | §8 安全设计 + P5-05/07 审批审计 | E1 E2 E3 + A9 | ✅ 提前拉动,比规划的二值 Offline Mode 更细(密级/棘轮/哈希链) |
-| P1-02/03 Codex Client + Local Task Manager | B1 | 未动 |
+| P1-02/03 Codex Client + Local Task Manager | B1 | 半:muster-runner 工具循环 + Capsule-ready 审计链已落地(桌面壳"任务模式"),Codex JSON-RPC client 未接(待网关) |
 | P1-04 Git Worktree Manager | — | 未动 |
 | P1-05 SQLite 本地存储 | C1 | 未动 |
 | P4 工作流共享 | 能力库 / Capsule | 未动(A9 已留 capsule.* 事件占位) |

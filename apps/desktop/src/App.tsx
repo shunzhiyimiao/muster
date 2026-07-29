@@ -239,7 +239,7 @@ export default function App() {
       .catch(() => {});
   };
 
-  const send = () => {
+  const send = (asTask = false) => {
     const text = draft.trim();
     if (!text || !boot || busy[active]) return;
     setDraft("");
@@ -249,13 +249,13 @@ export default function App() {
       ...prev,
       [active]: [
         ...(prev[active] ?? []),
-        { key: userKey, role: "user", text, status: "done" },
+        { key: userKey, role: "user", text: asTask ? `▶ 任务:${text}` : text, status: "done" },
         { key: agentKey, role: "agent", text: "", status: "streaming" },
       ],
     }));
     pending.current[active] = [...(pending.current[active] ?? []), agentKey];
     setBusy((b) => ({ ...b, [active]: true }));
-    invoke<string>("send_message", { channelId: active, text }).catch((e) => {
+    invoke<string>(asTask ? "run_workspace_task" : "send_message", { channelId: active, text }).catch((e) => {
       setMsgs((prev) => ({
         ...prev,
         [active]: (prev[active] ?? []).map((m) =>
@@ -417,7 +417,15 @@ export default function App() {
               }
             }}
           />
-          <button onClick={send} disabled={busy[active] || !draft.trim()}>
+          <button
+            className="task-btn"
+            onClick={() => send(true)}
+            disabled={busy[active] || !draft.trim()}
+            title="B1 任务模式:在工作区 ~/muster 上运行只读工具循环(list_dir/read_file/grep)"
+          >
+            ▶ 任务
+          </button>
+          <button onClick={() => send()} disabled={busy[active] || !draft.trim()}>
             发送
           </button>
         </footer>

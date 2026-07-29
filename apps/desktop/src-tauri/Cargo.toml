@@ -20,3 +20,4 @@ futures = "0.3"
 muster-provider = { path = "../../../muster-provider" }
 muster-route = { path = "../../../muster-route" }
 muster-audit = { path = "../../../muster-audit" }
+muster-runner = { path = "../../../muster-runner" }

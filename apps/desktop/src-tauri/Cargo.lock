@@ -1897,6 +1897,7 @@ dependencies = [
  "muster-audit",
  "muster-provider",
  "muster-route",
+ "muster-runner",
  "serde",
  "serde_json",
  "tauri",
@@ -1924,6 +1925,19 @@ name = "muster-route"
 version = "0.1.0"
 dependencies = [
  "muster-provider",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "muster-runner"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "muster-audit",
+ "muster-provider",
+ "muster-route",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -12,9 +12,11 @@
 - muster-route：E1 密级/E2 决策 decide() 纯函数/E3 会话棘轮
 - muster-audit：append-only + SHA-256 链，"8幕→SQL"见其 README
 - muster-eval：A7 评测，20 固定样本，A1 提示词改动后必须重跑
+- muster-runner：B1 任务执行器，只读工具圈禁工作区，重试属 Runner 不属路由
+- apps/desktop：点将台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
 
 ## 约定
-- 动手前后都跑 cargo test（当前基线 76 项全绿）
+- 动手前后都跑 cargo test（当前基线 80 项全绿）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
 - 总体规划在 docs/（16 周 P0–P6，任务号 P0-01…P6-08）；A2/A7/E1–E3/A9 等是其细化分解；codex fork 分仓在 ../muster-codex
