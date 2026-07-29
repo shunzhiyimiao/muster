@@ -17,8 +17,9 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 
 use muster_audit::{
-    day_throughput, distinct_runs, downgrades_zh, drill_report, pending_approvals, recent_events,
-    recent_events_of, Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
+    actor_first_seen, day_throughput, distinct_runs, downgrades_zh, drill_report,
+    pending_approvals, recent_events, recent_events_of, Actor, AuditStore, ContentHash,
+    EgressBytes, EventBody, NewEvent, Scope,
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
 use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
@@ -34,54 +35,77 @@ const SYSTEM_PROMPT: &str =
 #[derive(Clone, Serialize)]
 struct ChannelInfo {
     id: String,
+    /// 频道显示名(v4:# 前缀由前端加)。
     name: String,
+    team_id: String,
     team: String,
     level: Sensitivity,
     /// 徽章悬浮:密级从哪来(与 label_sources 保持一致)。
     level_note: String,
     desc: String,
+    /// 个人空间伪频道:不出现在团队树,只服务「我的工作台」。
+    personal: bool,
 }
 
+fn ch(
+    id: &str,
+    name: &str,
+    team_id: &str,
+    team: &str,
+    level: Sensitivity,
+    level_note: &str,
+    desc: &str,
+) -> ChannelInfo {
+    ChannelInfo {
+        id: id.into(),
+        name: name.into(),
+        team_id: team_id.into(),
+        team: team.into(),
+        level,
+        level_note: level_note.into(),
+        desc: desc.into(),
+        personal: false,
+    }
+}
+
+/// v4 编制:三团队六频道 + 个人空间。密级与 label_sources 一一对应。
 fn demo_channels() -> Vec<ChannelInfo> {
-    vec![
-        ChannelInfo {
-            id: "general".into(),
-            name: "平台组·大厅".into(),
-            team: "平台组".into(),
-            level: Sensitivity::Open,
-            level_note: "未贴标签,默认 open(产品决策:未标注可走云端)".into(),
-            desc: "日常讨论,允许云端模型".into(),
-        },
-        ChannelInfo {
-            id: "platform-internal".into(),
-            name: "平台组·内部".into(),
-            team: "平台组".into(),
-            level: Sensitivity::Internal,
-            level_note: "频道标签 internal(cloud_max=internal,恰在云端许可上限)".into(),
-            desc: "内部事项,internal ≤ cloud_max,仍可云端".into(),
-        },
-        ChannelInfo {
-            id: "pay-core".into(),
-            name: "支付组·核心库".into(),
-            team: "支付组".into(),
-            level: Sensitivity::Restricted,
-            level_note: "仓库标签 restricted(repo:pay-core)——硬编码不变量:永不上云".into(),
-            desc: "restricted:仅本地执行;本地不可用即拒绝(fail-closed)".into(),
-        },
-    ]
+    let mut v = vec![
+        ch("general", "general", "platform", "平台组", Sensitivity::Open,
+            "未贴标签,默认 open(产品决策:未标注可走云端)", "公开讨论,允许云端模型"),
+        ch("platform", "platform", "platform", "平台组", Sensitivity::Internal,
+            "频道标签 internal(恰在 cloud_max 上限,仍可云端)", "平台组主频道"),
+        ch("code-review", "code-review", "platform", "平台组", Sensitivity::Internal,
+            "频道标签 internal", "评审与合入讨论"),
+        ch("payments", "payments", "pay", "支付组", Sensitivity::Internal,
+            "频道标签 internal", "支付业务频道"),
+        ch("release-train", "release-train", "pay", "支付组", Sensitivity::Internal,
+            "频道标签 internal", "发布列车"),
+        ch("sec-ops", "sec-ops", "sec", "安全组", Sensitivity::Restricted,
+            "频道标签 restricted——硬编码不变量:永不上云;本地不可用即拒绝", "安全运营(仅本地)"),
+    ];
+    v.push(ChannelInfo {
+        id: "personal".into(),
+        name: "私有会话".into(),
+        team_id: "personal".into(),
+        team: "个人".into(),
+        level: Sensitivity::Open,
+        level_note: "个人空间默认 open;引用 restricted 资源会被会话棘轮抬升(E3)".into(),
+        desc: "与小七的私有会话,默认不进团队".into(),
+        personal: true,
+    });
+    v
 }
 
 fn label_sources(channel_id: &str) -> Vec<LabelSource> {
+    let channel_internal =
+        |id: &str| vec![LabelSource::new(LabelOrigin::Channel, Sensitivity::Internal, format!("channel:{id}"))];
     match channel_id {
-        "platform-internal" => vec![LabelSource::new(
+        "platform" | "code-review" | "payments" | "release-train" => channel_internal(channel_id),
+        "sec-ops" => vec![LabelSource::new(
             LabelOrigin::Channel,
-            Sensitivity::Internal,
-            "channel:平台组·内部",
-        )],
-        "pay-core" => vec![LabelSource::new(
-            LabelOrigin::Repo,
             Sensitivity::Restricted,
-            "repo:pay-core",
+            "channel:sec-ops",
         )],
         _ => vec![],
     }
@@ -809,6 +833,40 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
     }
 }
 
+/// Agent 档案页统计:入职(首条审计事件)/ 累计 Runs / 累计外发 / 活动热力。
+#[derive(Serialize)]
+struct AgentStats {
+    badge: String,
+    first_seen_ms: Option<u64>,
+    hired_days: u64,
+    total_runs: u64,
+    total_egress_bytes: u64,
+    /// 近 48 周逐日活动(model.call 数),供贡献热力图。
+    heat: Vec<DayBar>,
+}
+
+#[tauri::command]
+fn agent_stats(state: State<'_, AppState>) -> Result<AgentStats, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    let conn = store.conn();
+    let now = now_ms();
+    let first = actor_first_seen(conn, AGENT_BADGE).map_err(|e| e.to_string())?;
+    Ok(AgentStats {
+        badge: AGENT_BADGE.into(),
+        first_seen_ms: first,
+        hired_days: first.map(|f| (now.saturating_sub(f)) / 86_400_000 + 1).unwrap_or(0),
+        total_runs: distinct_runs(conn, 0, now).map_err(|e| e.to_string())?,
+        total_egress_bytes: drill_report(conn, 0, now).map_err(|e| e.to_string())?.egress_bytes,
+        heat: day_throughput(conn, 336)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|d| DayBar { date: d.date, weekday: d.weekday, local: d.local, cloud: d.cloud })
+            .collect(),
+    })
+}
+
 #[tauri::command]
 fn verify_chain(state: State<'_, AppState>) -> Result<ChainStatus, String> {
     let guard = state.0.lock().unwrap();
@@ -830,7 +888,8 @@ fn main() {
             audit_tail,
             verify_chain,
             toggle_drill,
-            home_stats
+            home_stats,
+            agent_stats
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

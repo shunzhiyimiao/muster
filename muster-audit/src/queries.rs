@@ -193,6 +193,15 @@ pub fn recent_events_of(
     Ok(out)
 }
 
+/// Agent 档案页「入职时间」:该 actor 的首条审计事件时刻(ULID 即时序)。
+pub const SQL_ACTOR_FIRST_SEEN: &str =
+    "SELECT MIN(ts_ms) FROM audit_event WHERE actor_id = ?1";
+
+pub fn actor_first_seen(conn: &Connection, actor_id: &str) -> Result<Option<u64>, StoreError> {
+    let n: Option<i64> = conn.query_row(SQL_ACTOR_FIRST_SEEN, params![actor_id], |r| r.get(0))?;
+    Ok(n.map(|v| v as u64))
+}
+
 /// 首页 KPI:窗口内出现过 `model.call` 的不同 run 数。
 pub const SQL_DISTINCT_RUNS: &str =
     "SELECT COUNT(DISTINCT run_id) FROM audit_event

@@ -1,797 +1,577 @@
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import "./app.css";
+/* Muster 点将台 · v4 壳(双层侧栏 + 个人/团队分离)
+   概念稿:docs/Muster-概念稿-v4.html;真实后端接线处均标注。 */
+import { useEffect, useMemo, useState } from "react";
+import {
+  Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Clock, Hash, Home,
+  LayoutDashboard, Library, LineChart, Link2, Lock, MessageSquare, Network, Puzzle, Search,
+  Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, User, Users, Video, X,
+} from "lucide-react";
+import { T } from "./theme";
+import {
+  api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
+  fmtBytes,
+} from "./api";
+import { useChat, ChatPane } from "./chat";
+import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } from "./ui";
+import { ConsoleHome, AuditCenter } from "./views/Console";
+import { PersonalHome, AgentProfile } from "./views/Personal";
+import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
+import { TEAM_META } from "./data";
 
-type Sensitivity = "open" | "internal" | "restricted";
-
-interface Channel {
-  id: string;
-  name: string;
-  team: string;
-  level: Sensitivity;
-  level_note: string;
-  desc: string;
-}
-interface ProviderCard {
-  id: string;
-  display_name: string;
-  model: string;
-  locality: string;
-}
-interface Bootstrap {
-  channels: Channel[];
-  providers: ProviderCard[];
-  policy_cloud_max: Sensitivity;
-  audit_db: string;
-  egress_locked: boolean;
-}
-interface DrillReportOut {
-  model_calls: number;
-  egress_bytes: number;
-  unmetered_calls: number;
-  local_calls: number;
-  cloud_calls: number;
-  ok: boolean;
-}
-interface DrillStatus {
-  on: boolean;
-  drill_id: string | null;
-  report: DrillReportOut | null;
-}
-interface Decider {
-  origin: string;
-  level: Sensitivity;
-  subject: string;
-}
-interface Plan {
-  effective: Sensitivity;
-  deciders: Decider[];
-  primary: string;
-  primary_locality: string;
-  fallbacks: string[];
-  downgraded: { from: string | null; reason: string } | null;
-  policy_cloud_max: Sensitivity;
-  policy_egress_locked: boolean;
-}
-interface StartPayload {
-  run_id: string;
-  channel_id: string;
-  plan: Plan;
-  provider: ProviderCard;
-  attempts: string[];
-}
-interface DonePayload {
-  run_id: string;
-  latency_ms: number;
-  finish: string;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  chars: number;
-}
-interface FailPayload {
-  run_id: string;
-  channel_id: string;
-  message: string;
-}
-interface AuditRow {
-  event_id: string;
-  ts_ms: number;
-  event_type: string;
-  actor: string;
-  run_id: string | null;
-  channel: string | null;
-  label: string | null;
-  locality: string | null;
-}
-interface ChainStatus {
-  ok: boolean;
-  rows: number;
-  detail: string;
-}
-interface DayBar {
-  date: string;
-  weekday: string;
-  local: number;
-  cloud: number;
-}
-interface DrillLast {
-  ts_ms: number;
-  drill_id: string;
-  egress_bytes: number;
-  unmetered_calls: number;
-  ok: boolean;
-}
-interface DowngradeItem {
-  ts_ms: number;
-  run_id: string | null;
-  text: string;
-}
-interface RunItem {
-  ts_ms: number;
-  run_id: string;
-  outcome: string;
-  duration_ms: number;
-}
-interface HomeStats {
-  runs_week: number;
-  runs_prev_week: number;
-  egress_week_bytes: number;
-  egress_prev_week_bytes: number;
-  unmetered_week: number;
-  cloud_calls_week: number;
-  local_calls_week: number;
-  pending_approvals: number;
-  drill_last: DrillLast | null;
-  throughput: DayBar[];
-  downgrades: DowngradeItem[];
-  recent_runs: RunItem[];
-}
-
-interface Msg {
-  key: string;
-  role: "user" | "agent";
-  text: string;
-  runId?: string;
-  status: "streaming" | "done" | "failed" | "refused";
-}
-
-const DOWNGRADE_ZH: Record<string, string> = {
-  egress_locked: "主权演习进行中:全组织外联已切断,任务强制本地执行",
-  restricted_data: "数据密级为 restricted:已强制本地执行,云端选项不可用",
-  policy_ceiling: "组织策略:该密级不允许云端处理,已路由至本地",
-};
-const ORIGIN_ZH: Record<string, string> = {
-  channel: "频道",
-  repo: "仓库",
-  manual: "手动",
-  session_lock: "会话锁",
-};
-
-const NAV = [
-  { key: "home", label: "首页", enabled: true, hint: "" },
-  { key: "roster", label: "编制管理", enabled: false, hint: "D6" },
-  { key: "channels", label: "频道消息", enabled: true, hint: "" },
-  { key: "meeting", label: "会议室", enabled: false, hint: "v1.x" },
-  { key: "skills", label: "能力库", enabled: false, hint: "P4" },
-  { key: "audit", label: "审计中心", enabled: true, hint: "右栏" },
+const RAIL = [
+  { id: "console", icon: LayoutDashboard, label: "控制台", ok: true },
+  { id: "personal", icon: User, label: "工作", ok: true },
+  { id: "team", icon: Users, label: "团队", ok: true },
+  { id: "setting", icon: Settings, label: "设置", ok: false },
+  { id: "ext", icon: Puzzle, label: "模块扩展", ok: false },
+  { id: "plan", icon: Calendar, label: "计划表", ok: false },
+  { id: "term", icon: Terminal, label: "终端", ok: false },
+  { id: "remote", icon: Network, label: "远程连接", ok: false },
 ];
 
-const WEEKDAY_ZH = ["日", "一", "二", "三", "四", "五", "六"];
-
-function fmtTime(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function fmtDate(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
+const TEAM_ORDER = ["platform", "pay", "sec"];
 
 export default function App() {
+  /* ---- 概念稿交互态 ---- */
+  const [module, setModule] = useState("personal");
+  const [view, setView] = useState("phome");
+  const [team, setTeam] = useState("platform");
+  const [channelId, setChannelId] = useState("platform");
+  const [notice, setNotice] = useState("");
+  const [approved, setApproved] = useState(false);
+  const [modal, setModal] = useState(false);
+  const [introduced, setIntroduced] = useState(false);
+  const [convo, setConvo] = useState<"closed" | "open" | "blocked">("closed");
+  const [fab, setFab] = useState(false);
+  const [fabAsked, setFabAsked] = useState(false);
+  const [trace, setTrace] = useState(false);
+  const [filter, setFilter] = useState("全部");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({ platform: true });
+  const [agentOpen, setAgentOpen] = useState(true);
+  const [picker, setPicker] = useState(false);
+  const [streamed, setStreamed] = useState(false);
+
+  /* ---- 真实后端态 ---- */
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [bootErr, setBootErr] = useState<string | null>(null);
-  const [active, setActive] = useState<string>("general");
-  const [msgs, setMsgs] = useState<Record<string, Msg[]>>({});
-  const [busy, setBusy] = useState<Record<string, boolean>>({});
-  const [lastStart, setLastStart] = useState<StartPayload | null>(null);
-  const [lastDone, setLastDone] = useState<DonePayload | null>(null);
-  const [lastFail, setLastFail] = useState<FailPayload | null>(null);
   const [audit, setAudit] = useState<AuditRow[]>([]);
   const [chain, setChain] = useState<ChainStatus | null>(null);
-  const [draft, setDraft] = useState("");
+  const [home, setHome] = useState<HomeStats | null>(null);
+  const [agent, setAgent] = useState<AgentStats | null>(null);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
   const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
-  const [view, setView] = useState<"home" | "channels">("home");
-  const [home, setHome] = useState<HomeStats | null>(null);
 
-  // run_id → { channelId, msgKey };task-start 早于 invoke 返回,用挂起队列衔接。
-  const runIndex = useRef<Record<string, { channelId: string; msgKey: string }>>({});
-  const pending = useRef<Record<string, string[]>>({});
-  const scroller = useRef<HTMLDivElement | null>(null);
-
-  const refreshAudit = () => {
-    invoke<AuditRow[]>("audit_tail", { limit: 14 }).then(setAudit).catch(() => {});
-    invoke<ChainStatus>("verify_chain").then(setChain).catch(() => {});
-    invoke<HomeStats>("home_stats").then(setHome).catch(() => {});
+  const refreshAll = () => {
+    api.auditTail(50).then(setAudit).catch(() => {});
+    api.verifyChain().then(setChain).catch(() => {});
+    api.homeStats().then(setHome).catch(() => {});
+    api.agentStats().then(setAgent).catch(() => {});
   };
+  const chat = useChat(refreshAll);
 
   useEffect(() => {
-    invoke<Bootstrap>("bootstrap")
+    api
+      .bootstrap()
       .then((b) => {
         setBoot(b);
         setDrillOn(b.egress_locked);
-        refreshAudit();
+        refreshAll();
       })
       .catch((e) => setBootErr(String(e)));
-
-    const attach = (runId: string, channelId: string): string | undefined => {
-      const q = pending.current[channelId] ?? [];
-      const msgKey = q.shift();
-      pending.current[channelId] = q;
-      if (msgKey) runIndex.current[runId] = { channelId, msgKey };
-      return msgKey;
-    };
-    const patch = (runId: string, fn: (m: Msg) => Msg) => {
-      const idx = runIndex.current[runId];
-      if (!idx) return;
-      setMsgs((prev) => ({
-        ...prev,
-        [idx.channelId]: (prev[idx.channelId] ?? []).map((m) => (m.key === idx.msgKey ? fn(m) : m)),
-      }));
-    };
-
-    const unlisteners = [
-      listen<StartPayload>("task-start", (e) => {
-        attach(e.payload.run_id, e.payload.channel_id);
-        patch(e.payload.run_id, (m) => ({ ...m, runId: e.payload.run_id }));
-        setLastStart(e.payload);
-        setLastDone(null);
-        setLastFail(null);
-      }),
-      listen<{ run_id: string; text: string }>("task-delta", (e) => {
-        patch(e.payload.run_id, (m) => ({ ...m, text: m.text + e.payload.text }));
-      }),
-      listen<DonePayload>("task-done", (e) => {
-        patch(e.payload.run_id, (m) => ({ ...m, status: "done" }));
-        const idx = runIndex.current[e.payload.run_id];
-        if (idx) setBusy((b) => ({ ...b, [idx.channelId]: false }));
-        setLastDone(e.payload);
-        refreshAudit();
-      }),
-      listen<FailPayload>("task-refused", (e) => {
-        const key = attach(e.payload.run_id, e.payload.channel_id);
-        if (key)
-          patch(e.payload.run_id, (m) => ({
-            ...m,
-            status: "refused",
-            text: `⛔ 路由拒绝(fail-closed,绝不静默升云)\n${e.payload.message}`,
-          }));
-        setBusy((b) => ({ ...b, [e.payload.channel_id]: false }));
-        setLastFail(e.payload);
-        setLastStart(null);
-        setLastDone(null);
-      }),
-      listen<FailPayload>("task-failed", (e) => {
-        patch(e.payload.run_id, (m) => ({
-          ...m,
-          status: "failed",
-          text: m.text + `\n\n⚠️ ${e.payload.message}`,
-        }));
-        setBusy((b) => ({ ...b, [e.payload.channel_id]: false }));
-        setLastFail(e.payload);
-        refreshAudit();
-      }),
-    ];
-    return () => {
-      unlisteners.forEach((p) => p.then((un) => un()));
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
-  }, [msgs, active]);
+  const channels = boot?.channels ?? [];
+  const teamChannels = useMemo(() => channels.filter((c) => !c.personal), [channels]);
+  const personalChannel = useMemo(() => channels.find((c) => c.personal) ?? null, [channels]);
+  const activeChannel = teamChannels.find((c) => c.id === channelId) ?? null;
+  const teams = TEAM_ORDER.map((tid) => ({
+    id: tid,
+    name: teamChannels.find((c) => c.team_id === tid)?.team ?? tid,
+    channels: teamChannels.filter((c) => c.team_id === tid),
+  })).filter((t) => t.channels.length > 0);
 
+  const soft = (label: string) =>
+    setNotice(`「${label}」为完整形态占位模块,当前聚焦 控制台 / 个人工作台 / 团队协作`);
+
+  const goRail = (r: (typeof RAIL)[number]) => {
+    if (!r.ok) {
+      soft(r.label);
+      return;
+    }
+    setNotice("");
+    setModule(r.id);
+    setView(r.id === "console" ? "home" : r.id === "personal" ? "phome" : "channel");
+  };
+  const goChannel = (tid: string, cid: string) => {
+    setTeam(tid);
+    setChannelId(cid);
+    setModule("team");
+    setView("channel");
+    setNotice("");
+    setExpanded((e) => ({ ...e, [tid]: true }));
+  };
+  const goRoster = (tid: string) => {
+    setTeam(tid);
+    setModule("team");
+    setView("roster");
+    setNotice("");
+    setFilter("全部");
+    setExpanded((e) => ({ ...e, [tid]: true }));
+  };
+  const goPersonalChat = () => {
+    setModule("personal");
+    setView("pchat");
+    setNotice("");
+  };
+
+  /* E6 演习:真实开关(路由层 set_egress_locked + drill.start/end + SQL 报告) */
   const toggleDrill = () => {
-    invoke<DrillStatus>("toggle_drill", { on: !drillOn })
+    api
+      .toggleDrill(!drillOn)
       .then((s) => {
         setDrillOn(s.on);
         setDrillId(s.drill_id);
         setDrillReport(s.on ? null : s.report);
-        refreshAudit();
+        refreshAll();
       })
       .catch(() => {});
   };
 
-  const send = (asTask = false) => {
-    const text = draft.trim();
-    if (!text || !boot || busy[active]) return;
-    setDraft("");
-    const userKey = `u-${Date.now()}`;
-    const agentKey = `a-${Date.now()}`;
-    setMsgs((prev) => ({
-      ...prev,
-      [active]: [
-        ...(prev[active] ?? []),
-        { key: userKey, role: "user", text: asTask ? `▶ 任务:${text}` : text, status: "done" },
-        { key: agentKey, role: "agent", text: "", status: "streaming" },
-      ],
-    }));
-    pending.current[active] = [...(pending.current[active] ?? []), agentKey];
-    setBusy((b) => ({ ...b, [active]: true }));
-    invoke<string>(asTask ? "run_workspace_task" : "send_message", { channelId: active, text }).catch((e) => {
-      setMsgs((prev) => ({
-        ...prev,
-        [active]: (prev[active] ?? []).map((m) =>
-          m.key === agentKey ? { ...m, status: "failed", text: `⚠️ ${e}` } : m
-        ),
-      }));
-      setBusy((b) => ({ ...b, [active]: false }));
-    });
-  };
-
   if (bootErr) {
     return (
-      <div className="shell boot-err">
-        <div>
-          <h2>启动失败(fail-fast,按设计炸响)</h2>
-          <pre>{bootErr}</pre>
-          <p>常见原因:环境变量 KIMI_API_KEY 未设置。请在启动终端 export 后重开应用。</p>
-        </div>
+      <div className="w-full h-screen flex items-center justify-center" style={{ background: T.canvas }}>
+        <Card className="p-6 max-w-lg">
+          <b className="text-sm">启动失败(fail-fast,按设计炸响)</b>
+          <pre className="mt-3 p-3 rounded-xl text-[11px] whitespace-pre-wrap" style={{ background: T.redSoft, color: T.red }}>{bootErr}</pre>
+          <div className="text-xs mt-2" style={{ color: T.sub }}>常见原因:环境变量 KIMI_API_KEY 未设置。请在启动终端 export 后重开应用。</div>
+        </Card>
       </div>
     );
   }
-  if (!boot) return <div className="shell boot-loading">初始化中…</div>;
 
-  const channel = boot.channels.find((c) => c.id === active)!;
-  const list = msgs[active] ?? [];
+  const personalMsgs = chat.msgs["personal"] ?? [];
 
   return (
-    <div className="shell">
-      {/* ---------------- 侧栏 ---------------- */}
-      <aside className="side">
-        <div className="brand">
-          <span className="brand-mark">M</span>
-          <div>
-            <b>Muster 点将台</b>
-            <small>本地部署 · Agent 协作</small>
-          </div>
-        </div>
-        <div className="nav-title">菜单</div>
-        <nav>
-          {NAV.map((n) => (
-            <button
-              key={n.key}
-              className={
-                "nav-item" +
-                ((n.key === "home" && view === "home") || (n.key === "channels" && view === "channels")
-                  ? " active"
-                  : "") +
-                (n.enabled ? "" : " disabled")
-              }
-              title={n.enabled ? "" : `未启用(${n.hint})`}
-              onClick={() => {
-                if (n.key === "home") {
-                  setView("home");
-                  refreshAudit();
-                } else if (n.key === "channels") {
-                  setView("channels");
-                }
-              }}
-            >
-              {n.label}
-              {!n.enabled && <em>{n.hint}</em>}
-            </button>
-          ))}
-        </nav>
-        <div className={"drill-card" + (drillOn ? " on" : "")}>
-          <b>主权演习{drillOn && " · 进行中"}</b>
-          {drillOn ? (
-            <p className="live">
-              全组织外联已切断,任务强制本地执行
-              <br />
-              {drillId ?? ""}
-            </p>
-          ) : (
-            <p>季度合规窗口:切断外联,验证全组织本地执行能力</p>
-          )}
-          <button onClick={toggleDrill}>{drillOn ? "结束演习并出报告" : "启动演习"}</button>
-          {drillReport && !drillOn && (
-            <div className="drill-report">
-              <div>
-                <b>{drillReport.egress_bytes} B</b>
-                <small>窗口外发</small>
-              </div>
-              <div>
-                <b>{drillReport.model_calls}</b>
-                <small>模型调用</small>
-              </div>
-              <div>
-                <b>
-                  {drillReport.local_calls}/{drillReport.cloud_calls}
-                </b>
-                <small>本地/云端</small>
-              </div>
-              <div>
-                <b>{drillReport.ok ? "✓ 达标" : "✗ 不达标"}</b>
-                <small>unmetered {drillReport.unmetered_calls}</small>
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="side-foot">
-          <div>策略:cloud_max = {boot.policy_cloud_max}</div>
-          <div title={boot.audit_db}>审计库:~/.muster/…</div>
-        </div>
-      </aside>
-
-      {view === "home" && <HomePage home={home} drillOn={drillOn} onRefresh={refreshAudit} />}
-
-      {view === "channels" && (
-        <>
-      {/* ---------------- 频道列 ---------------- */}
-      <section className="channels">
-        <header>频道消息</header>
-        {boot.channels.map((c) => (
-          <button key={c.id} className={"chan" + (c.id === active ? " active" : "")} onClick={() => setActive(c.id)}>
-            <span className={`dot lv-${c.level}`} />
-            <div className="chan-text">
-              <b>{c.name}</b>
-              <small>{c.desc}</small>
-            </div>
-            <span className={`lv-chip lv-${c.level}`}>{c.level}</span>
-          </button>
-        ))}
-        <div className="providers">
-          <div className="nav-title">模型编制</div>
-          {boot.providers.map((p) => (
-            <div key={p.id} className="prov">
-              <span className={`loc-chip loc-${p.locality}`}>{p.locality === "cloud" ? "云端" : "本地"}</span>
-              <div className="chan-text">
-                <b>{p.display_name}</b>
-                <small>{p.model}</small>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ---------------- 会话区 ---------------- */}
-      <main className="main">
-        <header className="chat-head">
-          <div>
-            <b>{channel.name}</b>
-            <span className={`lv-chip lv-${channel.level}`} title={channel.level_note}>
-              {channel.level}
-            </span>
-            {drillOn && <span className="drill-chip">演习中 · 外联切断</span>}
-          </div>
-          <small>{channel.level_note}</small>
-        </header>
-        <div className="chat-body" ref={scroller}>
-          {list.length === 0 && (
-            <div className="empty">
-              <b>在「{channel.name}」发起对话</b>
-              <p>
-                消息将经 E2 路由决策(当前频道密级 {channel.level})选择落点,全过程写入审计哈希链。
-                {channel.level === "restricted" && " 本频道为 restricted:本地通道不可用时将被拒绝——这是产品行为。"}
-              </p>
-            </div>
-          )}
-          {list.map((m) => (
-            <div key={m.key} className={`msg ${m.role} st-${m.status}`}>
-              <div className="msg-meta">
-                {m.role === "user" ? "你" : `Agent A-007${m.runId ? ` · ${m.runId}` : ""}`}
-              </div>
-              <div className="bubble">
-                {m.text || (m.status === "streaming" ? "…" : "")}
-                {m.status === "streaming" && m.text && <span className="caret" />}
-              </div>
-            </div>
-          ))}
-        </div>
-        <footer className="composer">
-          <textarea
-            value={draft}
-            placeholder={busy[active] ? "任务执行中…" : `发消息到 ${channel.name}(Enter 发送,Shift+Enter 换行)`}
-            disabled={busy[active]}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-          <button
-            className="task-btn"
-            onClick={() => send(true)}
-            disabled={busy[active] || !draft.trim()}
-            title="B1 任务模式:在工作区 ~/muster 上运行只读工具循环(list_dir/read_file/grep)"
-          >
-            ▶ 任务
-          </button>
-          <button onClick={() => send()} disabled={busy[active] || !draft.trim()}>
-            发送
-          </button>
-        </footer>
-      </main>
-
-      {/* ---------------- 右栏:任务/路由/审计 ---------------- */}
-      <aside className="right">
-        <div className="card">
-          <div className="card-title">路由决策</div>
-          {lastFail && !lastStart ? (
-            <div className="refused-box">
-              <b>⛔ {lastFail.run_id} 被拒绝</b>
-              <p>{lastFail.message}</p>
-            </div>
-          ) : lastStart ? (
-            <>
-              <div className="route-line">
-                <span className={`loc-chip loc-${lastStart.plan.primary_locality.toLowerCase()}`}>
-                  {lastStart.plan.primary_locality.toLowerCase() === "cloud" ? "云端" : "本地"}
-                </span>
-                <b>{lastStart.provider.display_name}</b>
-                <small>{lastStart.provider.model}</small>
-              </div>
-              <div className="kv">
-                <span>有效密级</span>
-                <span className={`lv-chip lv-${lastStart.plan.effective}`}>{lastStart.plan.effective}</span>
-              </div>
-              {lastStart.plan.deciders.length > 0 ? (
-                <div className="deciders">
-                  {lastStart.plan.deciders.map((d, i) => (
-                    <div key={i} className="decider">
-                      <span className="origin">{ORIGIN_ZH[d.origin] ?? d.origin}</span>
-                      <span>{d.subject}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="hint">无标签来源,默认 open</div>
-              )}
-              {lastStart.plan.downgraded && (
-                <div className="downgrade">{DOWNGRADE_ZH[lastStart.plan.downgraded.reason] ?? lastStart.plan.downgraded.reason}</div>
-              )}
-              {lastStart.plan.fallbacks.length > 0 && (
-                <div className="hint">降落带(仅本地):{lastStart.plan.fallbacks.join(" → ")}</div>
-              )}
-              {lastStart.attempts.length > 0 && <div className="hint warn">前序尝试失败:{lastStart.attempts.length} 次</div>}
-            </>
-          ) : (
-            <div className="hint">发送一条消息后,这里显示"为什么落在这里"。</div>
-          )}
-        </div>
-
-        <div className="card">
-          <div className="card-title">用量与时延</div>
-          {lastDone ? (
-            <div className="usage">
-              <div>
-                <b>{lastDone.latency_ms} ms</b>
-                <small>端到端</small>
-              </div>
-              <div>
-                <b>{lastDone.prompt_tokens ?? "—"}</b>
-                <small>输入 tokens</small>
-              </div>
-              <div>
-                <b>{lastDone.completion_tokens ?? "—"}</b>
-                <small>输出 tokens(含思考)</small>
-              </div>
-              <div>
-                <b>{lastDone.finish}</b>
-                <small>finish</small>
-              </div>
-            </div>
-          ) : (
-            <div className="hint">完成一次调用后显示(计量来自厂商回报,供 E4 对账)。</div>
-          )}
-        </div>
-
-        <div className="card audit-card">
-          <div className="card-title">
-            审计中心
-            <button className="mini" onClick={refreshAudit}>
-              刷新
-            </button>
-          </div>
-          {chain && (
-            <div className={"chain " + (chain.ok ? "ok" : "bad")}>
-              {chain.ok ? `✓ ${chain.detail}` : `✗ 哈希链校验失败:${chain.detail}`}
-            </div>
-          )}
-          <div className="audit-list">
-            {audit.length === 0 && <div className="hint">暂无事件。</div>}
-            {audit.map((r) => (
-              <div key={r.event_id} className="audit-row">
-                <span className="etype">{r.event_type}</span>
-                <span className="erun">{r.run_id ?? "—"}</span>
-                {r.label && <span className={`lv-chip lv-${r.label}`}>{r.label}</span>}
-                {r.locality && (
-                  <span className={`loc-chip loc-${r.locality}`}>{r.locality === "cloud" ? "云" : "本"}</span>
+    <div className="w-full h-screen overflow-hidden" style={{ background: T.canvas }}>
+      <div className="absolute rounded-3xl flex overflow-hidden" style={{ inset: 14, background: T.shell, boxShadow: "0 12px 40px rgba(23,24,28,.08)" }}>
+        {/* ===== 一级:图标轨 ===== */}
+        <div className="w-14 shrink-0 flex flex-col items-center py-4 gap-1.5" style={{ background: T.rail, borderRight: `1px solid ${T.line}` }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center font-extrabold text-sm mb-2" style={{ background: T.indigo, color: "#fff" }}>M</div>
+          {RAIL.map((r) => {
+            const Ic = r.icon;
+            const on = module === r.id;
+            return (
+              <button key={r.id} onClick={() => goRail(r)} title={r.label}
+                className="w-10 h-10 rounded-xl flex items-center justify-center relative"
+                style={{ background: on ? T.indigo : "transparent", color: on ? "#fff" : "#8B8FA3", boxShadow: on ? "0 6px 14px rgba(91,91,245,.28)" : "none" }}>
+                <Ic size={18} />
+                {r.id === "personal" && streamed && !on && (
+                  <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full lv" style={{ background: T.red }} />
                 )}
-                <span className="ets">{fmtTime(r.ts_ms)}</span>
+              </button>
+            );
+          })}
+          <div className="mt-auto w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>A</div>
+        </div>
+
+        {/* ===== 二级:随模块切换 ===== */}
+        <aside className="w-56 shrink-0 flex flex-col px-3 py-4 overflow-y-auto" style={{ background: T.panel, borderRight: `1px solid ${T.line}` }}>
+          <div className="px-2 pb-2 text-[13px] font-bold">
+            {module === "console" ? "控制台" : module === "personal" ? "我的工作台" : "团队"}
+          </div>
+
+          {module === "console" && (
+            <>
+              <SideSec>总览</SideSec>
+              <SideItem icon={<Home size={16} />} label="中控台" active={view === "home"} onClick={() => { setView("home"); setNotice(""); refreshAll(); }} />
+              <SideItem icon={<Shield size={16} />} label="审计中心" active={view === "audit"} onClick={() => { setView("audit"); setNotice(""); refreshAll(); }} />
+              <SideItem icon={<LineChart size={16} />} label="数据分析" onClick={() => soft("数据分析")} />
+              {/* E6 主权演习:真实开关 */}
+              <div className="mt-auto rounded-2xl p-4 text-white" style={{ background: drillOn ? "#2B0E10" : T.black, boxShadow: drillOn ? `0 0 0 1.5px ${T.red} inset` : "none" }}>
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-2.5" style={{ background: "rgba(255,255,255,.14)" }}>
+                  <ShieldAlert size={15} />
+                </div>
+                <b className="text-sm" style={{ color: drillOn ? "#FFB3B5" : "#fff" }}>主权演习{drillOn ? " · 进行中" : ""}</b>
+                <p className="text-[11px] mt-1 leading-relaxed" style={{ color: drillOn ? "#FFB3B5" : "#9FA3B5" }}>
+                  {drillOn ? `全组织外联已切断,任务强制本地执行\n${drillId ?? ""}` : "季度合规窗口:切断外联,验证全组织本地执行能力"}
+                </p>
+                <button onClick={toggleDrill} className="mt-3 w-full py-2 rounded-xl text-xs font-semibold" style={{ background: drillOn ? T.red : T.indigo }}>
+                  {drillOn ? "结束演习并出报告" : "启动演习 →"}
+                </button>
+                {drillReport && !drillOn && (
+                  <div className="mt-3 grid grid-cols-2 gap-1.5 text-center">
+                    {[
+                      [fmtBytes(drillReport.egress_bytes), "窗口外发"],
+                      [String(drillReport.model_calls), "模型调用"],
+                      [`${drillReport.local_calls}/${drillReport.cloud_calls}`, "本地/云端"],
+                      [drillReport.ok ? "✓ 达标" : "✗ 不达标", `unmetered ${drillReport.unmetered_calls}`],
+                    ].map(([v, l]) => (
+                      <div key={l} className="rounded-lg py-1.5" style={{ background: "rgba(255,255,255,.08)" }}>
+                        <div className="text-[11.5px] font-bold">{v}</div>
+                        <div className="text-[9px]" style={{ color: "#B9BCCB" }}>{l}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
+            </>
+          )}
+
+          {module === "personal" && (
+            <>
+              <SideSec>我的</SideSec>
+              <SideItem icon={<Home size={16} />} label="首页" active={view === "phome"} onClick={() => { setView("phome"); setNotice(""); }} />
+              <SideItem icon={<Bot size={16} />} label="Agent 档案" active={view === "agent"} onClick={() => { setView("agent"); setNotice(""); refreshAll(); }}
+                extra={<span className="ml-auto text-[10px]" style={{ color: view === "agent" ? "#DCDCFE" : T.faint }}>小七</span>} />
+              <SideItem icon={<MessageSquare size={16} />} label="对话" active={view === "pchat"} onClick={goPersonalChat} />
+              <SideItem icon={<Clock size={16} />} label="任务" onClick={() => soft("任务")} />
+              <SideSec>积累</SideSec>
+              <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />
+              <SideItem icon={<Sparkles size={16} />} label="技能" onClick={() => soft("技能")} />
+              <SideItem icon={<BookOpen size={16} />} label="知识库" onClick={() => soft("知识库")} />
+              <SideItem icon={<Link2 size={16} />} label="连接器" onClick={() => soft("连接器")} />
+              <SideItem icon={<Lock size={16} />} label="权限" onClick={() => soft("权限")} />
+              <div className="mt-auto rounded-2xl p-3.5" style={{ background: streamed ? T.indigo : "#fff", border: `1px solid ${streamed ? T.indigo : T.line}`, color: streamed ? "#fff" : T.ink }}>
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                  <Cast size={13} />
+                  {streamed ? "串流进行中" : "串流到团队"}
+                </div>
+                {streamed ? (
+                  <>
+                    <div className="text-[11px] mt-1.5 leading-relaxed" style={{ color: "#DCDCFE" }}>
+                      与小七的私有会话
+                      <br />→ 平台组 #platform · 12 人围观
+                    </div>
+                    <button onClick={() => setStreamed(false)} className="mt-2.5 w-full py-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1"
+                      style={{ background: "rgba(255,255,255,.18)" }}>
+                      <StopCircle size={12} /> 停止串流
+                    </button>
+                  </>
+                ) : (
+                  <div className="text-[11px] mt-1 leading-relaxed" style={{ color: T.sub }}>
+                    把你与 Agent 的会话实时投到频道,队友可围观、可接手
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {module === "team" && (
+            <>
+              <SideItem icon={<Video size={16} />} label="会议室" active={view === "meeting"} onClick={() => { setView("meeting"); setNotice(""); }}
+                extra={<span className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: view === "meeting" ? "#fff" : T.green }}>
+                  <span className="wv inline-block w-1 h-2.5 rounded-full" style={{ background: "currentColor" }} />进行中
+                </span>} />
+              <SideSec>团队</SideSec>
+              {teams.map((t) => {
+                const open = !!expanded[t.id];
+                const isActiveTeam = team === t.id && (view === "channel" || view === "roster");
+                const rosterOn = view === "roster" && team === t.id;
+                const meta = TEAM_META[t.id] ?? { people: 0, agents: 0 };
+                return (
+                  <div key={t.id} className="mb-0.5">
+                    <button onClick={() => setExpanded((e) => ({ ...e, [t.id]: !open }))} className="w-full flex items-center gap-2 px-2 py-2 rounded-xl text-left">
+                      <ChevronDown size={12} style={{ color: T.faint, transform: open ? "none" : "rotate(-90deg)", transition: "transform .15s" }} />
+                      <span className="w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-bold"
+                        style={{ background: isActiveTeam ? T.indigo : "#E4E6EF", color: isActiveTeam ? "#fff" : "#5A5E70" }}>{t.name[0]}</span>
+                      <span className="text-[13px] font-semibold" style={{ color: isActiveTeam ? T.indigoDeep : "#5A5E70" }}>{t.name}</span>
+                      <span className="ml-auto text-[10px]" style={{ color: T.faint }}>{meta.people}人·{meta.agents}AI</span>
+                    </button>
+                    {open && (
+                      <div className="ml-3.5 pl-2 fade" style={{ borderLeft: `1px solid ${T.line}` }}>
+                        {t.channels.map((c) => {
+                          const on = view === "channel" && channelId === c.id;
+                          const live = streamed && c.id === "platform";
+                          return (
+                            <button key={c.id} onClick={() => goChannel(t.id, c.id)}
+                              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[12.5px]"
+                              style={{ background: on ? T.indigo : "transparent", color: on ? "#fff" : "#5A5E70", fontWeight: on ? 600 : 400 }}>
+                              <Hash size={12} style={{ opacity: 0.7 }} /> {c.name}
+                              {c.level === "restricted" && <Lock size={10} style={{ color: on ? "#fff" : T.red }} />}
+                              {live && <span className="ml-auto w-1.5 h-1.5 rounded-full lv" style={{ background: on ? "#fff" : T.red }} />}
+                            </button>
+                          );
+                        })}
+                        <button onClick={() => goRoster(t.id)} className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[12.5px]"
+                          style={{ background: rosterOn ? T.indigo : "transparent", color: rosterOn ? "#fff" : "#5A5E70", fontWeight: rosterOn ? 600 : 400 }}>
+                          <Users size={12} style={{ opacity: 0.8 }} /> 编制
+                          <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md"
+                            style={{ background: rosterOn ? "rgba(255,255,255,.22)" : T.soft, color: rosterOn ? "#fff" : T.sub }}>
+                            {meta.people + meta.agents}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <CollapseSec label="AGENT" open={agentOpen} onToggle={() => setAgentOpen((o) => !o)}>
+                <SideItem icon={<Library size={16} />} label="能力库" active={view === "caps"} onClick={() => { setView("caps"); setNotice(""); }}
+                  extra={<span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md" style={{ background: view === "caps" ? "rgba(255,255,255,.22)" : T.indigoSoft, color: view === "caps" ? "#fff" : T.indigo }}>P4</span>} />
+                <SideItem icon={<Shield size={16} />} label="审计中心" onClick={() => { setModule("console"); setView("audit"); setNotice(""); refreshAll(); }} />
+              </CollapseSec>
+            </>
+          )}
+        </aside>
+
+        {/* ===== 主区 ===== */}
+        <main className="flex-1 min-w-0 overflow-y-auto flex flex-col">
+          <TopBar module={module} view={view} channelName={activeChannel?.name ?? channelId} teamName={activeChannel?.team ?? ""} streamed={streamed} drillOn={drillOn} />
+          {notice && (
+            <div className="mx-7 mt-2 px-3.5 py-2 rounded-xl text-xs flex items-center gap-2 fade" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+              <Sparkles size={13} /> {notice}
+              <button className="ml-auto" onClick={() => setNotice("")}><X size={13} /></button>
+            </div>
+          )}
+          <div className="flex-1 min-h-0">
+            {view === "home" && <ConsoleHome home={home} approved={approved} onApprove={() => setModal(true)} />}
+            {view === "audit" && <AuditCenter rows={audit} chain={chain} onRefresh={refreshAll} />}
+            {view === "phome" && (
+              <PersonalHome personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
+                onStream={() => setPicker(true)} onStop={() => setStreamed(false)}
+                goAgent={() => setView("agent")} goChat={goPersonalChat}
+                goChannel={() => goChannel("platform", "platform")} openConvo={() => setConvo("open")} />
+            )}
+            {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat} />}
+            {view === "pchat" && personalChannel && (
+              <div className="px-7 pt-1 pb-6" style={{ height: "calc(100% - 8px)" }}>
+                <Card className="h-full flex flex-col overflow-hidden">
+                  <ChatPane channel={personalChannel} chat={chat} />
+                </Card>
+              </div>
+            )}
+            {view === "channel" && activeChannel && (
+              <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed}
+                introduced={introduced} setIntroduced={setIntroduced}
+                openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")} />
+            )}
+            {view === "roster" && <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} />}
+            {view === "meeting" && <MeetingView />}
+            {view === "caps" && <CapsView trace={trace} setTrace={setTrace} introduced={introduced} />}
+          </div>
+        </main>
+      </div>
+
+      {/* ===== FAB 小七 ===== */}
+      <button onClick={() => setFab((f) => !f)} className="fixed bottom-8 right-8 w-14 h-14 rounded-2xl flex items-center justify-center z-40"
+        style={{ background: T.indigo, color: "#fff", boxShadow: "0 10px 26px rgba(91,91,245,.4)" }}>
+        <Bot size={24} />
+      </button>
+      {fab && (
+        <div className="fixed bottom-24 right-8 w-80 z-40 rounded-2xl overflow-hidden fade" style={{ background: "#fff", border: `1px solid ${T.line}`, boxShadow: "0 16px 40px rgba(23,24,28,.14)" }}>
+          <div className="px-3.5 py-3 flex items-center gap-2" style={{ background: T.indigoSoft }}>
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: T.indigo, color: "#fff" }}><Bot size={15} /></div>
+            <b className="text-[13px]">小七</b>
+            <Tag tone="ind" style={{ background: "#fff" }}>编制 A-007</Tag>
+            <span className="ml-auto"><RouteTag /></span>
+          </div>
+          <div className="p-3 space-y-2 text-xs" style={{ maxHeight: 210, overflowY: "auto" }}>
+            <Bub>
+              我在。累计 {agent?.total_runs ?? "—"} 个 Runs,累计外发 {agent ? fmtBytes(agent.total_egress_bytes) : "—"};审计链
+              {chain ? (chain.ok ? `完整(${chain.rows} 行)` : "校验异常!") : "…"}。
+            </Bub>
+            {fabAsked && (
+              <Bub fresh>
+                你名下待审批 {home?.pending_approvals ?? 0} 项。
+                {(home?.pending_approvals ?? 0) === 0 && <><br />审批流于 P5 接入,当前没有真实审批事件。</>}
+              </Bub>
+            )}
+          </div>
+          <div className="px-3 pb-2 flex gap-1.5 flex-wrap">
+            {["下达任务", "查我的审批", "串流到频道"].map((q) => (
+              <button key={q}
+                onClick={() => {
+                  if (q === "查我的审批") setFabAsked(true);
+                  if (q === "串流到频道") { setFab(false); setPicker(true); }
+                  if (q === "下达任务") { setFab(false); goPersonalChat(); }
+                }}
+                className="text-[11px] px-2.5 py-1 rounded-lg" style={{ background: T.soft }}>
+                {q}
+              </button>
             ))}
           </div>
+          <button onClick={() => { setFab(false); goPersonalChat(); }} className="m-3 mt-1 px-3 py-2 rounded-xl text-xs flex items-center w-[calc(100%-24px)]" style={{ background: T.soft, color: T.faint }}>
+            对小七说点什么…<span className="ml-auto">⏎</span>
+          </button>
         </div>
-      </aside>
-        </>
+      )}
+
+      {/* ===== 串流选择频道(通道 v1.x 演示;密级规则为真实口径) ===== */}
+      {picker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
+          <div className="w-[420px] rounded-2xl overflow-hidden fade" style={{ background: "#fff", boxShadow: "0 24px 60px rgba(23,24,28,.25)" }}>
+            <div className="px-5 py-3.5 flex items-center gap-2 text-[13px] font-semibold" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+              <Cast size={15} /> 串流会话到频道
+              <button className="ml-auto" onClick={() => setPicker(false)}><X size={14} /></button>
+            </div>
+            <div className="px-5 py-4">
+              <div className="rounded-xl p-3" style={{ background: T.panel, border: `1px solid ${T.line}` }}>
+                <div className="text-[13px] font-bold">与小七的私有会话</div>
+                <div className="flex items-center gap-2 mt-1.5 text-[10.5px] flex-wrap" style={{ color: T.faint }}>
+                  {personalMsgs.length > 0 ? "进行中" : "空会话"} · <RouteTag /> · <Tag>open</Tag> · 会话被 E3 棘轮抬升后,低密级频道将被禁投
+                </div>
+              </div>
+              <div className="text-[11px] mt-3.5 mb-2" style={{ color: T.sub }}>选择目标频道 · 密级跟着会话走</div>
+              <div className="space-y-1.5">
+                {teamChannels.map((o: Channel) => {
+                  const ok = true; // 会话当前 open,任何频道不低于它;抬升后此处生效
+                  return (
+                    <button key={o.id} disabled={!ok} onClick={() => { setStreamed(true); setPicker(false); }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-left text-[13px]"
+                      style={{ background: ok ? T.soft : "#FBFBFD", color: ok ? T.ink : T.faint, cursor: ok ? "pointer" : "not-allowed" }}>
+                      <Hash size={13} style={{ opacity: 0.7 }} /> {o.name}
+                      <span className="text-[10.5px]" style={{ color: T.faint }}>· {o.team}</span>
+                      <span className="ml-auto flex items-center gap-1.5">
+                        <Tag tone={o.level === "open" ? undefined : o.level === "restricted" ? "red" : "amb"}>{o.level}</Tag>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="mt-3.5 text-[10.5px] leading-relaxed" style={{ color: T.faint }}>
+                串流为只读投屏:队友可围观与提问,接手需你授权。全程计入审计。<b>串流通道为 v1.x 演示,当前仅 UI 状态。</b>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 审批弹窗(概念示例,P5 真实化) ===== */}
+      {modal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
+          <div className="w-[392px] rounded-2xl overflow-hidden fade" style={{ background: "#fff", boxShadow: "0 24px 60px rgba(23,24,28,.25)" }}>
+            <div className="px-5 py-3.5 flex items-center gap-2 text-[13px] font-semibold" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+              <ShieldAlert size={15} /> 审批请求 <Tag>概念示例</Tag>
+            </div>
+            <div className="p-5 space-y-3.5">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl flex items-center justify-center" style={{ background: T.indigoSoft, color: T.indigo }}><Bot size={20} /></div>
+                <div>
+                  <div className="text-sm font-bold">Agent-007 <span className="font-normal text-[11.5px]" style={{ color: T.sub }}>· 代码评审员</span></div>
+                  <div className="text-[11.5px] mt-0.5" style={{ color: T.sub }}>权限:只读仓库 / 发评论 / 跑测试</div>
+                </div>
+                <span className="ml-auto"><Tag tone="ind">编制 A-007</Tag></span>
+              </div>
+              <div className="text-[13.5px] leading-relaxed">
+                申请执行 <code className="text-[11.5px] px-2 py-1 rounded-lg" style={{ background: T.redSoft, color: T.red }}>rm -rf .cache/fixtures</code>
+                <div className="text-[11.5px] mt-1.5" style={{ color: T.sub }}>该操作超出其岗位权限。批准与拒绝都会写入审计(approval.* 事件已在 A9 就绪)。</div>
+              </div>
+              <div className="flex gap-2 pt-0.5">
+                <IBtn onClick={() => { setModal(false); setApproved(true); }} className="px-5 py-2.5">批准执行</IBtn>
+                <button onClick={() => setModal(false)} className="px-5 py-2.5 rounded-xl text-xs font-medium" style={{ background: T.soft, color: T.sub }}>拒绝</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 对话快照弹窗(概念示例) ===== */}
+      {convo !== "closed" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
+          <div className="w-[480px] max-h-[80vh] rounded-2xl overflow-hidden flex flex-col fade" style={{ background: "#fff", boxShadow: "0 24px 60px rgba(23,24,28,.25)" }}>
+            <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: `1px solid ${T.line}` }}>
+              <b className="text-sm">对话快照 · 支付重试幂等性讨论</b>
+              <Tag>概念示例</Tag>
+              <button className="ml-auto" onClick={() => setConvo("closed")} style={{ color: T.sub }}><X size={15} /></button>
+            </div>
+            <div className="px-4 py-2 flex items-center gap-2 text-[10.5px] flex-wrap" style={{ borderBottom: `1px solid ${T.line}`, color: T.sub }}>
+              Alice ↔ 小七(A-007) · 14 条 · <RouteTag local /> qwen3:8b · 外发 0 B · <Tag tone="amb">internal</Tag>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-[12.5px]">
+              <CB who="Alice">支付重试如果网络抖动重复提交,现在的幂等保障够吗?</CB>
+              <CB who="小七" bot>查了 gateway/retry.rs:幂等键由业务侧各自拼接,三处实现不一致,存在重复扣款窗口。建议网关层统一生成,业务侧只透传。</CB>
+              <CB who="Alice">迁移成本呢?</CB>
+              <CB who="小七" bot>两个服务需要改造,预计各 0.5 天;我可以先产出兼容层 diff,灰度期双写。</CB>
+              <div className="text-center text-[10px]" style={{ color: T.faint }}>—— 其余 10 条已折叠 ——</div>
+            </div>
+            {convo === "blocked" && (
+              <div className="mx-4 mb-3 p-3 rounded-xl text-xs fade" style={{ background: T.redSoft }}>
+                <div className="flex items-center gap-1.5 font-semibold" style={{ color: T.red }}>
+                  <ShieldAlert size={13} /> 分享被策略阻止
+                </div>
+                <div className="mt-1 leading-relaxed" style={{ color: "#8A4A4D" }}>
+                  该对话密级为 <b>internal</b>,目标频道 <b>#general</b> 为 open。<b>密级跟着对话走</b>:向低密级频道分享需发起降密审批(v1.1),或改分享到同级频道。
+                </div>
+              </div>
+            )}
+            <div className="px-4 py-3 flex gap-2 items-center" style={{ borderTop: `1px solid ${T.line}` }}>
+              <button className="text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: T.indigoSoft, color: T.indigo }}>引用到 #platform</button>
+              <button onClick={() => setConvo("blocked")} className="text-xs px-3 py-1.5 rounded-lg" style={{ background: T.soft, color: T.sub }}>
+                分享到 #general(open)
+              </button>
+              <span className="ml-auto text-[10px]" style={{ color: T.faint }}>快照只读 · 引用可溯源</span>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
-function HomePage({
-  home,
+/* ==================== 顶栏 ==================== */
+
+function TopBar({
+  module,
+  view,
+  channelName,
+  teamName,
+  streamed,
   drillOn,
-  onRefresh,
 }: {
-  home: HomeStats | null;
+  module: string;
+  view: string;
+  channelName: string;
+  teamName: string;
+  streamed: boolean;
   drillOn: boolean;
-  onRefresh: () => void;
 }) {
-  const [hoverBar, setHoverBar] = useState<number | null>(null);
-  if (!home) {
-    return (
-      <main className="home">
-        <div className="hint">统计加载中…</div>
-      </main>
-    );
-  }
-  const maxV = Math.max(1, ...home.throughput.flatMap((d) => [d.local, d.cloud]));
-  const runsDiff = home.runs_week - home.runs_prev_week;
-  const egressDiff = home.egress_week_bytes - home.egress_prev_week_bytes;
+  const titles: Record<string, [string, string]> = {
+    home: ["中控台", "全组织实时态势 · 每个数字 = 审计表一条 SQL"],
+    audit: ["审计中心", "append-only 证据层 · SHA-256 哈希链逐行可验"],
+    phome: ["我的工作台", "个人空间 · 与 Agent 的私有会话,默认不进团队"],
+    agent: ["Agent 档案 · 小七", "编制 A-007 · 代码评审员 · 由我日常使用"],
+    pchat: ["对话 · 小七", "私有会话 · 真实路由与审计,内容不进团队"],
+    channel: [`#${channelName}`, `${teamName} · 频道协作 · 共享对话与工作流`],
+    roster: [`编制 · ${teamName || "团队"}`, "团队内的人与 Agent · 点将、授权与审计"],
+    meeting: ["会议室", "平台组周会 · Agent-007 / 021 在席(概念)"],
+    caps: ["能力库", "组织的 Capsule 资产池(P4 概念)"],
+  };
+  const [t, s] = titles[view] ?? ["Muster", ""];
   return (
-    <main className="home">
-      <header className="home-head">
-        <div>
-          <b>首页</b>
-          <small>每个数字 = 审计表一条 SQL(G1 口径),不做前端估算</small>
-        </div>
-        {drillOn && <span className="drill-chip">演习中 · 外联切断</span>}
-        <button className="mini" onClick={onRefresh}>
-          刷新
-        </button>
-      </header>
-
-      <div className="kpis">
-        <div className="tile">
-          <small>本周任务 Runs</small>
-          <b>{home.runs_week}</b>
-          <span className="delta">
-            {home.runs_prev_week || home.runs_week
-              ? `较上周 ${runsDiff >= 0 ? "+" : ""}${runsDiff}`
-              : "本周暂无"}
+    <div className="flex items-center px-7 pt-5 pb-1.5 shrink-0">
+      <div>
+        <div className="flex items-center gap-2">
+          <span className="text-[21px] font-bold tracking-tight">{t}</span>
+          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
+            style={{ background: module === "personal" ? T.tealSoft : module === "team" ? T.indigoSoft : T.soft, color: module === "personal" ? T.teal : module === "team" ? T.indigo : T.sub }}>
+            {module === "personal" ? "个人" : module === "team" ? "团队" : "组织"}
           </span>
         </div>
-        <div className="tile">
-          <small>待我审批</small>
-          <b>{home.pending_approvals}</b>
-          <span className="delta">工牌 A-007 · 审批流于 P5 接入</span>
-        </div>
-        <div className="tile">
-          <small>云端外发 · 近 7 日</small>
-          <b>{fmtBytes(home.egress_week_bytes)}</b>
-          <span className={"delta " + (egressDiff > 0 ? "bad" : egressDiff < 0 ? "good" : "")}>
-            {egressDiff === 0
-              ? "与上周持平 · 越少越好"
-              : `较上周 ${egressDiff > 0 ? "+" : "−"}${fmtBytes(Math.abs(egressDiff))} · 越少越好`}
+        <div className="text-xs mt-0.5" style={{ color: T.sub }}>{s}</div>
+      </div>
+      <div className="ml-auto flex items-center gap-2.5">
+        {drillOn && (
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.redSoft, color: T.red }}>
+            <span className="w-1.5 h-1.5 rounded-full lv" style={{ background: T.red }} />演习中 · 外联切断
           </span>
-          {home.unmetered_week > 0 && (
-            <span className="delta bad">unmetered {home.unmetered_week} 次(按违规计)</span>
-          )}
-        </div>
-        <div className="tile">
-          <small>最近演习</small>
-          {home.drill_last ? (
-            <>
-              <b className={home.drill_last.ok ? "ok-ink" : "bad-ink"}>
-                {home.drill_last.ok ? "✓ 达标" : "✗ 不达标"}
-              </b>
-              <span className="delta">
-                {fmtDate(home.drill_last.ts_ms)} · 外发 {fmtBytes(home.drill_last.egress_bytes)}
-              </span>
-            </>
-          ) : (
-            <>
-              <b>—</b>
-              <span className="delta">尚未演习 · 侧栏黑卡可启动</span>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="card chart-card">
-        <div className="chart-head">
-          <div>
-            <b>任务吞吐</b>
-            <small>近 7 日 · 模型调用(model.call)按落点</small>
-          </div>
-          <span className="legend">
-            <i className="ldot cloud" />
-            云端
-            <i className="ldot local" />
-            本地
-          </span>
-        </div>
-        <div className="bars">
-          {home.throughput.map((d, i) => (
-            <div
-              key={d.date}
-              className="day"
-              onMouseEnter={() => setHoverBar(i)}
-              onMouseLeave={() => setHoverBar(null)}
-            >
-              {hoverBar === i && (
-                <div className="tip">
-                  {d.date.slice(5)} · 云端 {d.cloud} · 本地 {d.local}
-                </div>
-              )}
-              <div className="bar-area">
-                <div className="bar cloud" style={{ height: `${(d.cloud / maxV) * 100}%` }}>
-                  {d.cloud > 0 && <span>{d.cloud}</span>}
-                </div>
-                <div className="bar local" style={{ height: `${(d.local / maxV) * 100}%` }}>
-                  {d.local > 0 && <span>{d.local}</span>}
-                </div>
-              </div>
-              <small className={"wd" + (i === home.throughput.length - 1 ? " today" : "")}>
-                {i === home.throughput.length - 1 ? "今天" : `周${WEEKDAY_ZH[+d.weekday]}`}
-              </small>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="home-row">
-        <div className="card">
-          <div className="card-title">路由统计 · 近 7 日</div>
-          <div className="route-stats">
-            <div>
-              <i className="ldot cloud" />
-              云端调用<b>{home.cloud_calls_week}</b>
-            </div>
-            <div>
-              <i className="ldot local" />
-              本地调用<b>{home.local_calls_week}</b>
-            </div>
-            <div>
-              <i className="ldot amber" />
-              降级落地<b>{home.downgrades.length}</b>
-            </div>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-title">降级通知</div>
-          {home.downgrades.length === 0 ? (
-            <div className="hint">
-              近 7 日无降级。降级 = 云端被排除且本地接住;当前本地通道未在线,发生的是拒绝
-              (拒绝落审计属 E4 待办)。
-            </div>
-          ) : (
-            home.downgrades.map((d, i) => (
-              <div key={i} className="feed-row">
-                <span>{d.text}</span>
-                <small>
-                  {d.run_id ?? ""} · {fmtDate(d.ts_ms)}
-                </small>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">最近任务(run.finish)</div>
-        {home.recent_runs.length === 0 ? (
-          <div className="hint">
-            还没有完整任务——去频道用「▶ 任务」发起一个,run.start / run.finish 链会出现在这里。
-          </div>
-        ) : (
-          home.recent_runs.map((r) => (
-            <div key={r.run_id + r.ts_ms} className="run-row">
-              <b>{r.run_id}</b>
-              <span className={"run-chip " + (r.outcome === "success" ? "ok" : "bad")}>{r.outcome}</span>
-              <small>{(r.duration_ms / 1000).toFixed(1)}s</small>
-              <small className="dim">{fmtDate(r.ts_ms)}</small>
-            </div>
-          ))
         )}
+        {streamed && (
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.redSoft, color: T.red }}>
+            <span className="w-1.5 h-1.5 rounded-full lv" style={{ background: T.red }} />串流中 → #platform
+          </span>
+        )}
+        <button className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1px solid ${T.line}`, color: "#5A5E70" }}><Search size={15} /></button>
+        <button className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1px solid ${T.line}`, color: "#5A5E70" }}><Bell size={15} /></button>
+        <div className="flex items-center gap-2 ml-1">
+          <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>A</div>
+          <div>
+            <div className="text-[13px] font-semibold">Alice</div>
+            <div className="text-[10px]" style={{ color: T.sub }}>平台组 · 组长</div>
+          </div>
+        </div>
       </div>
-    </main>
+    </div>
   );
 }
