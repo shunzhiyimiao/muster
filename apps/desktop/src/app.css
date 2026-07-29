@@ -643,3 +643,252 @@ button {
   color: var(--faint);
   flex: none;
 }
+
+/* ---------------- 首页 ---------------- */
+.home {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--panel);
+}
+.home-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.home-head > div {
+  flex: 1;
+}
+.home-head b {
+  font-size: 17px;
+  display: block;
+}
+.home-head small {
+  color: var(--sub);
+  font-size: 11.5px;
+}
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.tile {
+  background: var(--shell);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tile > small {
+  color: var(--sub);
+  font-size: 11px;
+}
+.tile > b {
+  font-size: 22px;
+  font-weight: 800;
+}
+.tile .delta {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.tile .delta.good {
+  color: var(--green);
+}
+.tile .delta.bad {
+  color: var(--red);
+}
+.ok-ink {
+  color: var(--green);
+}
+.bad-ink {
+  color: var(--red);
+}
+.chart-card {
+  background: var(--shell);
+}
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+.chart-head b {
+  font-size: 13px;
+}
+.chart-head small {
+  color: var(--sub);
+  font-size: 11px;
+  margin-left: 8px;
+}
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--sub);
+}
+.ldot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  display: inline-block;
+  margin-left: 8px;
+}
+.ldot.cloud {
+  background: var(--indigo);
+}
+.ldot.local {
+  background: var(--teal);
+}
+.ldot.amber {
+  background: var(--amber);
+}
+.bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  height: 150px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 6px;
+}
+.bars .day {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  cursor: default;
+}
+.bar-area {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+  height: 118px;
+}
+.bar {
+  width: 20px;
+  border-radius: 4px 4px 0 0;
+  position: relative;
+  min-height: 0;
+}
+.bar.cloud {
+  background: var(--indigo);
+}
+.bar.local {
+  background: var(--teal);
+}
+.bar > span {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--sub);
+  font-weight: 600;
+}
+.bars .wd {
+  font-size: 10.5px;
+  color: var(--faint);
+  padding: 6px 0 0;
+}
+.bars .wd.today {
+  color: var(--indigo-deep);
+  font-weight: 700;
+}
+.tip {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: #fff;
+  font-size: 10.5px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  white-space: nowrap;
+  z-index: 5;
+  pointer-events: none;
+}
+.home-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 12px;
+}
+.home .card {
+  background: var(--shell);
+}
+.route-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.route-stats > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--sub);
+}
+.route-stats .ldot {
+  margin-left: 0;
+}
+.route-stats b {
+  margin-left: auto;
+  font-size: 14px;
+  color: var(--ink);
+}
+.feed-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  background: var(--amber-soft);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  color: var(--amber);
+}
+.feed-row small {
+  color: var(--faint);
+  font-size: 10px;
+}
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.run-row:last-child {
+  border-bottom: none;
+}
+.run-chip {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+.run-chip.ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.run-chip.bad {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.run-row small {
+  color: var(--sub);
+}
+.run-row .dim {
+  margin-left: auto;
+  color: var(--faint);
+}

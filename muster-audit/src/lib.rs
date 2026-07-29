@@ -50,7 +50,7 @@ pub use event::{
     Parsed, ReplayRefs, RunOutcome, Scope,
 };
 pub use queries::{
-    downgrades_zh, drill_report, pending_approvals, recent_events, run_chain, session_lock,
-    DrillReport,
+    day_throughput, distinct_runs, downgrades_zh, drill_report, pending_approvals, recent_events,
+    recent_events_of, run_chain, session_lock, DayThroughput, DrillReport,
 };
 pub use store::{AuditStore, ChainError, StoreError};

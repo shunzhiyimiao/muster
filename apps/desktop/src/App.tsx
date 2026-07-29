@@ -89,6 +89,44 @@ interface ChainStatus {
   rows: number;
   detail: string;
 }
+interface DayBar {
+  date: string;
+  weekday: string;
+  local: number;
+  cloud: number;
+}
+interface DrillLast {
+  ts_ms: number;
+  drill_id: string;
+  egress_bytes: number;
+  unmetered_calls: number;
+  ok: boolean;
+}
+interface DowngradeItem {
+  ts_ms: number;
+  run_id: string | null;
+  text: string;
+}
+interface RunItem {
+  ts_ms: number;
+  run_id: string;
+  outcome: string;
+  duration_ms: number;
+}
+interface HomeStats {
+  runs_week: number;
+  runs_prev_week: number;
+  egress_week_bytes: number;
+  egress_prev_week_bytes: number;
+  unmetered_week: number;
+  cloud_calls_week: number;
+  local_calls_week: number;
+  pending_approvals: number;
+  drill_last: DrillLast | null;
+  throughput: DayBar[];
+  downgrades: DowngradeItem[];
+  recent_runs: RunItem[];
+}
 
 interface Msg {
   key: string;
@@ -111,7 +149,7 @@ const ORIGIN_ZH: Record<string, string> = {
 };
 
 const NAV = [
-  { key: "home", label: "首页", enabled: false, hint: "P1.x" },
+  { key: "home", label: "首页", enabled: true, hint: "" },
   { key: "roster", label: "编制管理", enabled: false, hint: "D6" },
   { key: "channels", label: "频道消息", enabled: true, hint: "" },
   { key: "meeting", label: "会议室", enabled: false, hint: "v1.x" },
@@ -119,10 +157,24 @@ const NAV = [
   { key: "audit", label: "审计中心", enabled: true, hint: "右栏" },
 ];
 
+const WEEKDAY_ZH = ["日", "一", "二", "三", "四", "五", "六"];
+
 function fmtTime(ts: number): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function fmtDate(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 export default function App() {
@@ -140,6 +192,8 @@ export default function App() {
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
   const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
+  const [view, setView] = useState<"home" | "channels">("home");
+  const [home, setHome] = useState<HomeStats | null>(null);
 
   // run_id → { channelId, msgKey };task-start 早于 invoke 返回,用挂起队列衔接。
   const runIndex = useRef<Record<string, { channelId: string; msgKey: string }>>({});
@@ -149,6 +203,7 @@ export default function App() {
   const refreshAudit = () => {
     invoke<AuditRow[]>("audit_tail", { limit: 14 }).then(setAudit).catch(() => {});
     invoke<ChainStatus>("verify_chain").then(setChain).catch(() => {});
+    invoke<HomeStats>("home_stats").then(setHome).catch(() => {});
   };
 
   useEffect(() => {
@@ -296,7 +351,25 @@ export default function App() {
         <div className="nav-title">菜单</div>
         <nav>
           {NAV.map((n) => (
-            <button key={n.key} className={"nav-item" + (n.key === "channels" ? " active" : "") + (n.enabled ? "" : " disabled")} title={n.enabled ? "" : `未启用(${n.hint})`}>
+            <button
+              key={n.key}
+              className={
+                "nav-item" +
+                ((n.key === "home" && view === "home") || (n.key === "channels" && view === "channels")
+                  ? " active"
+                  : "") +
+                (n.enabled ? "" : " disabled")
+              }
+              title={n.enabled ? "" : `未启用(${n.hint})`}
+              onClick={() => {
+                if (n.key === "home") {
+                  setView("home");
+                  refreshAudit();
+                } else if (n.key === "channels") {
+                  setView("channels");
+                }
+              }}
+            >
               {n.label}
               {!n.enabled && <em>{n.hint}</em>}
             </button>
@@ -343,6 +416,10 @@ export default function App() {
         </div>
       </aside>
 
+      {view === "home" && <HomePage home={home} drillOn={drillOn} onRefresh={refreshAudit} />}
+
+      {view === "channels" && (
+        <>
       {/* ---------------- 频道列 ---------------- */}
       <section className="channels">
         <header>频道消息</header>
@@ -532,6 +609,189 @@ export default function App() {
           </div>
         </div>
       </aside>
+        </>
+      )}
     </div>
+  );
+}
+
+function HomePage({
+  home,
+  drillOn,
+  onRefresh,
+}: {
+  home: HomeStats | null;
+  drillOn: boolean;
+  onRefresh: () => void;
+}) {
+  const [hoverBar, setHoverBar] = useState<number | null>(null);
+  if (!home) {
+    return (
+      <main className="home">
+        <div className="hint">统计加载中…</div>
+      </main>
+    );
+  }
+  const maxV = Math.max(1, ...home.throughput.flatMap((d) => [d.local, d.cloud]));
+  const runsDiff = home.runs_week - home.runs_prev_week;
+  const egressDiff = home.egress_week_bytes - home.egress_prev_week_bytes;
+  return (
+    <main className="home">
+      <header className="home-head">
+        <div>
+          <b>首页</b>
+          <small>每个数字 = 审计表一条 SQL(G1 口径),不做前端估算</small>
+        </div>
+        {drillOn && <span className="drill-chip">演习中 · 外联切断</span>}
+        <button className="mini" onClick={onRefresh}>
+          刷新
+        </button>
+      </header>
+
+      <div className="kpis">
+        <div className="tile">
+          <small>本周任务 Runs</small>
+          <b>{home.runs_week}</b>
+          <span className="delta">
+            {home.runs_prev_week || home.runs_week
+              ? `较上周 ${runsDiff >= 0 ? "+" : ""}${runsDiff}`
+              : "本周暂无"}
+          </span>
+        </div>
+        <div className="tile">
+          <small>待我审批</small>
+          <b>{home.pending_approvals}</b>
+          <span className="delta">工牌 A-007 · 审批流于 P5 接入</span>
+        </div>
+        <div className="tile">
+          <small>云端外发 · 近 7 日</small>
+          <b>{fmtBytes(home.egress_week_bytes)}</b>
+          <span className={"delta " + (egressDiff > 0 ? "bad" : egressDiff < 0 ? "good" : "")}>
+            {egressDiff === 0
+              ? "与上周持平 · 越少越好"
+              : `较上周 ${egressDiff > 0 ? "+" : "−"}${fmtBytes(Math.abs(egressDiff))} · 越少越好`}
+          </span>
+          {home.unmetered_week > 0 && (
+            <span className="delta bad">unmetered {home.unmetered_week} 次(按违规计)</span>
+          )}
+        </div>
+        <div className="tile">
+          <small>最近演习</small>
+          {home.drill_last ? (
+            <>
+              <b className={home.drill_last.ok ? "ok-ink" : "bad-ink"}>
+                {home.drill_last.ok ? "✓ 达标" : "✗ 不达标"}
+              </b>
+              <span className="delta">
+                {fmtDate(home.drill_last.ts_ms)} · 外发 {fmtBytes(home.drill_last.egress_bytes)}
+              </span>
+            </>
+          ) : (
+            <>
+              <b>—</b>
+              <span className="delta">尚未演习 · 侧栏黑卡可启动</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="card chart-card">
+        <div className="chart-head">
+          <div>
+            <b>任务吞吐</b>
+            <small>近 7 日 · 模型调用(model.call)按落点</small>
+          </div>
+          <span className="legend">
+            <i className="ldot cloud" />
+            云端
+            <i className="ldot local" />
+            本地
+          </span>
+        </div>
+        <div className="bars">
+          {home.throughput.map((d, i) => (
+            <div
+              key={d.date}
+              className="day"
+              onMouseEnter={() => setHoverBar(i)}
+              onMouseLeave={() => setHoverBar(null)}
+            >
+              {hoverBar === i && (
+                <div className="tip">
+                  {d.date.slice(5)} · 云端 {d.cloud} · 本地 {d.local}
+                </div>
+              )}
+              <div className="bar-area">
+                <div className="bar cloud" style={{ height: `${(d.cloud / maxV) * 100}%` }}>
+                  {d.cloud > 0 && <span>{d.cloud}</span>}
+                </div>
+                <div className="bar local" style={{ height: `${(d.local / maxV) * 100}%` }}>
+                  {d.local > 0 && <span>{d.local}</span>}
+                </div>
+              </div>
+              <small className={"wd" + (i === home.throughput.length - 1 ? " today" : "")}>
+                {i === home.throughput.length - 1 ? "今天" : `周${WEEKDAY_ZH[+d.weekday]}`}
+              </small>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="home-row">
+        <div className="card">
+          <div className="card-title">路由统计 · 近 7 日</div>
+          <div className="route-stats">
+            <div>
+              <i className="ldot cloud" />
+              云端调用<b>{home.cloud_calls_week}</b>
+            </div>
+            <div>
+              <i className="ldot local" />
+              本地调用<b>{home.local_calls_week}</b>
+            </div>
+            <div>
+              <i className="ldot amber" />
+              降级落地<b>{home.downgrades.length}</b>
+            </div>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-title">降级通知</div>
+          {home.downgrades.length === 0 ? (
+            <div className="hint">
+              近 7 日无降级。降级 = 云端被排除且本地接住;当前本地通道未在线,发生的是拒绝
+              (拒绝落审计属 E4 待办)。
+            </div>
+          ) : (
+            home.downgrades.map((d, i) => (
+              <div key={i} className="feed-row">
+                <span>{d.text}</span>
+                <small>
+                  {d.run_id ?? ""} · {fmtDate(d.ts_ms)}
+                </small>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">最近任务(run.finish)</div>
+        {home.recent_runs.length === 0 ? (
+          <div className="hint">
+            还没有完整任务——去频道用「▶ 任务」发起一个,run.start / run.finish 链会出现在这里。
+          </div>
+        ) : (
+          home.recent_runs.map((r) => (
+            <div key={r.run_id + r.ts_ms} className="run-row">
+              <b>{r.run_id}</b>
+              <span className={"run-chip " + (r.outcome === "success" ? "ok" : "bad")}>{r.outcome}</span>
+              <small>{(r.duration_ms / 1000).toFixed(1)}s</small>
+              <small className="dim">{fmtDate(r.ts_ms)}</small>
+            </div>
+          ))
+        )}
+      </div>
+    </main>
   );
 }

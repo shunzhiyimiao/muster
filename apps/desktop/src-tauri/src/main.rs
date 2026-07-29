@@ -17,8 +17,8 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 
 use muster_audit::{
-    drill_report, recent_events, Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent,
-    Scope,
+    day_throughput, distinct_runs, downgrades_zh, drill_report, pending_approvals, recent_events,
+    recent_events_of, Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
 use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
@@ -195,6 +195,136 @@ struct ChainStatus {
     ok: bool,
     rows: u64,
     detail: String,
+}
+
+// ---------------------------------------------------------------- 首页数据
+
+#[derive(Serialize)]
+struct DayBar {
+    date: String,
+    weekday: String,
+    local: u64,
+    cloud: u64,
+}
+
+#[derive(Serialize)]
+struct DrillLast {
+    ts_ms: u64,
+    drill_id: String,
+    egress_bytes: u64,
+    unmetered_calls: u64,
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct DowngradeItem {
+    ts_ms: u64,
+    run_id: Option<String>,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct RunItem {
+    ts_ms: u64,
+    run_id: String,
+    outcome: String,
+    duration_ms: u64,
+}
+
+/// 首页全部数字——每一项都由 muster-audit::queries 的一条 SQL 产出(G1 口径)。
+#[derive(Serialize)]
+struct HomeStats {
+    runs_week: u64,
+    runs_prev_week: u64,
+    egress_week_bytes: u64,
+    egress_prev_week_bytes: u64,
+    unmetered_week: u64,
+    cloud_calls_week: u64,
+    local_calls_week: u64,
+    pending_approvals: u64,
+    drill_last: Option<DrillLast>,
+    throughput: Vec<DayBar>,
+    downgrades: Vec<DowngradeItem>,
+    recent_runs: Vec<RunItem>,
+}
+
+const WEEK_MS: u64 = 7 * 24 * 3600 * 1000;
+
+#[tauri::command]
+fn home_stats(state: State<'_, AppState>) -> Result<HomeStats, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    let conn = store.conn();
+    let now = now_ms();
+    let week_ago = now.saturating_sub(WEEK_MS);
+    let two_weeks_ago = now.saturating_sub(2 * WEEK_MS);
+
+    let week = drill_report(conn, week_ago, now).map_err(|e| e.to_string())?;
+    let prev = drill_report(conn, two_weeks_ago, week_ago).map_err(|e| e.to_string())?;
+
+    let drill_last = recent_events_of(conn, "drill.end", 1)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+        .map(|e| {
+            let egress = e.payload["egress_bytes_snapshot"].as_u64().unwrap_or(0);
+            let unmetered = e.payload["unmetered_calls_snapshot"].as_u64().unwrap_or(0);
+            DrillLast {
+                ts_ms: e.ts_ms,
+                drill_id: e.payload["drill_id"].as_str().unwrap_or("?").to_string(),
+                egress_bytes: egress,
+                unmetered_calls: unmetered,
+                ok: egress == 0 && unmetered == 0,
+            }
+        });
+
+    let recent_runs = recent_events_of(conn, "run.finish", 8)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|e| {
+            let outcome = match &e.payload["outcome"] {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Object(o) => o
+                    .get("failed")
+                    .and_then(|f| f["class"].as_str())
+                    .map(|c| format!("failed:{c}"))
+                    .unwrap_or_else(|| "?".into()),
+                _ => "?".into(),
+            };
+            RunItem {
+                ts_ms: e.ts_ms,
+                run_id: e.run_id.unwrap_or_else(|| "—".into()),
+                outcome,
+                duration_ms: e.payload["duration_ms"].as_u64().unwrap_or(0),
+            }
+        })
+        .collect();
+
+    Ok(HomeStats {
+        runs_week: distinct_runs(conn, week_ago, now).map_err(|e| e.to_string())?,
+        runs_prev_week: distinct_runs(conn, two_weeks_ago, week_ago).map_err(|e| e.to_string())?,
+        egress_week_bytes: week.egress_bytes,
+        egress_prev_week_bytes: prev.egress_bytes,
+        unmetered_week: week.unmetered_calls,
+        cloud_calls_week: week.cloud_calls,
+        local_calls_week: week.local_calls,
+        pending_approvals: pending_approvals(conn, AGENT_BADGE).map_err(|e| e.to_string())?,
+        drill_last,
+        throughput: day_throughput(conn, 7)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|d| DayBar { date: d.date, weekday: d.weekday, local: d.local, cloud: d.cloud })
+            .collect(),
+        downgrades: downgrades_zh(conn, week_ago, now)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .rev()
+            .take(6)
+            .map(|(ts_ms, run_id, text)| DowngradeItem { ts_ms, run_id, text: text.to_string() })
+            .collect(),
+        recent_runs,
+    })
 }
 
 // ---------------------------------------------------------------- 命令
@@ -699,7 +829,8 @@ fn main() {
             run_workspace_task,
             audit_tail,
             verify_chain,
-            toggle_drill
+            toggle_drill,
+            home_stats
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");
