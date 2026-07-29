@@ -24,6 +24,20 @@ interface Bootstrap {
   providers: ProviderCard[];
   policy_cloud_max: Sensitivity;
   audit_db: string;
+  egress_locked: boolean;
+}
+interface DrillReportOut {
+  model_calls: number;
+  egress_bytes: number;
+  unmetered_calls: number;
+  local_calls: number;
+  cloud_calls: number;
+  ok: boolean;
+}
+interface DrillStatus {
+  on: boolean;
+  drill_id: string | null;
+  report: DrillReportOut | null;
 }
 interface Decider {
   origin: string;
@@ -123,6 +137,9 @@ export default function App() {
   const [audit, setAudit] = useState<AuditRow[]>([]);
   const [chain, setChain] = useState<ChainStatus | null>(null);
   const [draft, setDraft] = useState("");
+  const [drillOn, setDrillOn] = useState(false);
+  const [drillId, setDrillId] = useState<string | null>(null);
+  const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
 
   // run_id → { channelId, msgKey };task-start 早于 invoke 返回,用挂起队列衔接。
   const runIndex = useRef<Record<string, { channelId: string; msgKey: string }>>({});
@@ -138,6 +155,7 @@ export default function App() {
     invoke<Bootstrap>("bootstrap")
       .then((b) => {
         setBoot(b);
+        setDrillOn(b.egress_locked);
         refreshAudit();
       })
       .catch((e) => setBootErr(String(e)));
@@ -210,6 +228,17 @@ export default function App() {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [msgs, active]);
 
+  const toggleDrill = () => {
+    invoke<DrillStatus>("toggle_drill", { on: !drillOn })
+      .then((s) => {
+        setDrillOn(s.on);
+        setDrillId(s.drill_id);
+        setDrillReport(s.on ? null : s.report);
+        refreshAudit();
+      })
+      .catch(() => {});
+  };
+
   const send = () => {
     const text = draft.trim();
     if (!text || !boot || busy[active]) return;
@@ -273,12 +302,40 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="drill-card">
-          <b>主权演习</b>
-          <p>季度合规窗口:切断外联,验证全组织本地执行能力</p>
-          <button disabled title="E6 已在路由层就绪,UI 于 P5 接入">
-            演习入口(P5)
-          </button>
+        <div className={"drill-card" + (drillOn ? " on" : "")}>
+          <b>主权演习{drillOn && " · 进行中"}</b>
+          {drillOn ? (
+            <p className="live">
+              全组织外联已切断,任务强制本地执行
+              <br />
+              {drillId ?? ""}
+            </p>
+          ) : (
+            <p>季度合规窗口:切断外联,验证全组织本地执行能力</p>
+          )}
+          <button onClick={toggleDrill}>{drillOn ? "结束演习并出报告" : "启动演习"}</button>
+          {drillReport && !drillOn && (
+            <div className="drill-report">
+              <div>
+                <b>{drillReport.egress_bytes} B</b>
+                <small>窗口外发</small>
+              </div>
+              <div>
+                <b>{drillReport.model_calls}</b>
+                <small>模型调用</small>
+              </div>
+              <div>
+                <b>
+                  {drillReport.local_calls}/{drillReport.cloud_calls}
+                </b>
+                <small>本地/云端</small>
+              </div>
+              <div>
+                <b>{drillReport.ok ? "✓ 达标" : "✗ 不达标"}</b>
+                <small>unmetered {drillReport.unmetered_calls}</small>
+              </div>
+            </div>
+          )}
         </div>
         <div className="side-foot">
           <div>策略:cloud_max = {boot.policy_cloud_max}</div>
@@ -321,6 +378,7 @@ export default function App() {
             <span className={`lv-chip lv-${channel.level}`} title={channel.level_note}>
               {channel.level}
             </span>
+            {drillOn && <span className="drill-chip">演习中 · 外联切断</span>}
           </div>
           <small>{channel.level_note}</small>
         </header>

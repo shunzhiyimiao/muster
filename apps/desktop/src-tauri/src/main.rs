@@ -10,16 +10,17 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use serde::Serialize;
 use tauri::{Emitter, State};
 
 use muster_audit::{
-    recent_events, Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
+    drill_report, recent_events, Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent,
+    Scope,
 };
-use muster_provider::{ChatMessage, ChatRequest, ProviderRegistry, StreamEvent};
+use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
 use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
 
 const POLICY_VERSION: &str = "policy-v1";
@@ -87,10 +88,21 @@ fn label_sources(channel_id: &str) -> Vec<LabelSource> {
 
 // ---------------------------------------------------------------- 状态
 
+/// 进行中的演习(E6):id + 起始时刻,结束时用 drill_report 聚合窗口。
+struct DrillState {
+    id: String,
+    from_ms: u64,
+}
+
 struct Backend {
     router: Arc<Router>,
     audit: Arc<Mutex<AuditStore>>,
     run_seq: Arc<AtomicU64>,
+    drill: Arc<Mutex<Option<DrillState>>>,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).expect("时钟早于 epoch").as_millis() as u64
 }
 
 #[derive(Default)]
@@ -112,6 +124,24 @@ struct BootstrapInfo {
     providers: Vec<ProviderCard>,
     policy_cloud_max: Sensitivity,
     audit_db: String,
+    egress_locked: bool,
+}
+
+#[derive(Serialize)]
+struct DrillReportOut {
+    model_calls: u64,
+    egress_bytes: u64,
+    unmetered_calls: u64,
+    local_calls: u64,
+    cloud_calls: u64,
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct DrillStatus {
+    on: bool,
+    drill_id: Option<String>,
+    report: Option<DrillReportOut>,
 }
 
 #[derive(Serialize, Clone)]
@@ -187,6 +217,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
             router,
             audit: Arc::new(Mutex::new(audit)),
             run_seq: Arc::new(AtomicU64::new(0)),
+            drill: Arc::new(Mutex::new(None)),
         });
     }
     let backend = guard.as_ref().unwrap();
@@ -207,6 +238,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
         providers,
         policy_cloud_max: backend.router.policy_snapshot().cloud_max(),
         audit_db: format!("{home}/.muster/desktop-audit.db"),
+        egress_locked: backend.router.egress_locked(),
     })
 }
 
@@ -372,7 +404,13 @@ async fn send_message(
                     tokens_in: prompt_tokens,
                     tokens_out: completion_tokens,
                     bytes_in: full.len() as u64,
-                    bytes_out: EgressBytes::Measured(request_bytes),
+                    // 外发口径 = 公网出口字节:本地回环不算外发,记 Measured(0)
+                    //(演习报告对所有 Measured 求和,本地若记载荷字节会误报违规)。
+                    bytes_out: if plan.primary_locality == Locality::Cloud {
+                        EgressBytes::Measured(request_bytes)
+                    } else {
+                        EgressBytes::Measured(0)
+                    },
                     latency_ms,
                     request_hash: ContentHash::sha256(request_repr.as_bytes()),
                 },
@@ -436,6 +474,80 @@ fn audit_tail(state: State<'_, AppState>, limit: u64) -> Result<Vec<AuditRow>, S
         .collect())
 }
 
+/// E6 主权演习开关。演习不是特殊逻辑,是策略的一个取值:复用同一条
+/// fail-closed 路由路径;结束时以 SQL 聚合窗口出第 8 幕报告。
+#[tauri::command]
+fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, String> {
+    let (router, audit, drill) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.router.clone(), b.audit.clone(), b.drill.clone())
+    };
+    let mut d = drill.lock().unwrap();
+    if on {
+        if let Some(cur) = d.as_ref() {
+            return Ok(DrillStatus { on: true, drill_id: Some(cur.id.clone()), report: None });
+        }
+        let from_ms = now_ms();
+        let id = format!("DRILL-{from_ms}");
+        router.set_egress_locked(true);
+        audit
+            .lock()
+            .unwrap()
+            .append(NewEvent {
+                ts_ms: None,
+                actor: Actor::human("owner"),
+                scope: Scope::default(),
+                run_id: None,
+                session_id: None,
+                policy_version: Some(POLICY_VERSION.into()),
+                label: None,
+                locality: None,
+                body: EventBody::DrillStart { drill_id: id.clone() },
+            })
+            .map_err(|e| format!("审计写入失败:{e}"))?;
+        *d = Some(DrillState { id: id.clone(), from_ms });
+        Ok(DrillStatus { on: true, drill_id: Some(id), report: None })
+    } else {
+        let Some(cur) = d.take() else {
+            return Ok(DrillStatus { on: false, drill_id: None, report: None });
+        };
+        router.set_egress_locked(false);
+        let to_ms = now_ms();
+        let mut store = audit.lock().unwrap();
+        let report = drill_report(store.conn(), cur.from_ms, to_ms).map_err(|e| e.to_string())?;
+        store
+            .append(NewEvent {
+                ts_ms: None,
+                actor: Actor::human("owner"),
+                scope: Scope::default(),
+                run_id: None,
+                session_id: None,
+                policy_version: Some(POLICY_VERSION.into()),
+                label: None,
+                locality: None,
+                body: EventBody::DrillEnd {
+                    drill_id: cur.id.clone(),
+                    egress_bytes_snapshot: report.egress_bytes,
+                    unmetered_calls_snapshot: report.unmetered_calls,
+                },
+            })
+            .map_err(|e| format!("审计写入失败:{e}"))?;
+        Ok(DrillStatus {
+            on: false,
+            drill_id: Some(cur.id),
+            report: Some(DrillReportOut {
+                model_calls: report.model_calls,
+                egress_bytes: report.egress_bytes,
+                unmetered_calls: report.unmetered_calls,
+                local_calls: report.local_calls,
+                cloud_calls: report.cloud_calls,
+                ok: report.ok(),
+            }),
+        })
+    }
+}
+
 #[tauri::command]
 fn verify_chain(state: State<'_, AppState>) -> Result<ChainStatus, String> {
     let guard = state.0.lock().unwrap();
@@ -450,7 +562,13 @@ fn verify_chain(state: State<'_, AppState>) -> Result<ChainStatus, String> {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![bootstrap, send_message, audit_tail, verify_chain])
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            send_message,
+            audit_tail,
+            verify_chain,
+            toggle_drill
+        ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");
 }
