@@ -1,3 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["muster-provider", "muster-eval", "muster-route", "muster-audit", "muster-runner"]
+members = [
+    "muster-provider",
+    "muster-eval",
+    "muster-route",
+    "muster-audit",
+    "muster-runner",
+    "muster-gateway",
+]

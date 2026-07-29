@@ -1,0 +1,20 @@
+[package]
+name = "muster-gateway"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Muster model-gateway — 对外讲 OpenAI Responses API,对内走 muster-provider(chat/completions);让 Codex fork 用上任何 chat 系模型"
+
+[dependencies]
+muster-provider = { path = "../muster-provider" }
+axum = "0.7"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tokio-stream = "0.1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
