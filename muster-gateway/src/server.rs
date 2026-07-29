@@ -81,6 +81,13 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
     if !translated.dropped.is_empty() {
         tracing::warn!(dropped = ?translated.dropped, "Responses 请求中的不支持项已丢弃");
     }
+    tracing::info!(
+        %response_id,
+        input_items = req.input.len(),
+        messages = translated.request.messages.len(),
+        tools = translated.request.tools.len(),
+        "收到 Responses 请求"
+    );
     let model = st.provider.metadata().model.clone();
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
@@ -89,20 +96,28 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
     let id_base = st.next_id("item");
 
     tokio::spawn(async move {
+        let started = std::time::Instant::now();
         let _ = tx.send(ev_created(&rid, &model));
         let mut stream = match provider.chat_stream(translated.request).await {
             Ok(s) => s,
             Err(e) => {
+                tracing::error!(%rid, error = %e, "开流失败");
                 let _ = tx.send(ev_failed(&format!("开流失败:{e}")));
                 return;
             }
         };
+        tracing::info!(%rid, elapsed_ms = started.elapsed().as_millis(), "上游已开流");
 
         let mut text = String::new();
         let mut acc = ToolCallAccumulator::new();
         let mut usage: Option<Usage> = None;
+        let mut first_token_logged = false;
 
         while let Some(ev) = stream.next().await {
+            if !first_token_logged {
+                first_token_logged = true;
+                tracing::info!(%rid, elapsed_ms = started.elapsed().as_millis(), "上游首个事件");
+            }
             match ev {
                 Ok(StreamEvent::TextDelta(d)) => {
                     text.push_str(&d);
@@ -120,6 +135,7 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
                 }
                 Ok(StreamEvent::Finish(_)) => {}
                 Err(e) => {
+                    tracing::error!(%rid, error = %e, "上游流错误");
                     let _ = tx.send(ev_failed(&e.to_string()));
                     return;
                 }
@@ -130,9 +146,18 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
         if !text.is_empty() {
             let _ = tx.send(ev_message_done(&format!("{id_base}_msg"), &text));
         }
-        for (i, call) in acc.finish().into_iter().enumerate() {
-            let _ = tx.send(ev_function_call_done(&format!("{id_base}_fc{i}"), &call));
+        let calls = acc.finish();
+        let call_names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+        for (i, call) in calls.iter().enumerate() {
+            let _ = tx.send(ev_function_call_done(&format!("{id_base}_fc{i}"), call));
         }
+        tracing::info!(
+            %rid,
+            elapsed_ms = started.elapsed().as_millis(),
+            text_len = text.chars().count(),
+            tool_calls = ?call_names,
+            "本轮完成"
+        );
         let _ = tx.send(ev_completed(&rid, usage));
     });
 
