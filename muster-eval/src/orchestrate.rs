@@ -65,6 +65,7 @@ pub async fn run_eval(
         trials_per_sample: trials,
         threshold,
         gen,
+        prompt_version: muster_prompt::VERSION.to_owned(),
         system_prompt: SYSTEM_PROMPT.to_owned(),
         providers: provider_reports,
         gate_passed,

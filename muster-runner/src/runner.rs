@@ -35,9 +35,8 @@ impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             badge: "A-007".into(),
-            system_prompt: "你是 Muster 点将台的协作 Agent。需要了解工作区内容时调用只读工具;\
-                            回答用中文,引用文件请带相对路径。"
-                .into(),
+            // A1 正式提示词,与 A7 评测同源(muster-prompt);改它必须重跑评测。
+            system_prompt: muster_prompt::SYSTEM_PROMPT.into(),
             policy_version: "policy-v1".into(),
             max_turns: 8,
         }
@@ -265,11 +264,19 @@ pub async fn run_task(
 
     // ---- 工具循环
     let mut messages = vec![
-        ChatMessage::system(format!(
-            "{}\n工作区:{}(只读工具:list_dir / read_file / grep)",
-            cfg.system_prompt,
-            tools.workspace().display()
-        )),
+        ChatMessage::system(if cfg.system_prompt == muster_prompt::SYSTEM_PROMPT {
+            // 默认提示词走 A1 的标准拼装(工作区 + 工具清单在同一处维护)
+            muster_prompt::with_workspace(
+                &tools.workspace().display().to_string(),
+                &["list_dir", "read_file", "grep"],
+            )
+        } else {
+            format!(
+                "{}\n工作区:{}(只读工具:list_dir / read_file / grep)",
+                cfg.system_prompt,
+                tools.workspace().display()
+            )
+        }),
         ChatMessage::user(spec.prompt.clone()),
     ];
     let specs = tools.specs();

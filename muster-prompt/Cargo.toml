@@ -1,0 +1,8 @@
+[package]
+name = "muster-prompt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Muster A1 — Agent 系统提示词的唯一出处(零依赖:执行器与评测集共用同一份文本)"
+
+[dependencies]

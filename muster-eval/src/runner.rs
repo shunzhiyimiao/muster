@@ -18,7 +18,9 @@ use muster_provider::{
 use crate::grade::{grade_turn, snippet, TurnExpectation};
 use crate::samples::Sample;
 
-pub const SYSTEM_PROMPT: &str = "你是 Muster 的代码协作 Agent。需要外部信息或执行操作时,必须调用已声明的工具,参数严格符合工具 schema;能直接回答的问题就直接用文本回答,不要调用无关工具。";
+/// A1 正式提示词——**与执行器同源**(muster-prompt 是唯一出处)。
+/// 度量对象是「系统提示词 + provider」整体,两侧各写一份即闸门证据失真。
+pub use muster_prompt::SYSTEM_PROMPT;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -7,6 +7,7 @@ description = "Muster B1 — 任务执行器:路由 → 流式工具循环 → �
 
 [dependencies]
 muster-provider = { path = "../muster-provider" }
+muster-prompt = { path = "../muster-prompt" }
 muster-route = { path = "../muster-route" }
 muster-audit = { path = "../muster-audit" }
 serde = { version = "1", features = ["derive"] }

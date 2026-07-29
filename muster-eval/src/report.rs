@@ -20,6 +20,8 @@ pub struct EvalReport {
     pub threshold: f64,
     /// 实际生成参数(默认口径 temperature=0/max_tokens=512;偏离必须显式传入并随报告披露)。
     pub gen: GenParams,
+    /// A1 提示词版本(muster-prompt::VERSION):改提示词即改闸门证据前提。
+    pub prompt_version: String,
     pub system_prompt: String,
     pub providers: Vec<ProviderReport>,
     /// 闸门总判定:所有 provider 有效且达标。
@@ -71,13 +73,14 @@ pub fn render_markdown(report: &EvalReport, samples: &[Sample]) -> String {
     let mut md = String::new();
     md.push_str("# Muster A7 · 工具调用评测报告(G0′ 闸门证据)\n\n");
     md.push_str(&format!(
-        "- 生成时间:{}\n- 样本数:{} × 每样本试次:{}\n- 阈值:{:.0}%\n- 生成参数:temperature={} / max_tokens={}\n- 系统提示词:见附录 B\n\n",
+        "- 生成时间:{}\n- 样本数:{} × 每样本试次:{}\n- 阈值:{:.0}%\n- 生成参数:temperature={} / max_tokens={}\n- 提示词版本:{}(见附录 B)\n\n",
         report.generated_at,
         samples.len(),
         report.trials_per_sample,
         report.threshold * 100.0,
         report.gen.temperature,
-        report.gen.max_tokens
+        report.gen.max_tokens,
+        report.prompt_version
     ));
 
     md.push_str(&format!(

@@ -655,6 +655,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "futures",
+ "muster-prompt",
  "muster-provider",
  "serde",
  "serde_json",
@@ -676,6 +677,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "muster-prompt"
+version = "0.1.0"
 
 [[package]]
 name = "muster-provider"
@@ -710,6 +715,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "muster-audit",
+ "muster-prompt",
  "muster-provider",
  "muster-route",
  "serde",
