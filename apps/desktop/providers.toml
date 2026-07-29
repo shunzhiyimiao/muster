@@ -1,0 +1,23 @@
+# 桌面壳的 provider 注册表(独立于根目录 example:注册表启动时解析全部
+# api_key_env,桌面版只带实际可用的通道)。密钥永远只写环境变量名。
+
+default = "kimi"
+
+[providers.kimi]
+kind = "openai_compat"
+base_url = "https://api.kimi.com/coding/v1"
+model = "kimi-k3"
+locality = "cloud"
+display_name = "云端·Kimi K3"
+api_key_env = "KIMI_API_KEY"
+timeout_secs = 300
+
+# 本地通道:Ollama 未运行时探活失败,restricted 频道将 fail-closed 拒绝
+# ——这是产品行为,不是故障(绝不静默升云)。
+[providers.local-ollama]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:11434/v1"
+model = "qwen3:8b"
+locality = "local"
+display_name = "本地·Ollama"
+timeout_secs = 300

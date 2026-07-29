@@ -1,0 +1,22 @@
+[package]
+name = "muster-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Muster 点将台桌面壳(P1-07/08/09):频道 → 路由决策 → 流式任务卡 → 审计"
+
+# 独立于根工作区:桌面壳的依赖树(tauri/wry)庞大,不应拖慢核心 crate 的
+# `cargo test --workspace` 基线;后续如需并入再做。
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+muster-provider = { path = "../../../muster-provider" }
+muster-route = { path = "../../../muster-route" }
+muster-audit = { path = "../../../muster-audit" }

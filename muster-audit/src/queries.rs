@@ -156,3 +156,19 @@ pub fn run_chain(conn: &Connection, run_id: &str) -> Result<Vec<AuditEvent>, Sto
     }
     Ok(out)
 }
+
+/// 审计中心侧栏:最近 N 条事件,倒序(event_id 为 ULID,字典序即时间序)。
+pub const SQL_RECENT: &str =
+    "SELECT event_id, ts_ms, actor_kind, actor_id, run_id, session_id, team, channel,
+            label, locality, policy_version, schema_version, payload, prev_hash, hash
+     FROM audit_event ORDER BY event_id DESC LIMIT ?1";
+
+pub fn recent_events(conn: &Connection, limit: u64) -> Result<Vec<AuditEvent>, StoreError> {
+    let mut stmt = conn.prepare(SQL_RECENT)?;
+    let rows = stmt.query_map(params![limit], row_to_event)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}

@@ -1,0 +1,599 @@
+/* 设计 token 取自 docs/Muster点将台-概念稿-v2.html,保持同一视觉语系 */
+:root {
+  --canvas: #e9eaf2;
+  --shell: #ffffff;
+  --panel: #f7f8fb;
+  --soft: #f1f2f7;
+  --line: #ecedf3;
+  --ink: #17181c;
+  --sub: #8b8fa3;
+  --faint: #b9bccb;
+  --indigo: #5b5bf5;
+  --indigo-deep: #4747e0;
+  --indigo-soft: #eeeefe;
+  --green: #16a34a;
+  --green-soft: #e4f6ec;
+  --red: #e5484d;
+  --red-soft: #fde9e9;
+  --amber: #d97706;
+  --amber-soft: #fcf1df;
+  --teal: #0ea5a5;
+  --teal-soft: #e2f5f5;
+}
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  overflow: hidden;
+}
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d6d8e3;
+  border-radius: 4px;
+}
+
+.shell {
+  position: absolute;
+  inset: 14px;
+  background: var(--shell);
+  border-radius: 26px;
+  display: flex;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(23, 24, 28, 0.08);
+}
+.boot-loading,
+.boot-err {
+  align-items: center;
+  justify-content: center;
+  color: var(--sub);
+  font-size: 14px;
+}
+.boot-err {
+  color: var(--ink);
+  padding: 40px;
+}
+.boot-err pre {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--red-soft);
+  color: var(--red);
+  border-radius: 10px;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+/* ---------------- 侧栏 ---------------- */
+.side {
+  width: 224px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 14px;
+  gap: 6px;
+}
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 6px 14px;
+}
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--indigo);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+}
+.brand b {
+  font-size: 14px;
+  display: block;
+}
+.brand small {
+  color: var(--sub);
+  font-size: 11px;
+}
+.nav-title {
+  font-size: 11px;
+  color: var(--faint);
+  padding: 8px 6px 4px;
+  letter-spacing: 0.06em;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.nav-item:hover {
+  background: var(--soft);
+}
+.nav-item.active {
+  background: var(--indigo-soft);
+  color: var(--indigo-deep);
+  font-weight: 600;
+}
+.nav-item.disabled {
+  color: var(--faint);
+  cursor: default;
+}
+.nav-item.disabled:hover {
+  background: none;
+}
+.nav-item em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--faint);
+}
+.drill-card {
+  margin-top: auto;
+  background: #17181c;
+  color: #fff;
+  border-radius: 14px;
+  padding: 14px;
+}
+.drill-card b {
+  font-size: 13px;
+}
+.drill-card p {
+  font-size: 11px;
+  color: #b9bccb;
+  margin: 6px 0 10px;
+  line-height: 1.5;
+}
+.drill-card button {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 8px;
+  padding: 7px;
+  font-size: 12px;
+}
+.drill-card button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.side-foot {
+  padding: 10px 6px 0;
+  font-size: 10.5px;
+  color: var(--faint);
+  line-height: 1.7;
+}
+
+/* ---------------- 频道列 ---------------- */
+.channels {
+  width: 252px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 18px 12px;
+  overflow-y: auto;
+}
+.channels > header {
+  font-size: 15px;
+  font-weight: 700;
+  padding: 0 6px 12px;
+}
+.chan {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+  align-items: center;
+  text-align: left;
+  padding: 10px;
+  border-radius: 12px;
+  margin-bottom: 4px;
+}
+.chan:hover {
+  background: var(--soft);
+}
+.chan.active {
+  background: var(--indigo-soft);
+}
+.chan-text {
+  flex: 1;
+  min-width: 0;
+}
+.chan-text b {
+  display: block;
+  font-size: 13px;
+}
+.chan-text small {
+  display: block;
+  color: var(--sub);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.providers {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.prov {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+/* 密级/位置徽章 */
+.lv-chip,
+.loc-chip {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  flex: none;
+  font-weight: 600;
+}
+.lv-open {
+  background: var(--soft);
+  color: var(--sub);
+}
+.lv-internal {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+.lv-restricted {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.dot.lv-open {
+  background: var(--faint);
+}
+.dot.lv-internal {
+  background: var(--amber);
+}
+.dot.lv-restricted {
+  background: var(--red);
+}
+.loc-cloud {
+  background: var(--indigo-soft);
+  color: var(--indigo-deep);
+}
+.loc-local {
+  background: var(--teal-soft);
+  color: var(--teal);
+}
+
+/* ---------------- 会话区 ---------------- */
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-head {
+  padding: 16px 22px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-head > div {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 15px;
+}
+.chat-head small {
+  color: var(--sub);
+  font-size: 11.5px;
+}
+.chat-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 22px;
+  background: var(--panel);
+}
+.empty {
+  max-width: 460px;
+  margin: 60px auto;
+  text-align: center;
+  color: var(--sub);
+}
+.empty b {
+  color: var(--ink);
+  font-size: 14px;
+}
+.empty p {
+  font-size: 12.5px;
+  margin-top: 8px;
+  line-height: 1.7;
+}
+.msg {
+  margin-bottom: 14px;
+  max-width: 78%;
+}
+.msg.user {
+  margin-left: auto;
+}
+.msg-meta {
+  font-size: 10.5px;
+  color: var(--faint);
+  margin: 0 6px 4px;
+}
+.msg.user .msg-meta {
+  text-align: right;
+}
+.bubble {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--shell);
+  border: 1px solid var(--line);
+}
+.msg.user .bubble {
+  background: var(--indigo);
+  color: #fff;
+  border: none;
+}
+.msg.st-refused .bubble {
+  background: var(--red-soft);
+  border-color: #f5c9ca;
+  color: #8f2b2e;
+}
+.msg.st-failed .bubble {
+  border-color: #f0d9b8;
+  background: var(--amber-soft);
+}
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--indigo);
+  margin-left: 2px;
+  vertical-align: -2px;
+  animation: blink 0.9s steps(1) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+.composer {
+  display: flex;
+  gap: 10px;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--line);
+}
+.composer textarea {
+  flex: 1;
+  resize: none;
+  height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  outline: none;
+  background: var(--panel);
+}
+.composer textarea:focus {
+  border-color: var(--indigo);
+  background: #fff;
+}
+.composer button {
+  align-self: flex-end;
+  background: var(--indigo);
+  color: #fff;
+  border-radius: 10px;
+  padding: 9px 22px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.composer button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---------------- 右栏 ---------------- */
+.right {
+  width: 296px;
+  flex: none;
+  border-left: 1px solid var(--line);
+  padding: 16px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 13px;
+}
+.card-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.mini {
+  font-size: 11px;
+  color: var(--indigo-deep);
+  background: var(--indigo-soft);
+  padding: 3px 10px;
+  border-radius: 8px;
+}
+.route-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.route-line b {
+  font-size: 13px;
+}
+.route-line small {
+  color: var(--sub);
+  font-size: 11px;
+}
+.kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--sub);
+  margin-bottom: 8px;
+}
+.deciders {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.decider {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11.5px;
+  background: var(--shell);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+.decider .origin {
+  background: var(--soft);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--sub);
+  flex: none;
+}
+.downgrade {
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 11.5px;
+  border-radius: 8px;
+  padding: 7px 9px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+.refused-box {
+  background: var(--red-soft);
+  border-radius: 10px;
+  padding: 10px;
+  color: #8f2b2e;
+}
+.refused-box b {
+  font-size: 12.5px;
+}
+.refused-box p {
+  font-size: 11.5px;
+  margin-top: 6px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.hint {
+  font-size: 11.5px;
+  color: var(--sub);
+  line-height: 1.6;
+}
+.hint.warn {
+  color: var(--amber);
+}
+.usage {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.usage > div {
+  background: var(--shell);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.usage b {
+  font-size: 14px;
+  display: block;
+}
+.usage small {
+  color: var(--sub);
+  font-size: 10.5px;
+}
+.audit-card {
+  flex: 1;
+}
+.chain {
+  font-size: 11px;
+  border-radius: 8px;
+  padding: 6px 9px;
+  margin-bottom: 8px;
+}
+.chain.ok {
+  background: var(--green-soft);
+  color: var(--green);
+}
+.chain.bad {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.audit-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 10.5px;
+  background: var(--shell);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+.audit-row .etype {
+  font-weight: 700;
+  color: var(--indigo-deep);
+  flex: none;
+}
+.audit-row .erun {
+  color: var(--sub);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-row .ets {
+  color: var(--faint);
+  flex: none;
+}

@@ -49,5 +49,8 @@ pub use event::{
     Actor, ActorKind, AuditEvent, ContentHash, EgressBytes, EventBody, ModelRef, NewEvent,
     Parsed, ReplayRefs, RunOutcome, Scope,
 };
-pub use queries::{downgrades_zh, drill_report, pending_approvals, run_chain, session_lock, DrillReport};
+pub use queries::{
+    downgrades_zh, drill_report, pending_approvals, recent_events, run_chain, session_lock,
+    DrillReport,
+};
 pub use store::{AuditStore, ChainError, StoreError};
