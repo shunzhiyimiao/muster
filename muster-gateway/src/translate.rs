@@ -256,6 +256,34 @@ pub fn ev_created(response_id: &str, model: &str) -> Value {
     })
 }
 
+/// **开启一个输出 item。必须先于任何 `output_text.delta` 发送。**
+///
+/// 实测教训:漏发这条会让 Codex 直接 panic
+/// (`OutputTextDelta without active item`),表现为主进程无限等待、
+/// 看上去像"模型在长思考"。协议的状态机是 added → delta* → done。
+pub fn ev_message_added(item_id: &str) -> Value {
+    json!({
+        "type": "response.output_item.added",
+        "item": { "type": "message", "id": item_id, "role": "assistant", "content": [] }
+    })
+}
+
+/// 工具调用 item 的开启事件,与 [`ev_function_call_done`] 配对。
+pub fn ev_function_call_added(item_id: &str, call: &ToolCall, names: &NameMap) -> Value {
+    let (ns, name) = resolve_name(names, &call.name);
+    let mut item = json!({
+        "type": "function_call",
+        "id": item_id,
+        "name": name,
+        "arguments": "",
+        "call_id": if call.id.is_empty() { item_id } else { call.id.as_str() }
+    });
+    if let Some(ns) = ns {
+        item["namespace"] = json!(ns);
+    }
+    json!({ "type": "response.output_item.added", "item": item })
+}
+
 pub fn ev_text_delta(delta: &str) -> Value {
     json!({ "type": "response.output_text.delta", "delta": delta })
 }

@@ -17,8 +17,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use muster_provider::{ModelProvider, StreamEvent, ToolCallAccumulator};
 
 use crate::translate::{
-    ev_completed, ev_created, ev_failed, ev_function_call_done, ev_message_done, ev_text_delta,
-    to_chat, ResponsesRequest, Usage,
+    ev_completed, ev_created, ev_failed, ev_function_call_added, ev_function_call_done,
+    ev_message_added, ev_message_done, ev_text_delta, to_chat, ResponsesRequest, Usage,
 };
 
 /// 流式空闲看门狗默认值。A2 的总超时管不住"已开流但不再吐字节"的挂起流
@@ -129,6 +129,8 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
         let mut acc = ToolCallAccumulator::new();
         let mut usage: Option<Usage> = None;
         let mut first_token_logged = false;
+        let msg_item_id = format!("{id_base}_msg");
+        let mut msg_item_opened = false;
 
         loop {
             // 空闲看门狗:上游静默超过 idle 即判定挂起并显式失败,
@@ -151,6 +153,14 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
             }
             match ev {
                 Ok(StreamEvent::TextDelta(d)) => {
+                    // 协议状态机:added → delta* → done。漏掉 added 会让 Codex
+                    // panic(OutputTextDelta without active item),实测踩过。
+                    if !msg_item_opened {
+                        msg_item_opened = true;
+                        if tx.send(ev_message_added(&msg_item_id)).is_err() {
+                            return;
+                        }
+                    }
                     text.push_str(&d);
                     if tx.send(ev_text_delta(&d)).is_err() {
                         return; // 客户端断开
@@ -174,13 +184,19 @@ async fn responses(State(st): State<GatewayState>, body: Json<Value>) -> impl In
         }
 
         // 成型顺序:文本 item 先于工具调用 item(与 OpenAI 一致)。
+        // 每个 item 都是 added → (delta*) → done 的完整三段,不留半开状态。
         if !text.is_empty() {
-            let _ = tx.send(ev_message_done(&format!("{id_base}_msg"), &text));
+            if !msg_item_opened {
+                let _ = tx.send(ev_message_added(&msg_item_id));
+            }
+            let _ = tx.send(ev_message_done(&msg_item_id, &text));
         }
         let calls = acc.finish();
         let call_names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
         for (i, call) in calls.iter().enumerate() {
-            let _ = tx.send(ev_function_call_done(&format!("{id_base}_fc{i}"), call, &names));
+            let item_id = format!("{id_base}_fc{i}");
+            let _ = tx.send(ev_function_call_added(&item_id, call, &names));
+            let _ = tx.send(ev_function_call_done(&item_id, call, &names));
         }
         tracing::info!(
             %rid,

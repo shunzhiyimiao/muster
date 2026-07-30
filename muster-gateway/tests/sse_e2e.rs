@@ -47,6 +47,33 @@ fn kinds(evs: &[Value]) -> Vec<&str> {
     evs.iter().map(|e| e["type"].as_str().unwrap_or("?")).collect()
 }
 
+/// **协议状态机检查**:每个 item 必须 added → (delta*) → done 完整三段。
+/// 漏掉 added 会让 Codex 直接 panic(`OutputTextDelta without active item`),
+/// 表现为主进程无限等待——实测踩过,故把这条约束钉进测试。
+fn assert_item_lifecycle(evs: &[Value]) {
+    let mut open: std::collections::HashSet<String> = Default::default();
+    let mut seen_any_open = false;
+    for e in evs {
+        match e["type"].as_str().unwrap_or("") {
+            "response.output_item.added" => {
+                let id = e["item"]["id"].as_str().unwrap_or_default().to_string();
+                assert!(!id.is_empty(), "added 的 item 必须有 id:{e}");
+                open.insert(id);
+                seen_any_open = true;
+            }
+            "response.output_text.delta" => {
+                assert!(seen_any_open, "delta 之前必须先 added 开启 item(Codex 会 panic)");
+            }
+            "response.output_item.done" => {
+                let id = e["item"]["id"].as_str().unwrap_or_default().to_string();
+                assert!(open.remove(&id), "done 的 item 必须先被 added 开启过:{id}");
+            }
+            _ => {}
+        }
+    }
+    assert!(open.is_empty(), "不得留下半开的 item:{open:?}");
+}
+
 #[tokio::test]
 async fn text_turn_produces_codex_shaped_events() {
     let mock = MockProvider::cloud("mock").with_text("你好,世界");
@@ -65,6 +92,7 @@ async fn text_turn_produces_codex_shaped_events() {
     assert_eq!(k.first(), Some(&"response.created"));
     assert_eq!(k.last(), Some(&"response.completed"));
     assert!(k.contains(&"response.output_text.delta"), "{k:?}");
+    assert_item_lifecycle(&evs);
     // 正文经 output_item.done 交付(Codex 从这里取消息)
     let done = evs.iter().find(|e| e["type"] == "response.output_item.done").expect("必须有 item.done");
     assert_eq!(done["item"]["type"], "message");
@@ -103,6 +131,7 @@ async fn tool_call_turn_maps_to_function_call_item() {
     assert_eq!(fc["item"]["arguments"], r#"{"path":"."}"#);
     assert!(fc["item"]["call_id"].as_str().is_some_and(|s| !s.is_empty()));
     assert_eq!(kinds(&evs).last(), Some(&"response.completed"));
+    assert_item_lifecycle(&evs);
 }
 
 #[tokio::test]
