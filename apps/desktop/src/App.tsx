@@ -383,6 +383,13 @@ export default function App() {
                     .then((msg) => { setNotice(msg); refreshAll(); })
                     .catch((e) => setNotice(`锻造失败:${e}`));
                 }}
+                canRun={me?.can.create_task ?? true}
+                onRun={(capsuleId) => {
+                  setNotice(`正在用能力 ${capsuleId} 执行任务…`);
+                  api.capsuleRun(capsuleId, channelId)
+                    .then((runId) => { setNotice(`已发起 ${runId},产出将进入审批`); refreshAll(); })
+                    .catch((e) => setNotice(`${e}`));
+                }}
                 onAdopt={(capsuleId) => {
                   const toTeam = teams.find((t) => t.id === team)?.name ?? "平台组";
                   api.capsuleAdopt(capsuleId, toTeam)

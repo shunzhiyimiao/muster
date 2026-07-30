@@ -559,7 +559,7 @@ const Note = ({ k, who, ai, fresh, children }: { k: string; who?: string; ai?: b
 /* ==================== 能力库(P4 概念) ==================== */
 
 export function CapsView({
-  trace, setTrace, introduced, live, forgeable, onForge, onVerify, onAdopt,
+  trace, setTrace, introduced, live, forgeable, onForge, onVerify, onAdopt, onRun, canRun,
 }: {
   trace: boolean;
   setTrace: (fn: (t: boolean) => boolean) => void;
@@ -569,6 +569,8 @@ export function CapsView({
   onForge: (runId: string, goal: string) => void;
   onVerify: (capsuleId: string) => void;
   onAdopt: (capsuleId: string) => void;
+  onRun: (capsuleId: string) => void;
+  canRun: boolean;
 }) {
   return (
     <div className="px-7 pb-8 pt-2">
@@ -581,7 +583,7 @@ export function CapsView({
         </span>
       </div>
 
-      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} onAdopt={onAdopt} />
+      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} onAdopt={onAdopt} onRun={onRun} canRun={canRun} />
 
       <div className="flex items-center gap-2 mb-2.5 mt-6">
         <b className="text-[13px]">概念能力</b>
@@ -623,7 +625,11 @@ export function CapsView({
               <Tag>{c.scope}</Tag>
             </div>
             <div className="flex gap-2 mt-4">
-              <IBtn className="px-3.5 py-2"><Play size={12} /> 运行</IBtn>
+              <button disabled title="概念示例没有真实定义,无法运行;真实能力在上方「已锻造能力」区"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl"
+                style={{ background: T.soft, color: T.faint, cursor: "not-allowed" }}>
+                <Play size={12} /> 运行(示例不可用)
+              </button>
               <button onClick={() => c.hot && setTrace((t) => !t)} className="flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-xl" style={{ background: T.soft }}>
                 <GitBranch size={12} /> 溯源
               </button>
@@ -678,12 +684,16 @@ function ForgeSection({
   onForge,
   onVerify,
   onAdopt,
+  onRun,
+  canRun,
 }: {
   live: CapsuleOut[];
   forgeable: ForgeableRun[];
   onForge: (runId: string, goal: string) => void;
   onVerify: (capsuleId: string) => void;
   onAdopt: (capsuleId: string) => void;
+  onRun: (capsuleId: string) => void;
+  canRun: boolean;
 }) {
   const [picking, setPicking] = useState<string | null>(null);
   const [goal, setGoal] = useState("");
@@ -733,6 +743,15 @@ function ForgeSection({
                 {c.adopted > 0 && <Tag tone="ind">已被引入 {c.adopted} 次</Tag>}
               </div>
               <div className="flex items-center gap-2 mt-3.5">
+                <button
+                  onClick={() => onRun(c.capsule_id)}
+                  disabled={!canRun}
+                  title={canRun ? "用这个能力在当前代码上干活" : "无权发起任务"}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ background: T.indigo, color: "#fff", opacity: canRun ? 1 : 0.45 }}
+                >
+                  <Play size={11} /> 运行
+                </button>
                 <button
                   onClick={() => { setVerifying(c.capsule_id); onVerify(c.capsule_id); }}
                   disabled={verifying === c.capsule_id}

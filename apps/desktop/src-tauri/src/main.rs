@@ -831,59 +831,19 @@ async fn send_message(
     Ok(run_id)
 }
 
-/// B1 任务模式:在真实工作区上跑工具循环(muster-runner),事件转发给
-/// 与聊天模式相同的前端通道——工具活动以文本行形式流进任务卡。
-#[tauri::command]
-async fn run_workspace_task(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    channel_id: String,
-    text: String,
-) -> Result<String, String> {
-    let (router, audit, store, run_seq) = {
-        let guard = state.0.lock().unwrap();
-        let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
-        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
-    };
-    let channel = demo_channels()
-        .into_iter()
-        .find(|c| c.id == channel_id)
-        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
-    // P2:发起任务需权限(访客不得调用敏感 Runner;禁任务频道对谁都禁)
-    require(
-        muster_identity::Action::CreateTask,
-        muster_identity::Scope::Channel(channel.id.clone()),
-    )?;
-    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
-    let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
-    store.lock().unwrap().insert(&channel.id, "user", &format!("▶ 任务:{text}"), None, "done");
-    // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
-    let transcript = Arc::new(Mutex::new(String::new()));
+/// Runner 事件 → 前端通道的统一转发(任务模式与能力运行共用一份,
+/// 避免两处各写一套导致 UI 表现不一致)。
+fn forward_runner_event(
+    a: &tauri::AppHandle,
+    rid: &str,
+    chan: &str,
+    tr: &Arc<Mutex<String>>,
+    ev: RunnerEvent,
+) {
+    let rid = rid.to_string();
+    let chan = chan.to_string();
+    match ev {
 
-    // P1-04:每 run 一个隔离 worktree(WORKSPACE_ROOT 可配),写工具因此可用;
-    // 非 git 仓时 runner 会如实降级只读并发 Notice。
-    let workspace_root = std::env::var("MUSTER_WORKSPACE_ROOT")
-        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
-    let spec = TaskSpec {
-        run_id: run_id.clone(),
-        session_id: Some(format!("session:{}", channel.id)),
-        team: Some(channel.team.clone()),
-        channel: Some(channel.id.clone()),
-        sources: label_sources(&channel.id),
-        requested_provider: None,
-        default_provider: Some("kimi".into()),
-        prompt: text,
-        workspace: workspace.into(),
-        workspace_root: Some(workspace_root.into()),
-    };
-    let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
-
-    let a = app.clone();
-    let rid = run_id.clone();
-    let chan = channel.id.clone();
-    let tr = transcript.clone();
-    let result = run_task(&router, &audit, &cfg, spec, move |ev| match ev {
         RunnerEvent::Planned { plan, provider_id, provider_name, model, locality, attempts, .. } => {
             a.emit(
                 "task-start",
@@ -985,6 +945,63 @@ async fn run_workspace_task(
                 .ok();
             }
         }
+    }
+}
+
+/// B1 任务模式:在真实工作区上跑工具循环(muster-runner),事件转发给
+/// 与聊天模式相同的前端通道——工具活动以文本行形式流进任务卡。
+#[tauri::command]
+async fn run_workspace_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    channel_id: String,
+    text: String,
+) -> Result<String, String> {
+    let (router, audit, store, run_seq) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
+        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
+    };
+    let channel = demo_channels()
+        .into_iter()
+        .find(|c| c.id == channel_id)
+        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
+    // P2:发起任务需权限(访客不得调用敏感 Runner;禁任务频道对谁都禁)
+    require(
+        muster_identity::Action::CreateTask,
+        muster_identity::Scope::Channel(channel.id.clone()),
+    )?;
+    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    store.lock().unwrap().insert(&channel.id, "user", &format!("▶ 任务:{text}"), None, "done");
+    // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
+    let transcript = Arc::new(Mutex::new(String::new()));
+
+    // P1-04:每 run 一个隔离 worktree(WORKSPACE_ROOT 可配),写工具因此可用;
+    // 非 git 仓时 runner 会如实降级只读并发 Notice。
+    let workspace_root = std::env::var("MUSTER_WORKSPACE_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+    let spec = TaskSpec {
+        run_id: run_id.clone(),
+        session_id: Some(format!("session:{}", channel.id)),
+        team: Some(channel.team.clone()),
+        channel: Some(channel.id.clone()),
+        sources: label_sources(&channel.id),
+        requested_provider: None,
+        default_provider: Some("kimi".into()),
+        prompt: text,
+        workspace: workspace.into(),
+        workspace_root: Some(workspace_root.into()),
+    };
+    let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
+
+    let a = app.clone();
+    let rid = run_id.clone();
+    let chan = channel.id.clone();
+    let tr = transcript.clone();
+    let result = run_task(&router, &audit, &cfg, spec, move |ev| {
+        forward_runner_event(&a, &rid, &chan, &tr, ev)
     })
     .await;
 
@@ -1264,6 +1281,94 @@ fn capsule_forge(
     )
     .map_err(|e| e.to_string())?;
     Ok(format!("已锻造 {} · {}(源运行 {run_id})", out.spec.name, out.capsule_id))
+}
+
+/// 运行一个 Capsule——复用已锻造的能力去干活。
+///
+/// 权限上等同手动发起任务(`CreateTask`):**用能力干活也是干活**,
+/// 不能因为"是从能力库点的"就绕过访客限制。
+#[tauri::command]
+async fn capsule_run(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    capsule_id: String,
+    channel_id: String,
+    context: Option<String>,
+) -> Result<String, String> {
+    let channel = demo_channels()
+        .into_iter()
+        .find(|c| c.id == channel_id)
+        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
+    require(
+        muster_identity::Action::CreateTask,
+        muster_identity::Scope::Channel(channel.id.clone()),
+    )?;
+
+    let (router, audit, store_state, run_seq) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
+    };
+    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    let root = std::env::var("MUSTER_WORKSPACE_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+    let cstore = capsule_store()?;
+    let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
+
+    store_state.lock().unwrap().insert(
+        &channel.id,
+        "user",
+        &format!("▶ 运行能力 {capsule_id}{}", context.as_deref().map(|c| format!(":{c}")).unwrap_or_default()),
+        None,
+        "done",
+    );
+
+    let a = app.clone();
+    let rid = run_id.clone();
+    let chan = channel.id.clone();
+    let transcript = Arc::new(Mutex::new(String::new()));
+    let tr = transcript.clone();
+
+    let result = muster_runner::run_capsule(
+        &router,
+        &audit,
+        &cstore,
+        &cfg,
+        &capsule_id,
+        &run_id,
+        std::path::Path::new(&workspace),
+        std::path::Path::new(&root),
+        context.as_deref(),
+        label_sources(&channel.id),
+        Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
+        move |ev| forward_runner_event(&a, &rid, &chan, &tr, ev),
+    )
+    .await;
+
+    let saved = transcript.lock().unwrap().clone();
+    match result {
+        Ok(s) => {
+            store_state.lock().unwrap().insert(
+                &channel.id,
+                "agent",
+                if saved.is_empty() { &s.final_text } else { &saved },
+                Some(&run_id),
+                if s.outcome == "success" { "done" } else { "failed" },
+            );
+            Ok(s.run_id)
+        }
+        Err(e) => {
+            store_state.lock().unwrap().insert(&channel.id, "agent", &format!("⚠️ {e}"), Some(&run_id), "failed");
+            app.emit(
+                "task-failed",
+                FailPayload { run_id: run_id.clone(), channel_id: channel.id, message: e.to_string() },
+            )
+            .ok();
+            Ok(run_id)
+        }
+    }
 }
 
 /// 跨团队引入。**不接受目标密级参数**——密级只能随包迁移,引入不得降密。
@@ -1559,6 +1664,7 @@ fn main() {
             capsule_forge,
             capsule_verify,
             capsule_adopt,
+            capsule_run,
             whoami
         ])
         .run(tauri::generate_context!())

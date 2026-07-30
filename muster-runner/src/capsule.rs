@@ -434,6 +434,69 @@ pub async fn verify(
     })
 }
 
+// ---------------------------------------------------------------- 使用能力
+
+/// **运行一个 Capsule**——能力库存在的理由。
+///
+/// 与 [`verify`] 的区别是根本性的,不要混:
+///
+/// | | [`verify`] 影子重放 | 本函数 运行 |
+/// |---|---|---|
+/// | 基线 | 锻造时的 commit(对齐历史) | **当前 HEAD**(在今天的代码上干活) |
+/// | 目的 | 比对产出是否一致 | **产出新的改动** |
+/// | 结果 | 记 `capsule.verify`,影响验真率 | 正常 run,产出 diff 走审批 |
+///
+/// 验真是"这能力还靠谱吗",运行是"用它办件事"。拿锻造基线去干今天的活毫无意义,
+/// 所以这里**不做基线对齐**。
+///
+/// `context` 是本次的具体上下文(如"这次改的是 parser.rs"),追加在能力目标之后;
+/// 能力定义本身不变——一次锻造,多次复用。
+pub async fn run_capsule(
+    router: &muster_route::Router,
+    audit: &Arc<Mutex<AuditStore>>,
+    store: &CapsuleStore,
+    cfg: &crate::runner::RunnerConfig,
+    capsule_id: &str,
+    run_id: &str,
+    workspace: &std::path::Path,
+    workspace_root: &std::path::Path,
+    context: Option<&str>,
+    sources: Vec<muster_route::LabelSource>,
+    scope: Scope,
+    on_event: impl FnMut(crate::runner::RunnerEvent) + Send,
+) -> Result<crate::runner::RunSummary, CapsuleError> {
+    let (replay, content_hash, _version, _src) = forge_record(audit, capsule_id)?;
+    // 正文经哈希校验后取用:被改过就拒绝运行,不拿脏定义去动代码
+    let spec = store.load(capsule_id, &content_hash)?;
+
+    let prompt = match context {
+        Some(c) if !c.trim().is_empty() => format!("{}\n\n本次具体要求:{}", spec.goal, c.trim()),
+        _ => spec.goal.clone(),
+    };
+
+    crate::runner::run_task(
+        router,
+        audit,
+        cfg,
+        crate::runner::TaskSpec {
+            run_id: run_id.to_owned(),
+            session_id: Some(format!("capsule:{capsule_id}")),
+            team: scope.team.clone(),
+            channel: scope.channel.clone(),
+            sources,
+            requested_provider: None,
+            // 沿用锻造时的 provider:同一能力换个模型跑,产出不可比
+            default_provider: Some(replay.model.provider_id.clone()),
+            prompt,
+            workspace: workspace.to_path_buf(),
+            workspace_root: Some(workspace_root.to_path_buf()),
+        },
+        on_event,
+    )
+    .await
+    .map_err(|e| CapsuleError::Replay(e.to_string()))
+}
+
 // ---------------------------------------------------------------- 跨团队引入
 
 #[derive(Debug, Clone, Serialize)]

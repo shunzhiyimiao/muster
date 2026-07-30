@@ -243,6 +243,8 @@ export const api = {
   capsuleAdopt: (capsuleId: string, toTeam: string) =>
     invoke<string>("capsule_adopt", { capsuleId, toTeam }),
   whoami: () => invoke<WhoAmI>("whoami"),
+  capsuleRun: (capsuleId: string, channelId: string, context?: string) =>
+    invoke<string>("capsule_run", { capsuleId, channelId, context: context ?? null }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {
