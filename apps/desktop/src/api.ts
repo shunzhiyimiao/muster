@@ -239,6 +239,8 @@ export const api = {
   historyBulk: (limit: number) => invoke<StoredMsg[]>("history_bulk", { limit }),
   rosterStats: (team?: string) => invoke<RosterEntryOut[]>("roster_stats", { team: team ?? null }),
   rosterCounts: () => invoke<TeamCount[]>("roster_counts_cmd"),
+  /** 封存断裂的审计链并重开一条;返回封存后的路径 */
+  auditArchiveBroken: () => invoke<string>("audit_archive_broken"),
   approvalsPending: () => invoke<PendingApprovalOut[]>("approvals_pending"),
   approvalsDecide: (runId: string, granted: boolean, note?: string) =>
     invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),

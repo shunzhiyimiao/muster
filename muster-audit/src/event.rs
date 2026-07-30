@@ -298,6 +298,21 @@ pub enum EventBody {
         output_bytes: u64,
     },
 
+    /// 上一条审计链验证失败,已被封存,本链自此重开。
+    ///
+    /// **断链本身就是要留档的事**。封存而不是删除:坏掉的那份留在盘上供取证,
+    /// 新链的第一条就说清楚"我之前还有一条链、它断在哪、被挪到哪去了"——
+    /// 否则新链看上去就是一部干干净净的历史,而那正是最需要被追问的时候。
+    #[serde(rename = "audit.archived")]
+    AuditArchived {
+        /// 被封存的旧库路径(仍在盘上,未删除)。
+        archived_to: String,
+        /// 旧链断裂处的事件号;`None` 表示旧库连读都读不开。
+        broken_at_event_id: Option<String>,
+        /// 断裂前已验证通过的事件数——这部分历史仍然可信。
+        verified_before_break: u64,
+    },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -328,6 +343,7 @@ impl EventBody {
             EventBody::CapsuleVerify { .. } => "capsule.verify",
             EventBody::CapsuleAdopt { .. } => "capsule.adopt",
             EventBody::CommandRun { .. } => "command.run",
+            EventBody::AuditArchived { .. } => "audit.archived",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }

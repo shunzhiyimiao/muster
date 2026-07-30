@@ -566,6 +566,10 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {dir} 失败:{e}"))?;
         let db = format!("{dir}/desktop-audit.db");
         let audit = AuditStore::open(&db).map_err(|e| format!("审计库打开失败:{e}"))?;
+        // **启动即验链**(fail-closed)。此前只有手点「审计中心」才验一次——
+        // 链断了应用照样跑,得靠人想起来去点。证据层坏掉却继续记新证据,
+        // 等于在一份已经不可信的账本上接着记账。
+        verify_or_refuse(&audit)?;
         let state_db = format!("{dir}/desktop-state.db");
         let state = StateStore::open(&state_db).map_err(|e| format!("状态库打开失败:{e}"))?;
 
@@ -1575,6 +1579,96 @@ struct TeamCountOut {
     agents: u64,
 }
 
+/// 前端据此认出「链断了」这一种启动失败,并给出封存入口;
+/// 其余启动失败照常只显示文本。
+const CHAIN_BROKEN_TAG: &str = "AUDIT_CHAIN_BROKEN";
+
+/// 启动自检:链不完整就**拒绝启动**。
+///
+/// 为什么不是"警告一下继续跑":证据层的价值全部建立在"这份账本没被动过"
+/// 之上。链断之后继续往里追加新事件,新旧混在一本账里,连"断裂之前那部分
+/// 还可信"都会被后来的追加搅浑。宁可不启动。
+///
+/// 但 fail-closed 不等于把人锁死在门外——[`audit_archive_broken`] 提供唯一
+/// 出路:封存(不是删除)坏掉的那份,重开一条新链,并在新链第一条里
+/// 写明来龙去脉。
+fn verify_or_refuse(audit: &AuditStore) -> Result<(), String> {
+    match audit.verify_chain() {
+        Ok(Ok(_n)) => Ok(()),
+        Ok(Err(e)) => {
+            let ctx = audit
+                .conn()
+                .query_row(
+                    "SELECT event_type, ts_ms FROM audit_event WHERE event_id = ?1",
+                    rusqlite::params![e.event_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .ok();
+            let what = match ctx {
+                Some((ty, ts)) => format!("{ty}(ts={ts})"),
+                None => "该事件已读不出来".into(),
+            };
+            Err(format!(
+                "{CHAIN_BROKEN_TAG}|审计链在第 {} 条断裂:事件 {} · {}。\n\n                 这意味着这份账本被改过、或文件损坏。断裂之前的 {} 条仍然可信,\n                 之后的一律不可信——因此拒绝启动,不在坏账本上继续记账。\n\n                 可选处置:封存这份(不删除,留在盘上供取证)并重开新链。\n                 新链第一条会写明它断在哪、被挪到哪去了。",
+                e.index + 1,
+                e.event_id,
+                what,
+                e.index
+            ))
+        }
+        Err(e) => Err(format!("审计链校验无法执行:{e}")),
+    }
+}
+
+/// 封存断链并重开一条。**封存不是删除**:坏掉的那份改名留在原目录。
+#[tauri::command]
+fn audit_archive_broken(state: State<'_, AppState>) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let db = format!("{home}/.muster/desktop-audit.db");
+    let stamp = now_ms();
+    let archived = format!("{db}.broken-{stamp}");
+
+    // 先读出断裂位置,好写进新链的第一条(读不开就照实记 None)
+    let (broken_at, verified_before) = match AuditStore::open(&db) {
+        Ok(old) => match old.verify_chain() {
+            Ok(Err(e)) => (Some(e.event_id), e.index),
+            _ => (None, 0),
+        },
+        Err(_) => (None, 0),
+    };
+
+    for suffix in ["", "-wal", "-shm"] {
+        let from = format!("{db}{suffix}");
+        if std::path::Path::new(&from).exists() {
+            std::fs::rename(&from, format!("{archived}{suffix}"))
+                .map_err(|e| format!("封存 {from} 失败:{e}"))?;
+        }
+    }
+
+    let mut fresh = AuditStore::open(&db).map_err(|e| format!("新链创建失败:{e}"))?;
+    fresh
+        .append(NewEvent {
+            ts_ms: None,
+            actor: Actor::system("audit"),
+            scope: Scope::default(),
+            run_id: None,
+            session_id: None,
+            policy_version: None,
+            label: None,
+            locality: None,
+            body: EventBody::AuditArchived {
+                archived_to: archived.clone(),
+                broken_at_event_id: broken_at,
+                verified_before_break: verified_before,
+            },
+        })
+        .map_err(|e| format!("新链首条写入失败:{e}"))?;
+
+    // 让下次 bootstrap 重新装配后端(它会拿到这条新链)
+    *state.0.lock().unwrap() = None;
+    Ok(archived)
+}
+
 #[tauri::command]
 fn roster_counts_cmd(state: State<'_, AppState>) -> Result<Vec<TeamCountOut>, String> {
     let guard = state.0.lock().unwrap();
@@ -1688,6 +1782,7 @@ fn main() {
             history_bulk,
             roster_stats,
             roster_counts_cmd,
+            audit_archive_broken,
             approvals_pending,
             approvals_decide,
             capsules_list,

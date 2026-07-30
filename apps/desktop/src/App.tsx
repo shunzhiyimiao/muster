@@ -153,12 +153,48 @@ export default function App() {
   };
 
   if (bootErr) {
+    // 链断是一种**有出路**的启动失败:后端用前缀标记它,这里给出封存入口。
+    const broken = bootErr.includes("AUDIT_CHAIN_BROKEN");
+    const detail = broken ? bootErr.split("|").slice(1).join("|") : bootErr;
     return (
       <div className="w-full h-screen flex items-center justify-center" style={{ background: T.canvas }}>
         <Card className="p-6 max-w-lg">
-          <b className="text-sm">启动失败(fail-fast,按设计炸响)</b>
-          <pre className="mt-3 p-3 rounded-xl text-[11px] whitespace-pre-wrap" style={{ background: T.redSoft, color: T.red }}>{bootErr}</pre>
-          <div className="text-xs mt-2" style={{ color: T.sub }}>常见原因:环境变量 KIMI_API_KEY 未设置。请在启动终端 export 后重开应用。</div>
+          <b className="text-sm">
+            {broken ? "审计链校验失败,拒绝启动(fail-closed)" : "启动失败(fail-fast,按设计炸响)"}
+          </b>
+          <pre className="mt-3 p-3 rounded-xl text-[11px] whitespace-pre-wrap" style={{ background: T.redSoft, color: T.red }}>{detail}</pre>
+          {broken ? (
+            <>
+              <div className="text-xs mt-3 leading-relaxed" style={{ color: T.sub }}>
+                封存**不会删除**任何东西:坏掉的那份改名留在 <code>~/.muster/</code> 原地供取证,
+                新链的第一条会记下它断在哪、被挪到哪去了。
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <button
+                  onClick={() =>
+                    api
+                      .auditArchiveBroken()
+                      .then((to) => {
+                        setBootErr(null);
+                        setNotice(`旧链已封存至 ${to};新链已重开并记下断裂位置`);
+                        api.bootstrap().then((b) => { setBoot(b); setDrillOn(b.egress_locked); refreshAll(); })
+                          .catch((e) => setBootErr(String(e)));
+                      })
+                      .catch((e) => setBootErr(String(e)))
+                  }
+                  className="px-4 py-2 rounded-xl text-xs font-semibold"
+                  style={{ background: T.red, color: "#fff" }}
+                >
+                  封存旧链并重开
+                </button>
+                <span className="text-[11px]" style={{ color: T.faint }}>
+                  想先取证就别点,直接去 ~/.muster/ 查那个文件
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="text-xs mt-2" style={{ color: T.sub }}>常见原因:环境变量 KIMI_API_KEY 未设置。请在启动终端 export 后重开应用。</div>
+          )}
         </Card>
       </div>
     );

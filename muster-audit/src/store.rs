@@ -1,8 +1,15 @@
 //! SQLite 存储:单表 append-only,信封列固定、payload JSON、哈希链。
 //!
-//! **没有 UPDATE/DELETE API**——这不是疏忽,是接口即政策。保留/删除策略与
-//! append-only 的冲突是已登记的 open question(方案方向:正文侧加密擦除,
-//! 审计只留哈希),MVP 不解。
+//! **没有 UPDATE/DELETE API**——这不是疏忽,是接口即政策。
+//!
+//! 那保留/删除怎么办?答案不在这一层:**删正文,不删证据**。链里从来只有
+//! 哈希,所以正文存储侧整个删光,`verify_chain()` 仍然通过
+//! (见 `deleting_the_plaintext_store_does_not_break_the_chain`)。
+//! 换成"审计表里存全文"的设计,此刻就只能在"破坏证据链"和"留着不该留的
+//! 东西"之间二选一。
+//!
+//! 仍未做的是**加密擦除**(正文加密、按需销毁密钥),以及正文侧的保留期与
+//! 导出——那属于桌面壳的 state.db,不属于本 crate。
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -89,6 +96,16 @@ impl AuditStore {
     }
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
+        // WAL + FULL:审计库是全系统**唯一不能丢一条**的东西,持久化姿态
+        // 必须比别的库更紧,而不是更松。
+        //
+        // - `journal_mode=WAL`:rollback journal 模式下读会被写阻塞——UI 查
+        //   审计中心的同时后台在写 command.run,就会撞上;且崩溃恢复窗口更大。
+        //   内存库不支持 WAL,失败按普通错误吞掉(`query_row` 会返回新模式名)。
+        // - `synchronous=FULL`:每次提交都落盘。审计写失败即任务失败
+        //   (fail-closed),那就不能允许"以为写了其实在 OS 缓存里"。
+        let _: Result<String, _> = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0));
+        conn.execute_batch("PRAGMA synchronous=FULL;")?;
         conn.execute_batch(MIGRATION_V1)?;
         Ok(Self { conn, ids: UlidGen::default() })
     }
@@ -236,7 +253,7 @@ fn parse_enum<T: serde::de::DeserializeOwned>(s: &str) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Actor, EventBody};
+    use crate::event::{Actor, ContentHash, EventBody};
 
     fn drill(id: &str) -> EventBody {
         EventBody::DrillStart { drill_id: id.into() }
@@ -271,5 +288,73 @@ mod tests {
             }
             Ok(n) => panic!("tamper undetected, chain reported {n} ok rows"),
         }
+    }
+
+    /// 落盘的库开着 WAL。审计库是唯一不能丢一条的东西,持久化姿态必须比
+    /// 别的库更紧:rollback journal 下读写互阻,且崩溃恢复窗口更大。
+    #[test]
+    fn on_disk_store_uses_wal_and_full_sync() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("a.db");
+        let s = AuditStore::open(path.to_str().unwrap()).unwrap();
+        let mode: String = s.conn().query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "审计库必须走 WAL");
+        let sync: i64 = s.conn().query_row("PRAGMA synchronous", [], |r| r.get(0)).unwrap();
+        assert_eq!(sync, 2, "synchronous 必须是 FULL——审计写失败即任务失败,不能停在 OS 缓存里");
+    }
+
+    /// **正文可删,证据不坏**——铁律三真正买到的东西。
+    ///
+    /// 密钥被粘进对话、或有人要求删除某段记录时,删掉正文存储侧那几行,
+    /// 审计链**照样验得过**,因为链里从来没装过正文。换成"审计表存全文"
+    /// 的设计,此刻就只能在"破坏证据链"和"留着不该留的东西"之间二选一。
+    #[test]
+    fn deleting_the_plaintext_store_does_not_break_the_chain() {
+        let d = tempfile::tempdir().unwrap();
+        let audit_path = d.path().join("audit.db");
+        let plaintext_path = d.path().join("state.db");
+
+        let mut audit = AuditStore::open(audit_path.to_str().unwrap()).unwrap();
+        // 正文存储侧:与桌面壳的 state.db 同形态(对话原文明文落这里)
+        let plain = Connection::open(&plaintext_path).unwrap();
+        plain.execute_batch("CREATE TABLE messages(id INTEGER PRIMARY KEY, text TEXT)").unwrap();
+
+        for i in 0..3 {
+            let body = crate::event::EventBody::ModelCall {
+                provider_id: "p".into(),
+                model: "m".into(),
+                locality: muster_provider::Locality::Local,
+                label: muster_route::Sensitivity::Open,
+                tokens_in: None,
+                tokens_out: None,
+                bytes_in: 1,
+                bytes_out: crate::event::EgressBytes::Measured(1),
+                latency_ms: 1,
+                // 审计侧只有正文的哈希
+                request_hash: ContentHash::sha256(format!("绝密内容 {i}").as_bytes()),
+            };
+            audit.append(NewEvent::new(Actor::agent("A-007"), body).at(1000 + i)).unwrap();
+            plain
+                .execute("INSERT INTO messages(text) VALUES(?1)", params![format!("绝密内容 {i}")])
+                .unwrap();
+        }
+        assert_eq!(audit.verify_chain().unwrap(), Ok(3));
+
+        // 审计库里搜不到任何一句正文(铁律三:只存哈希)
+        let leaked: i64 = audit
+            .conn()
+            .query_row("SELECT COUNT(*) FROM audit_event WHERE payload LIKE '%绝密内容%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(leaked, 0, "正文不得出现在审计表里");
+
+        // 把正文连库带文件一起销毁
+        drop(plain);
+        std::fs::remove_file(&plaintext_path).unwrap();
+
+        // 链依旧完整:说得清"发生过什么、有没有被动过",只是读不到"说了什么"
+        let reopened = AuditStore::open(audit_path.to_str().unwrap()).unwrap();
+        assert_eq!(reopened.verify_chain().unwrap(), Ok(3), "删正文不该动摇证据链");
     }
 }
