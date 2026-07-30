@@ -193,6 +193,62 @@ pub fn recent_events_of(
     Ok(out)
 }
 
+/// D6 编制页的一行:**编制 = 审计链里真实干过活的 actor**。
+/// 花名册不是配置出来的,是干出来的——谁执行过任务,谁就在编制里。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterRow {
+    pub actor_kind: String,
+    pub actor_id: String,
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+    /// 参与过的不同 run 数。
+    pub runs: u64,
+    /// 模型调用去向(仅 `model.call` 计数)。
+    pub local_calls: u64,
+    pub cloud_calls: u64,
+    /// 该 actor 名下被拒绝的路由次数(fail-closed 拦下的)。
+    pub refusals: u64,
+    /// 事件总数(活跃度)。
+    pub events: u64,
+}
+
+/// 按最近活跃倒序。团队/频道维度可选过滤(`None` = 全组织)。
+pub const SQL_ROSTER: &str = r#"
+SELECT actor_kind, actor_id,
+       MIN(ts_ms), MAX(ts_ms),
+       COUNT(DISTINCT run_id),
+       COALESCE(SUM(CASE WHEN event_type='model.call' AND locality='local' THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN event_type='model.call' AND locality='cloud' THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN event_type='route.refuse' THEN 1 ELSE 0 END), 0),
+       COUNT(*)
+FROM audit_event
+WHERE (?1 IS NULL OR team = ?1)
+GROUP BY actor_kind, actor_id
+ORDER BY MAX(ts_ms) DESC
+"#;
+
+pub fn roster(conn: &Connection, team: Option<&str>) -> Result<Vec<RosterRow>, StoreError> {
+    let mut stmt = conn.prepare(SQL_ROSTER)?;
+    let rows = stmt.query_map(params![team], |r| {
+        Ok(RosterRow {
+            actor_kind: r.get(0)?,
+            actor_id: r.get(1)?,
+            first_seen_ms: r.get::<_, i64>(2)? as u64,
+            last_seen_ms: r.get::<_, i64>(3)? as u64,
+            runs: r.get::<_, i64>(4)? as u64,
+            local_calls: r.get::<_, i64>(5)? as u64,
+            cloud_calls: r.get::<_, i64>(6)? as u64,
+            refusals: r.get::<_, i64>(7)? as u64,
+            events: r.get::<_, i64>(8)? as u64,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Agent 档案页「入职时间」:该 actor 的首条审计事件时刻(ULID 即时序)。
 pub const SQL_ACTOR_FIRST_SEEN: &str =
     "SELECT MIN(ts_ms) FROM audit_event WHERE actor_id = ?1";
@@ -292,6 +348,31 @@ mod home_query_tests {
                 request_hash: ContentHash::sha256(b"req"),
             },
         }
+    }
+
+    /// D6:编制由审计链生成——没干过活的不在册,干过的统计必须准。
+    #[test]
+    fn roster_is_derived_from_who_actually_worked() {
+        let mut store = AuditStore::open_in_memory().unwrap();
+        // A-007:两个 run,一云一本地
+        store.append(call_event("RUN-A", Locality::Cloud)).unwrap();
+        store.append(call_event("RUN-B", Locality::Local)).unwrap();
+        // A-021:一个 run,云端
+        let mut e = call_event("RUN-C", Locality::Cloud);
+        e.actor = Actor::agent("A-021");
+        store.append(e).unwrap();
+
+        let rows = roster(store.conn(), None).unwrap();
+        assert_eq!(rows.len(), 2, "只有真干过活的两个 agent 在册:{rows:?}");
+        let a7 = rows.iter().find(|r| r.actor_id == "A-007").unwrap();
+        assert_eq!((a7.runs, a7.cloud_calls, a7.local_calls), (2, 1, 1));
+        assert_eq!(a7.actor_kind, "agent");
+        assert!(a7.last_seen_ms >= a7.first_seen_ms);
+        let a21 = rows.iter().find(|r| r.actor_id == "A-021").unwrap();
+        assert_eq!((a21.runs, a21.cloud_calls), (1, 1));
+
+        // 团队过滤:事件的 scope.team 为空,按团队查应当查不到
+        assert!(roster(store.conn(), Some("平台组")).unwrap().is_empty());
     }
 
     #[test]

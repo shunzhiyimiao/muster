@@ -18,7 +18,7 @@ use tauri::{Emitter, State};
 
 use muster_audit::{
     actor_first_seen, day_throughput, distinct_runs, downgrades_zh, drill_report,
-    pending_approvals, recent_events, recent_events_of, Actor, AuditStore, ContentHash,
+    pending_approvals, recent_events, recent_events_of, roster, Actor, AuditStore, ContentHash,
     EgressBytes, EventBody, NewEvent, Scope,
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
@@ -1020,6 +1020,67 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
     }
 }
 
+/// D6 编制页:一行 = 审计链里真实干过活的 actor。
+#[derive(Serialize)]
+struct RosterEntryOut {
+    actor_kind: String,
+    actor_id: String,
+    /// 展示名:Agent 用工牌人格名,人类用 id 本身。
+    display_name: String,
+    role: String,
+    first_seen_ms: u64,
+    last_seen_ms: u64,
+    runs: u64,
+    local_calls: u64,
+    cloud_calls: u64,
+    refusals: u64,
+    events: u64,
+    pending_approvals: u64,
+    /// 当前路由倾向:最近一次 model.call 的落点。
+    last_locality: Option<String>,
+}
+
+#[tauri::command]
+fn roster_stats(state: State<'_, AppState>, team: Option<String>) -> Result<Vec<RosterEntryOut>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    let conn = store.conn();
+    let rows = roster(conn, team.as_deref()).map_err(|e| e.to_string())?;
+    let recent = recent_events_of(conn, "model.call", 200).map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let last_locality = recent
+                .iter()
+                .find(|e| e.actor.id == r.actor_id)
+                .and_then(|e| e.locality.map(|l| format!("{l:?}").to_lowercase()));
+            let (display_name, role) = match (r.actor_kind.as_str(), r.actor_id.as_str()) {
+                ("agent", AGENT_BADGE) => ("小七".to_string(), "代码评审员".to_string()),
+                ("agent", id) => (id.to_string(), "Agent".to_string()),
+                ("human", id) => (id.to_string(), "成员".to_string()),
+                (_, id) => (id.to_string(), "系统".to_string()),
+            };
+            RosterEntryOut {
+                pending_approvals: pending_approvals(conn, &r.actor_id).unwrap_or(0),
+                actor_kind: r.actor_kind,
+                actor_id: r.actor_id,
+                display_name,
+                role,
+                first_seen_ms: r.first_seen_ms,
+                last_seen_ms: r.last_seen_ms,
+                runs: r.runs,
+                local_calls: r.local_calls,
+                cloud_calls: r.cloud_calls,
+                refusals: r.refusals,
+                events: r.events,
+                last_locality,
+            }
+        })
+        .collect())
+}
+
 /// Agent 档案页统计:入职(首条审计事件)/ 累计 Runs / 累计外发 / 活动热力。
 #[derive(Serialize)]
 struct AgentStats {
@@ -1077,7 +1138,8 @@ fn main() {
             toggle_drill,
             home_stats,
             agent_stats,
-            history_bulk
+            history_bulk,
+            roster_stats
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

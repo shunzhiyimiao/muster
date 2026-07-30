@@ -135,6 +135,21 @@ export interface AgentStats {
   total_egress_bytes: number;
   heat: DayBar[];
 }
+export interface RosterEntryOut {
+  actor_kind: string;
+  actor_id: string;
+  display_name: string;
+  role: string;
+  first_seen_ms: number;
+  last_seen_ms: number;
+  runs: number;
+  local_calls: number;
+  cloud_calls: number;
+  refusals: number;
+  events: number;
+  pending_approvals: number;
+  last_locality: string | null;
+}
 export interface FileChange {
   path: string;
   status: string;
@@ -170,6 +185,7 @@ export const api = {
   homeStats: () => invoke<HomeStats>("home_stats"),
   agentStats: () => invoke<AgentStats>("agent_stats"),
   historyBulk: (limit: number) => invoke<StoredMsg[]>("history_bulk", { limit }),
+  rosterStats: (team?: string) => invoke<RosterEntryOut[]>("roster_stats", { team: team ?? null }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {

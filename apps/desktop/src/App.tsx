@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  fmtBytes,
+  RosterEntryOut, fmtBytes,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -59,6 +59,7 @@ export default function App() {
   const [chain, setChain] = useState<ChainStatus | null>(null);
   const [home, setHome] = useState<HomeStats | null>(null);
   const [agent, setAgent] = useState<AgentStats | null>(null);
+  const [rosterLive, setRosterLive] = useState<RosterEntryOut[]>([]);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
   const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
@@ -68,6 +69,7 @@ export default function App() {
     api.verifyChain().then(setChain).catch(() => {});
     api.homeStats().then(setHome).catch(() => {});
     api.agentStats().then(setAgent).catch(() => {});
+    api.rosterStats().then(setRosterLive).catch(() => {});
   };
   const chat = useChat(refreshAll);
 
@@ -121,6 +123,7 @@ export default function App() {
     setNotice("");
     setFilter("全部");
     setExpanded((e) => ({ ...e, [tid]: true }));
+    refreshAll(); // 编制是活数据,进页即刷
   };
   const goPersonalChat = () => {
     setModule("personal");
@@ -354,7 +357,9 @@ export default function App() {
                 introduced={introduced} setIntroduced={setIntroduced}
                 openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")} />
             )}
-            {view === "roster" && <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} />}
+            {view === "roster" && (
+              <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
+            )}
             {view === "meeting" && <MeetingView />}
             {view === "caps" && <CapsView trace={trace} setTrace={setTrace} introduced={introduced} />}
           </div>

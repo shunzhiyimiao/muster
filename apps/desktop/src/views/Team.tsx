@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AuditRow, Channel, DOWNGRADE_ZH, ORIGIN_ZH, fmtTime } from "../api";
+import { AuditRow, Channel, DOWNGRADE_ZH, ORIGIN_ZH, RosterEntryOut, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
@@ -248,27 +248,37 @@ export function RosterView({
   filter,
   setFilter,
   team,
+  live,
 }: {
   approved: boolean;
   filter: string;
   setFilter: (f: string) => void;
   team: string;
+  live: RosterEntryOut[];
 }) {
+  // 真实编制:审计链里干过活的 actor(system 类不算人手,不入册)
+  const real = live.filter((r) => r.actor_kind !== "system");
+  const realFiltered = real.filter((r) =>
+    filter === "全部" ? true
+      : filter === "人类" ? r.actor_kind === "human"
+      : filter === "Agent" ? r.actor_kind === "agent"
+      : r.pending_approvals > 0
+  );
   const inTeam = ROSTER.filter((r) => r.team === team);
-  const list = inTeam.filter((r) =>
+  const conceptFiltered = inTeam.filter((r) =>
     filter === "全部" ? true : filter === "人类" ? r.kind === "human" : filter === "Agent" ? r.kind === "agent"
       : r.tiles.some((t) => (t.hot && !approved) || t.hot2)
   );
-  const humans = inTeam.filter((r) => r.kind === "human").length;
-  const agents = inTeam.filter((r) => r.kind === "agent").length;
+
   return (
     <div className="px-7 pb-8 pt-2">
       <div className="flex items-center gap-2.5 mb-4">
         <div className="flex items-center gap-2 flex-1 px-3.5 py-2 rounded-xl text-[13px]" style={{ background: T.soft, color: T.faint, maxWidth: 320 }}>
           <Search size={14} /> 搜索本团队成员或 Agent…
         </div>
-        <span className="text-[11px]" style={{ color: T.sub }}>{humans} 人 · {agents} AI · 共 {inTeam.length} 编制</span>
-        <Tag>概念数据 · D6 真实化</Tag>
+        <span className="text-[11px]" style={{ color: T.sub }}>
+          在册 {real.length}(审计链实证)· 概念 {inTeam.length}
+        </span>
         <div className="ml-auto flex items-center gap-2">
           {["全部", "人类", "Agent", "待审批"].map((f) => (
             <button key={f} onClick={() => setFilter(f)} className="text-xs px-3.5 py-2 rounded-xl"
@@ -279,13 +289,90 @@ export function RosterView({
           <IBtn><Plus size={13} /> 新增编制</IBtn>
         </div>
       </div>
-      {list.length === 0 ? (
-        <Card className="p-6 text-center text-xs" style={{ color: T.sub }}>本团队当前筛选下没有编制条目</Card>
+
+      {/* ---- 在册编制(真数据) ---- */}
+      <div className="flex items-center gap-2 mb-2.5">
+        <b className="text-[13px]">在册编制</b>
+        <span className="text-[10.5px]" style={{ color: T.sub }}>
+          编制 = 审计链里真实干过活的 actor;数字全部来自 SQL
+        </span>
+      </div>
+      {realFiltered.length === 0 ? (
+        <Card className="p-5 text-center text-xs mb-6" style={{ color: T.sub }}>
+          {real.length === 0
+            ? "还没有任何 actor 在审计链里留下记录——发起一次对话或任务后,这里会出现真实编制。"
+            : "当前筛选下没有在册条目。"}
+        </Card>
       ) : (
-        <div className="grid grid-cols-3 gap-4">
-          {list.map((p) => <PersonCard key={p.name} p={p} approved={approved} />)}
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          {realFiltered.map((r) => <LiveCard key={r.actor_kind + r.actor_id} r={r} />)}
         </div>
       )}
+
+      {/* ---- 概念编制(演示叙事) ---- */}
+      <div className="flex items-center gap-2 mb-2.5">
+        <b className="text-[13px]">概念编制</b>
+        <Tag>演示叙事 · 非真实数据</Tag>
+        <span className="text-[10.5px]" style={{ color: T.faint }}>
+          多人多 Agent 的组织形态待 P2(账号与权限)落地后接真
+        </span>
+      </div>
+      {conceptFiltered.length === 0 ? (
+        <Card className="p-5 text-center text-xs" style={{ color: T.sub }}>本团队当前筛选下没有概念条目</Card>
+      ) : (
+        <div className="grid grid-cols-3 gap-4">
+          {conceptFiltered.map((p) => <PersonCard key={p.name} p={p} approved={approved} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// 真实编制卡:每个数字都能在审计表里查到。
+function LiveCard({ r }: { r: RosterEntryOut }) {
+  const isAgent = r.actor_kind === "agent";
+  const local = r.last_locality === "local";
+  const tiles: [string, string, boolean][] = [
+    ["参与 Runs", String(r.runs), false],
+    ["待审批", String(r.pending_approvals), r.pending_approvals > 0],
+    ["被拒路由", String(r.refusals), r.refusals > 0],
+  ];
+  return (
+    <div className="rounded-2xl flex flex-col" style={{ background: "#fff", border: `1px solid ${T.line}`, padding: 18 }}>
+      <div className="flex items-center gap-3">
+        <div className="w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-lg"
+          style={isAgent ? { background: T.indigoSoft, color: T.indigo } : { background: `${T.teal}18`, color: T.teal }}>
+          {isAgent ? <Bot size={22} /> : r.display_name[0]}
+        </div>
+        <div className="min-w-0">
+          <div className="text-[14.5px] font-bold truncate">{r.display_name}</div>
+          <div className="text-[11px] mt-0.5" style={{ color: T.sub }}>{r.role}</div>
+        </div>
+        <div className="ml-auto flex flex-col items-end gap-1">
+          <Tag tone="ind">{isAgent ? `编制 ${r.actor_id}` : r.actor_id}</Tag>
+          {r.last_locality && <RouteTag local={local} />}
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 mt-3 flex-wrap">
+        <Tag tone="grn">在册 · 审计实证</Tag>
+        <Tag>{r.events} 条事件</Tag>
+        {r.cloud_calls > 0 && <Tag tone="ind">云端 {r.cloud_calls}</Tag>}
+        {r.local_calls > 0 && <Tag tone="teal">本地 {r.local_calls}</Tag>}
+      </div>
+
+      <div className="grid grid-cols-3 gap-2 mt-3.5">
+        {tiles.map(([label, v, hot]) => (
+          <div key={label} className="rounded-xl px-1.5 py-2.5 text-center" style={{ background: T.soft }}>
+            <div className="text-[10px]" style={{ color: T.sub }}>{label}</div>
+            <div className="text-[13px] font-bold mt-0.5" style={{ color: hot ? T.red : T.ink }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3.5 text-[10.5px]" style={{ color: T.faint }}>
+        入职 {fmtDate(r.first_seen_ms)} · 最近活跃 {fmtDate(r.last_seen_ms)}
+      </div>
     </div>
   );
 }
