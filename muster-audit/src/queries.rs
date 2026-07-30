@@ -350,25 +350,42 @@ pub fn capsules(conn: &Connection) -> Result<Vec<CapsuleRow>, StoreError> {
     Ok(out)
 }
 
-/// 一次运行是否**够格被锻造**:必须成功结束,且留下了 run.start(有 ReplayRefs)。
-/// 没有出处、或半途而废的运行不该变成可复用能力。
+/// 一次运行是否**够格被锻造**。四项缺一不可:
+///
+/// 1. 有 `run.start`(才有 ReplayRefs,才谈得上重放);
+/// 2. 成功结束(不锻造半途而废的过程);
+/// 3. **产出已被人认可**——有变更就必须有获批的 `approval.decision`。
+///    能力是要被反复复用的东西;若人否决过(或尚未过目)的做法也能固化,
+///    等于把被拒绝的方案偷偷塞回流程。**无变更的纯查询运行不需要审批**,
+///    因为它本就没有待认可的产出。
+/// 4. 未锻造过(避免同源派生多个版本)。
 pub const SQL_FORGEABLE: &str = r#"
 SELECT
   (SELECT COUNT(*) FROM audit_event WHERE run_id = ?1 AND event_type = 'run.start'),
   (SELECT COUNT(*) FROM audit_event WHERE run_id = ?1 AND event_type = 'run.finish'
      AND json_extract(payload,'$.outcome') = 'success'),
   (SELECT COUNT(*) FROM audit_event WHERE event_type = 'capsule.forge'
-     AND json_extract(payload,'$.source_run_id') = ?1)
+     AND json_extract(payload,'$.source_run_id') = ?1),
+  (SELECT COUNT(*) FROM audit_event WHERE run_id = ?1 AND event_type = 'approval.request'),
+  (SELECT COUNT(*) FROM audit_event WHERE run_id = ?1 AND event_type = 'approval.decision'
+     AND json_extract(payload,'$.granted') = 1)
 "#;
 
 /// 返回 `(可锻造, 原因)`。
 pub fn forgeable(conn: &Connection, run_id: &str) -> Result<(bool, String), StoreError> {
-    let (starts, oks, forged): (i64, i64, i64) =
-        conn.query_row(SQL_FORGEABLE, params![run_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-    Ok(match (starts > 0, oks > 0, forged > 0) {
-        (false, _, _) => (false, "该运行没有 run.start,缺少重放引用,无法锻造".into()),
-        (_, false, _) => (false, "该运行未成功结束,不锻造半途而废的过程".into()),
-        (_, _, true) => (false, "该运行已锻造过 Capsule".into()),
+    let (starts, oks, forged, requested, granted): (i64, i64, i64, i64, i64) = conn
+        .query_row(SQL_FORGEABLE, params![run_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+    Ok(match (starts > 0, oks > 0, forged > 0, requested > 0, granted > 0) {
+        (false, ..) => (false, "该运行没有 run.start,缺少重放引用,无法锻造".into()),
+        (_, false, ..) => (false, "该运行未成功结束,不锻造半途而废的过程".into()),
+        (_, _, true, ..) => (false, "该运行已锻造过 Capsule".into()),
+        // 有产出但未获批:人还没认可(或已否决)的做法不该被固化成可复用能力
+        (_, _, _, true, false) => (
+            false,
+            "该运行的产出尚未获批准——先在「待我审批」里裁决,批准后方可锻造".into(),
+        ),
         _ => (true, "可锻造".into()),
     })
 }
@@ -640,7 +657,7 @@ mod home_query_tests {
         let (ok, why) = forgeable(store.conn(), "RUN-GHOST").unwrap();
         assert!(!ok && why.contains("重放引用"), "{why}");
 
-        // 锻造后不可再锻造
+        // 锻造后不可再锻造(RUN-OK 无 approval.request,属"纯查询运行",无需审批)
         store
             .append(ev("RUN-OK", EventBody::CapsuleForge {
                 capsule_id: "CAP-1".into(),
@@ -654,6 +671,72 @@ mod home_query_tests {
             .unwrap();
         let (ok, why) = forgeable(store.conn(), "RUN-OK").unwrap();
         assert!(!ok && why.contains("已锻造过"), "{why}");
+    }
+
+    /// **产出未获批的运行不许锻造**。
+    ///
+    /// 这条曾经只写在 UI 文案里("成功完成**且经审批**")而没写进代码——
+    /// 于是真机跑通时,未批准的运行照样被锻造成了能力。能力要被反复复用,
+    /// 若人否决过(或尚未过目)的做法也能固化,等于把被拒方案偷偷塞回流程。
+    #[test]
+    fn runs_with_unapproved_output_cannot_be_forged() {
+        let mut store = AuditStore::open_in_memory().unwrap();
+        let start_finish = |s: &mut AuditStore, run: &str| {
+            s.append(ev(run, EventBody::RunStart {
+                task_kind: "chat.tools.v0".into(),
+                replay: replay_refs(),
+                label: Sensitivity::Open,
+                locality_planned: Locality::Cloud,
+            }))
+            .unwrap();
+            s.append(ev(run, EventBody::RunFinish {
+                outcome: RunOutcome::Success,
+                duration_ms: 10,
+                output_hash: None,
+            }))
+            .unwrap();
+        };
+        let request = |s: &mut AuditStore, run: &str| {
+            s.append(ev(run, EventBody::ApprovalRequest {
+                approval_id: format!("APR-{run}"),
+                requested_capability: "merge_to_main".into(),
+                badge_capabilities_hash: ContentHash::sha256(b"caps"),
+                command_hash: ContentHash::sha256(b"patch"),
+                reason: "申请合入".into(),
+            }))
+            .unwrap();
+        };
+        let decide = |s: &mut AuditStore, run: &str, granted: bool| {
+            s.append(ev(run, EventBody::ApprovalDecision {
+                approval_id: format!("APR-{run}"),
+                granted,
+                note_hash: None,
+            }))
+            .unwrap();
+        };
+
+        // ① 有产出、已申请、未裁决 ⇒ 不可锻造
+        start_finish(&mut store, "RUN-P1");
+        request(&mut store, "RUN-P1");
+        let (ok, why) = forgeable(store.conn(), "RUN-P1").unwrap();
+        assert!(!ok && why.contains("尚未获批准"), "{why}");
+
+        // ② 有产出、被拒绝 ⇒ 仍不可锻造(被否决的做法不该固化)
+        start_finish(&mut store, "RUN-P2");
+        request(&mut store, "RUN-P2");
+        decide(&mut store, "RUN-P2", false);
+        let (ok, why) = forgeable(store.conn(), "RUN-P2").unwrap();
+        assert!(!ok && why.contains("尚未获批准"), "被拒绝的运行也不许锻造:{why}");
+
+        // ③ 有产出、已批准 ⇒ 可锻造
+        start_finish(&mut store, "RUN-P3");
+        request(&mut store, "RUN-P3");
+        decide(&mut store, "RUN-P3", true);
+        assert!(forgeable(store.conn(), "RUN-P3").unwrap().0);
+
+        // ④ 无产出的纯查询运行 ⇒ 本就无待认可的东西,不需要审批
+        start_finish(&mut store, "RUN-P4");
+        assert!(forgeable(store.conn(), "RUN-P4").unwrap().0, "纯查询运行不该被审批门槛卡住");
     }
 
     /// 能力库的数字全部由事件算出:验真率不另存,未验真 ≠ 0%。
