@@ -18,7 +18,23 @@ cargo run -p muster-server
 cargo run -p muster-server --example bootstrap -- <账号> <口令> <显示名>
 ```
 
-之后一切走 `POST /auth/login` 拿令牌。
+之后一切走 `POST /auth/login` 拿令牌,或直接用管理 CLI:
+
+```bash
+export MUSTER_SERVER=http://localhost:8787
+cargo run -p muster-server --example admin -- login owner 你的口令
+cargo run -p muster-server --example admin -- accounts
+cargo run -p muster-server --example admin -- grant bob approver group 平台组
+cargo run -p muster-server --example admin -- revoke bob approver group 平台组
+cargo run -p muster-server --example admin -- disable bob
+```
+
+不带参数跑 `admin` 会打出完整命令表。**所有权限变更都会写进服务端审计链**
+(`badge.update` 事件):谁改的、改了谁、改成什么(哈希),一条 SQL 可查。
+
+服务端有自己的审计链(它也是一个节点),默认落在 `./muster-server-audit.db`,
+可用 `MUSTER_SERVER_AUDIT_DB` 指定。链坏了服务端拒绝启动——
+不在坏账本上继续记账。
 
 ## 配置
 

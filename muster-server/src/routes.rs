@@ -10,7 +10,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::{meeting, message, org, ws, Db};
 
-pub fn app(db: Db, hub: ws::Hub) -> Router {
+pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
 
     let auth_routes = Router::new()
@@ -19,9 +19,10 @@ pub fn app(db: Db, hub: ws::Hub) -> Router {
         .route("/teams", get(org::list_teams).post(org::create_team))
         .route("/channels", get(org::list_channels).post(org::create_channel))
         .route("/channels/:cid", get(org::get_channel))
-        .route("/accounts", post(org::create_account))
-        .route("/roles", post(org::grant_role))
-        .with_state(db.clone());
+        .route("/accounts", get(org::list_accounts).post(org::create_account))
+        .route("/roles", get(org::list_bindings).post(org::grant_role).delete(org::revoke_role))
+        .route("/accounts/:aid/disabled", post(org::set_account_disabled))
+        .with_state((db.clone(), audit.clone()));
 
     let chan_routes = Router::new()
         .route("/channels/:cid/messages", get(message::list).post(message::post))

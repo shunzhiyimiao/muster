@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS account (
     ext_iss       TEXT,
     ext_sub       TEXT,
     created_ms    BIGINT NOT NULL,
+    -- 停用而非删除:删账号会让历史里的 author_id 变成孤儿,
+    -- 而"这条消息是谁发的"是不能丢的
+    disabled      BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE (ext_iss, ext_sub)
 );
 

@@ -3,7 +3,7 @@
 //! 配置缺失一律**快速失败**,不用默认值悄悄连到别处去——与 provider 密钥
 //! 同一姿态(见 muster-server/src/lib.rs)。
 
-use muster_server::{db::Db, routes, ws::Hub};
+use muster_server::{audit::Audit, db::Db, routes, ws::Hub};
 
 #[tokio::main]
 async fn main() {
@@ -27,6 +27,18 @@ async fn main() {
         }
     };
 
+    // 服务端自己的审计链(它也是一个节点)。链坏了拒绝启动——
+    // 与桌面壳同一姿态,不在坏账本上继续记账。
+    let chain_path = std::env::var("MUSTER_SERVER_AUDIT_DB")
+        .unwrap_or_else(|_| "./muster-server-audit.db".into());
+    let audit = match Audit::open(&chain_path) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("启动失败:{e}");
+            std::process::exit(2);
+        }
+    };
+
     let bind = std::env::var("MUSTER_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let listener = match tokio::net::TcpListener::bind(&bind).await {
         Ok(l) => l,
@@ -37,7 +49,7 @@ async fn main() {
     };
     tracing::info!("muster-server 监听 {bind}");
 
-    let app = routes::app(db, Hub::new());
+    let app = routes::app(db, Hub::new(), audit);
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("服务异常退出:{e}");
         std::process::exit(1);
