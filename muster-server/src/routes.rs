@@ -26,6 +26,7 @@ pub fn app(db: Db, hub: ws::Hub) -> Router {
     let chan_routes = Router::new()
         .route("/channels/:cid/messages", get(message::list).post(message::post))
         .route("/channels/:cid/meetings", get(meeting::list).post(meeting::start))
+        .route("/meetings/:mid/join", post(meeting::join))
         .route("/meetings/:mid/transcript", post(meeting::add_transcript))
         .route("/meetings/:mid/level", post(meeting::raise_level))
         .route("/meetings/:mid/end", post(meeting::end))

@@ -18,18 +18,26 @@ services:
   # NAT 穿透是一门专业手艺,做完也只是追平一个已被解决透的问题。
   livekit:
     image: livekit/livekit-server:latest
+    # --dev 用固定的 devkey/secret,**只可用于本机开发**。
+    # 内网部署要换成 keys.yaml 里的真实密钥,并把 muster-server 的
+    # LIVEKIT_API_KEY / LIVEKIT_API_SECRET 一起改掉。
     command: --dev --bind 0.0.0.0
-    ports: ["7880:7880", "7881:7881", "7882:7882/udp"]
+    ports:
+      - "7880:7880"    # WebSocket 信令
+      - "7881:7881"    # TCP 回退
+      - "7882:7882/udp" # WebRTC 媒体
 
   # 转写:**必须是本地的**。会议音频是全系统密级最高的数据流,
   # 走云端 STT 会让演习报告说「零外发」而整场会议音频都出去了。
   # 它对 Muster 就是一个 Locality::Local 的 OpenAI 兼容 provider。
+  # 换成任何暴露 OpenAI 兼容 /v1/audio/transcriptions 的镜像都行——
+  # Muster 只认那个接口契约。下面这个镜像的接口路径请以其文档为准,
+  # 对不上就换镜像或加一层适配,**不要改成调云端 API**。
   whisper:
-    image: onerahmet/openai-whisper-asr-webservice:latest
+    image: fedirz/faster-whisper-server:latest-cpu
     environment:
-      ASR_MODEL: base
-      ASR_ENGINE: faster_whisper
-    ports: ["9000:9000"]
+      WHISPER__MODEL: Systran/faster-whisper-base
+    ports: ["9000:8000"]
 
 volumes:
   pgdata:

@@ -29,12 +29,13 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use muster_identity::{Action, Scope as IdScope};
+use muster_identity::{can, Action, OrgProhibitions, Scope as IdScope};
 use muster_route::Sensitivity;
 
 use crate::auth::Identity;
 use crate::db::now_ms;
-use crate::org::require;
+use crate::livekit::{self, JoinCaps, LiveKitConfig};
+use crate::org::{directory, require};
 use crate::ws::{Hub, Push};
 use crate::{Db, Result, ServerError};
 
@@ -231,6 +232,78 @@ pub async fn end(
         .execute(&db.pool)
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Serialize)]
+pub struct JoinInfo {
+    /// LiveKit 服务地址(客户端直连,媒体不经 muster-server)
+    pub url: String,
+    pub token: String,
+    pub room: String,
+    pub level: String,
+    /// 前端据此决定要不要显示"开麦"按钮,而不是点了才被 LiveKit 拒
+    pub can_publish: bool,
+    pub can_record: bool,
+}
+
+/// 拿入会令牌。**能不能开麦由权限内核决定,不是前端说了算。**
+pub async fn join(
+    State((db, _hub)): State<(Db, Hub)>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+) -> Result<Json<JoinInfo>> {
+    let (cid, level, room, ended): (String, String, String, Option<i64>) =
+        sqlx::query_as("SELECT channel_id, level, room, ended_ms FROM meeting WHERE id = $1")
+            .bind(mid)
+            .fetch_optional(&db.pool)
+            .await?
+            .ok_or_else(|| ServerError::NotFound(format!("会议 {mid}")))?;
+    if ended.is_some() {
+        return Err(ServerError::BadRequest("会议已结束".into()));
+    }
+
+    // 准入:先判能不能进(在签令牌之前——签了再拒等于已经把钥匙给出去了)
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid.clone())).await?;
+
+    // 能不能开麦 = 能不能在这个频道发言。写死成 true 等于绕过权限内核。
+    let p = id.principal(&db).await?;
+    let dir = directory(&db).await?;
+    let target = IdScope::Channel(cid.clone());
+    let publish =
+        can(&p, &Action::SendMessage, &target, &OrgProhibitions::default(), &dir).allowed();
+    // 高密级会议一律禁录:录像是长期留存、极易被搬走的正文,
+    // 这不该是与会者的选择
+    let record = parse_level(&level)? < Sensitivity::Restricted
+        && can(&p, &Action::ViewAudit, &target, &OrgProhibitions::default(), &dir).allowed();
+
+    let cfg = LiveKitConfig::from_env().map_err(ServerError::Internal)?;
+    let token = livekit::mint(
+        &cfg,
+        &room,
+        &id.account_id,
+        &id.display_name,
+        JoinCaps { publish, record },
+        3600,
+    )?;
+
+    sqlx::query(
+        "INSERT INTO meeting_participant(meeting_id, account_id, joined_ms) VALUES($1,$2,$3)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(mid)
+    .bind(&id.account_id)
+    .bind(now_ms())
+    .execute(&db.pool)
+    .await?;
+
+    Ok(Json(JoinInfo {
+        url: cfg.url,
+        token,
+        room,
+        level,
+        can_publish: publish,
+        can_record: record,
+    }))
 }
 
 #[cfg(test)]

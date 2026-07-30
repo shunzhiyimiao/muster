@@ -39,6 +39,7 @@
 
 pub mod auth;
 pub mod db;
+pub mod livekit;
 pub mod meeting;
 pub mod message;
 pub mod org;
