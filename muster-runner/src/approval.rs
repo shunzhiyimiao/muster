@@ -59,6 +59,10 @@ pub fn request_merge(
     badge: &str,
     policy_version: &str,
     run_id: &str,
+    // `session_id`:发起该运行的会话。**必须带上**——用能力跑的任务其会话号是
+    // `capsule:<id>`,丢了它,「这次审批属于哪个能力」就只能靠 run_id 回表再查
+    // 一次。同一条链上的事件带同一个会话号,是这条链能被一句 SQL 查全的前提。
+    session_id: Option<String>,
     scope: Scope,
     diff: &RunDiff,
     // `outcome`:运行结局。非正常结束时(中流失败、回合耗尽)这句必须传到审批人
@@ -87,7 +91,7 @@ pub fn request_merge(
             actor: Actor::agent(badge),
             scope,
             run_id: Some(run_id.to_owned()),
-            session_id: None,
+            session_id,
             policy_version: Some(policy_version.to_owned()),
             label: None,
             locality: None,
@@ -188,15 +192,21 @@ pub fn decide_as(
     }
 
     let approval_id = approval_id_for(run_id);
-    // append-only:已裁决的不可再裁决
-    {
+    // append-only:已裁决的不可再裁决。顺带取出该运行的会话号——裁决属于
+    // 它所裁决的那次运行的会话(用能力跑的即 `capsule:<id>`),
+    // 不带就等于在链中间断一节。
+    let session_id = {
         let store = audit.lock().unwrap();
         if let Some(prev) = decision_of(store.conn(), &approval_id)
             .map_err(|e| ApprovalError::Audit(e.to_string()))?
         {
             return Err(ApprovalError::AlreadyDecided(if prev { "批准" } else { "拒绝" }));
         }
-    }
+        muster_audit::run_chain(store.conn(), run_id)
+            .map_err(|e| ApprovalError::Audit(e.to_string()))?
+            .first()
+            .and_then(|e| e.session_id.clone())
+    };
 
     let branch = branch_for(run_id);
     let mut merged_commit = None;
@@ -234,7 +244,7 @@ pub fn decide_as(
             actor: Actor::human(decider),
             scope,
             run_id: Some(run_id.to_owned()),
-            session_id: None,
+            session_id,
             policy_version: Some(policy_version.to_owned()),
             label: None,
             locality: None,

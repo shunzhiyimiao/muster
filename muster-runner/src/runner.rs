@@ -481,6 +481,7 @@ pub async fn run_task_at(
             &cfg.badge,
             &cfg.policy_version,
             &spec.run_id,
+            spec.session_id.clone(),
             scope.clone(),
             d,
             outcome,
