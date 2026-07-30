@@ -22,7 +22,7 @@ use muster_provider::{
 use muster_route::{LabelSource, RoutePlan, RouteRequest, Router};
 
 use crate::tools::ToolSet;
-use crate::worktree::{RunDiff, Worktree};
+use crate::worktree::{enforce_retention, RetentionPolicy, RunDiff, Worktree};
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -30,6 +30,8 @@ pub struct RunnerConfig {
     pub system_prompt: String,
     pub policy_version: String,
     pub max_turns: usize,
+    /// 隔离工作区保留策略(§7.4「再依据保留策略清理」)。
+    pub retention: RetentionPolicy,
 }
 
 impl Default for RunnerConfig {
@@ -40,6 +42,7 @@ impl Default for RunnerConfig {
             system_prompt: muster_prompt::SYSTEM_PROMPT.into(),
             policy_version: "policy-v1".into(),
             max_turns: 8,
+            retention: RetentionPolicy::default(),
         }
     }
 }
@@ -158,23 +161,55 @@ fn deps_lock_hash(ws: &std::path::Path) -> ContentHash {
     ContentHash::sha256(b"deps:none")
 }
 
-/// 取走本次运行的变更并广播。失败**不吞**:发 Notice 如实告知,
-/// 因为"没有 diff"与"取 diff 失败"在证据层面是两回事。
+/// 取走本次运行的变更并广播,随后执行保留策略。
+///
+/// 失败**不吞**:发 Notice 如实告知,因为"没有 diff"与"取 diff 失败"
+/// 在证据层面是两回事。
+///
+/// 保留策略(§7.4 后半句,见 [`crate::worktree::RetentionPolicy`]):
+/// 无变更 ⇒ 立即回收;有变更 ⇒ 留到处置完毕(P5 审批),仅受数量上限兜底。
+/// **注意 `worktree` 被 take 走**:清理会消费所有权,调用方之后拿到的是 None。
 fn take_diff(
-    worktree: &Option<Worktree>,
+    worktree: &mut Option<Worktree>,
+    policy: RetentionPolicy,
     on_event: &mut impl FnMut(RunnerEvent),
 ) -> (Option<RunDiff>, Option<String>) {
-    let Some(wt) = worktree else { return (None, None) };
-    match wt.diff() {
+    let Some(wt) = worktree.as_ref() else { return (None, None) };
+    let branch = wt.branch.clone();
+    let (diff, keep) = match wt.diff() {
         Ok(d) => {
-            on_event(RunnerEvent::Diff { diff: d.clone(), branch: wt.branch.clone() });
-            (Some(d), Some(wt.branch.clone()))
+            let has_change = !d.is_empty();
+            on_event(RunnerEvent::Diff { diff: d.clone(), branch: branch.clone() });
+            (Some(d), has_change)
         }
         Err(e) => {
             on_event(RunnerEvent::Notice { text: format!("取 diff 失败:{e}") });
-            (None, Some(wt.branch.clone()))
+            // 取不到 diff 时保守保留:宁可留个空壳待人工查看,也不销毁可能的证据
+            (None, true)
+        }
+    };
+
+    if keep {
+        // 有变更:留待处置。仅做数量兜底,防止审批流失灵时无限堆积。
+        if let Some(wt) = worktree.as_ref() {
+            match enforce_retention(&wt.base, wt.path.parent().unwrap_or(&wt.base), policy) {
+                Ok(removed) if !removed.is_empty() => on_event(RunnerEvent::Notice {
+                    text: format!("保留上限 {} 已达,回收了 {} 个最旧的隔离工作区", policy.keep, removed.len()),
+                }),
+                Err(e) => on_event(RunnerEvent::Notice { text: format!("保留策略执行失败:{e}") }),
+                _ => {}
+            }
+        }
+        return (diff, Some(branch));
+    }
+
+    // 无变更:没有任何保留价值,立即回收(证据已在审计链里)
+    if let Some(wt) = worktree.take() {
+        if let Err(e) = wt.cleanup() {
+            on_event(RunnerEvent::Notice { text: format!("回收隔离工作区失败:{e}") });
         }
     }
+    (diff, Some(branch))
 }
 
 // ---------------------------------------------------------------- 主循环
@@ -450,7 +485,7 @@ pub async fn run_task(
                 }
                 Some(msg) => {
                     // 失败也要保住已发生的改动:半成品同样是证据(可复核、可丢弃)
-                    take_diff(&worktree, &mut on_event);
+                    take_diff(&mut worktree, cfg.retention, &mut on_event);
                     finish_failed(audit, "stream", &started, &append)?;
                     on_event(RunnerEvent::Finished {
                         outcome: "failed:stream".into(),
@@ -467,7 +502,7 @@ pub async fn run_task(
         if tool_calls.is_empty() {
             final_text = text;
             // §7.4:先保存 Diff 与证据,再谈清理。取 diff 失败不吞——如实回报。
-            let (diff, branch) = take_diff(&worktree, &mut on_event);
+            let (diff, branch) = take_diff(&mut worktree, cfg.retention, &mut on_event);
             append(
                 audit,
                 EventBody::RunFinish {
@@ -529,7 +564,7 @@ pub async fn run_task(
         }
     }
 
-    let (diff, branch) = take_diff(&worktree, &mut on_event);
+    let (diff, branch) = take_diff(&mut worktree, cfg.retention, &mut on_event);
     finish_failed(audit, "max_turns", &started, &append)?;
     let latency_ms = started.elapsed().as_millis() as u64;
     on_event(RunnerEvent::Finished {

@@ -148,6 +148,42 @@ async fn worktree_run_produces_real_diff_without_touching_base_repo() {
     assert!(store.verify_chain().unwrap().is_ok());
 }
 
+/// 保留策略第一条:无变更的 run 没有保留价值,当场回收,不留垃圾。
+#[tokio::test]
+async fn run_without_changes_reclaims_its_worktree() {
+    let base = tempfile::tempdir().unwrap();
+    let g = |args: &[&str]| {
+        std::process::Command::new("git").arg("-C").arg(base.path()).args(args).output().unwrap()
+    };
+    g(&["init", "-q", "-b", "main"]);
+    g(&["config", "user.email", "t@t"]);
+    g(&["config", "user.name", "t"]);
+    std::fs::write(base.path().join("a.txt"), "x\n").unwrap();
+    g(&["add", "-A"]);
+    g(&["commit", "-qm", "init"]);
+    let root = tempfile::tempdir().unwrap();
+
+    // 只读了一下就收工,没有任何改动
+    let mock = MockProvider::cloud("mock-k")
+        .with_tool_call("read_file", r#"{"path":"a.txt"}"#)
+        .with_text("看过了,不需要改。");
+    let router = Router::new(
+        vec![Arc::new(mock) as Arc<dyn ModelProvider>],
+        OrgPolicy::new(Sensitivity::Internal).unwrap(),
+    );
+    let audit = Arc::new(Mutex::new(AuditStore::open_in_memory().unwrap()));
+
+    let mut sp = spec("RUN-N1", base.path(), vec![]);
+    sp.workspace_root = Some(root.path().to_path_buf());
+    let summary =
+        run_task(&router, &audit, &RunnerConfig::default(), sp, |_| {}).await.unwrap();
+
+    assert!(summary.diff.as_ref().is_some_and(|d| d.is_empty()), "确实无变更");
+    assert!(!root.path().join("run-RUN-N1").exists(), "无变更的 worktree 必须当场回收");
+    let branches = String::from_utf8_lossy(&g(&["branch", "--list", "muster/run-*"]).stdout).into_owned();
+    assert!(branches.trim().is_empty(), "分支也不该留下:{branches}");
+}
+
 /// 非 git 目录不假装隔离:如实降级只读,且写工具确实不可用。
 #[tokio::test]
 async fn non_git_workspace_degrades_to_readonly_with_notice() {

@@ -167,6 +167,66 @@ impl Worktree {
     }
 }
 
+/// 保留策略(总规划 §7.4「先保存证据,再依保留策略清理」的后半句)。
+///
+/// **为什么不是"跑完就删"**:删掉 worktree 会把「可操作的改动」降级成
+/// 「一段文本」——patch 还在,但没法 `git checkout` 检出来编译、没法
+/// `git merge` 合入(只能 `git apply`,失去三方合并与冲突提示)。
+/// 所以有变更的 run 必须留到**处置完毕**(合入或丢弃,即 P5 审批的结论)。
+///
+/// 三条规则,前两条不依赖审批即可执行:
+/// 1. 无变更 ⇒ 立即清理(没有任何保留价值);
+/// 2. 数量超过 `keep` ⇒ 回收最旧的(兜底,防止审批流失灵时无限堆积);
+/// 3. 有变更且未处置 ⇒ 保留(等审批结论)。
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    /// 最多保留几个"有变更但未处置"的 worktree。
+    pub keep: usize,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self { keep: 20 }
+    }
+}
+
+/// 回收 `parent` 下超出保留上限的 worktree(按目录 mtime,最旧先回收)。
+/// 返回被回收的目录名。**只动 `run-*` 目录**,不碰其它内容。
+pub fn enforce_retention(
+    base: &Path,
+    parent: &Path,
+    policy: RetentionPolicy,
+) -> Result<Vec<String>, WorktreeError> {
+    let Ok(rd) = std::fs::read_dir(parent) else { return Ok(Vec::new()) };
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf, String)> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("run-") {
+                return None;
+            }
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, e.path(), name))
+        })
+        .collect();
+    if dirs.len() <= policy.keep {
+        return Ok(Vec::new());
+    }
+    dirs.sort_by_key(|(m, _, _)| *m); // 最旧在前
+    let excess = dirs.len() - policy.keep;
+    let mut removed = Vec::new();
+    for (_, path, name) in dirs.into_iter().take(excess) {
+        // 清理失败不中断后续回收——尽力而为,但如实返回成功的那些
+        if git(base, &["worktree", "remove", "--force", &path.display().to_string()]).is_ok() {
+            let branch = format!("muster/{name}");
+            let _ = git(base, &["branch", "-D", &branch]);
+            removed.push(name);
+        }
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +275,40 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let err = Worktree::create(plain.path(), root.path(), "RUN-2").unwrap_err();
         assert!(matches!(err, WorktreeError::NotGitRepo(_)), "{err:?}");
+    }
+
+    /// 保留策略的兜底规则:超过上限时回收最旧的,worktree 与分支一起清。
+    #[test]
+    fn retention_reclaims_oldest_beyond_limit() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            let wt = Worktree::create(base.path(), root.path(), &format!("RUN-{i}")).unwrap();
+            // 制造 mtime 差异,保证"最旧先回收"可判定
+            std::fs::write(wt.path.join("x.txt"), format!("{i}")).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        assert_eq!(git(base.path(), &["worktree", "list"]).unwrap().lines().count(), 4);
+
+        let removed = enforce_retention(base.path(), root.path(), RetentionPolicy { keep: 1 }).unwrap();
+        assert_eq!(removed.len(), 2, "3 个留 1 个应回收 2 个:{removed:?}");
+        assert!(removed.contains(&"run-RUN-0".to_string()), "最旧的必须先走:{removed:?}");
+        assert!(!root.path().join("run-RUN-0").exists());
+        assert!(root.path().join("run-RUN-2").exists(), "最新的必须留下");
+
+        // 分支也一并回收,不留孤儿
+        let branches = git(base.path(), &["branch", "--list", "muster/run-*"]).unwrap();
+        assert!(!branches.contains("RUN-0") && branches.contains("RUN-2"), "{branches}");
+    }
+
+    #[test]
+    fn retention_is_noop_within_limit() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        let wt = Worktree::create(base.path(), root.path(), "RUN-K").unwrap();
+        let removed = enforce_retention(base.path(), root.path(), RetentionPolicy::default()).unwrap();
+        assert!(removed.is_empty());
+        assert!(wt.path.exists(), "未超上限不得动任何东西");
     }
 
     #[test]
