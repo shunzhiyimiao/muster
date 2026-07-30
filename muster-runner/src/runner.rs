@@ -432,9 +432,10 @@ pub async fn run_task_at(
     let mut messages = vec![
         ChatMessage::system(if cfg.system_prompt == muster_prompt::SYSTEM_PROMPT {
             // 默认提示词走 A1 的标准拼装(工作区 + 工具清单在同一处维护)
-            let mut s = muster_prompt::with_workspace(
+            let mut s = muster_prompt::with_mode(
                 &tools.workspace().display().to_string(),
                 &tool_list,
+                tools.is_writable(),
             );
             if let Some(wt) = &worktree {
                 s.push_str(&format!(
@@ -640,7 +641,12 @@ pub async fn run_task_at(
                 name: call.name.clone(),
                 arguments: call.arguments.clone(),
             });
-            let result = tools.execute(&call.name, &call.arguments);
+            let outcome = tools.call(&call.name, &call.arguments);
+            // 命令执行自带审计事件(退出码/耗时/被拒),在 diff 里看不出来,必须单独落链。
+            if let Some(body) = outcome.audit {
+                append(audit, body)?;
+            }
+            let result = outcome.text;
             let summary: String = {
                 let one_line = result.replace('\n', " ⏎ ");
                 let mut s: String = one_line.chars().take(120).collect();

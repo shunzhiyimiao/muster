@@ -277,6 +277,27 @@ pub enum EventBody {
         label: Sensitivity,
     },
 
+    /// 一次命令执行(B2)。总体规划 §"运行了哪些命令、退出码和耗时"要求留痕,
+    /// **被拒的命令同样留痕**——Agent 想跑却没跑成的东西,恰恰是最该看见的信号。
+    ///
+    /// 正文(完整 argv)经 `command_hash` 引用;`rule` 存的是命中的**允许清单条目**
+    /// (如 `cargo test`),属策略元数据而非用户内容,故可明文——它让
+    /// 「这个运行跑了哪些类别的命令」变成一句 SQL。
+    #[serde(rename = "command.run")]
+    CommandRun {
+        /// 命中的允许清单条目;被拒时为 `None`。
+        rule: Option<String>,
+        command_hash: ContentHash,
+        /// 拒绝原因分类(`not_allowed` / `shell_meta` / `denied`);放行时为 `None`。
+        refused: Option<String>,
+        /// 进程退出码;被信号杀死或超时为 `None`。
+        exit_code: Option<i32>,
+        timed_out: bool,
+        duration_ms: u64,
+        /// 输出字节数(截断前的真实长度)。
+        output_bytes: u64,
+    },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -306,6 +327,7 @@ impl EventBody {
             EventBody::CapsuleForge { .. } => "capsule.forge",
             EventBody::CapsuleVerify { .. } => "capsule.verify",
             EventBody::CapsuleAdopt { .. } => "capsule.adopt",
+            EventBody::CommandRun { .. } => "command.run",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }

@@ -230,6 +230,10 @@ export default function App() {
                         <div className="text-[9px]" style={{ color: "#B9BCCB" }}>{l}</div>
                       </div>
                     ))}
+                    <div className="col-span-2 text-[9px] leading-relaxed mt-0.5 text-left" style={{ color: "#B9BCCB" }}>
+                      口径:外发只统计模型调用。任务里执行的构建/测试命令跑的是工作区代码,
+                      其出网在进程外,本报告测不到——不要读成「本次零外发」。
+                    </div>
                   </div>
                 )}
               </div>

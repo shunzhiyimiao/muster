@@ -38,8 +38,32 @@ pub const SYSTEM_PROMPT: &str = "你是 Muster 的代码协作 Agent(工牌 A-00
 
 /// 拼上运行期上下文(工作区、可用工具)的完整系统消息。
 /// 评测集不带工作区,直接用 [`SYSTEM_PROMPT`];执行器用本函数。
+///
+/// **本函数不属于 A7 的度量对象**([`SYSTEM_PROMPT`] 才是),故此处的运行期
+/// 措辞变更不使闸门证据失效——改上面那个常量才需要重跑评测。
 pub fn with_workspace(workspace: &str, tools: &[&str]) -> String {
-    format!("{SYSTEM_PROMPT}\n\n当前工作区:{workspace}\n可用工具(只读):{}", tools.join(" / "))
+    with_mode(workspace, tools, false)
+}
+
+/// 同上,但按工作区是否可写分流措辞。
+///
+/// `writable` 为真时意味着这是本次任务的**隔离 worktree**,此时才会有
+/// `run_command`。多加的那两句是有来由的:工具摆在那里不等于模型会用——
+/// 交付前先自己跑一遍,才是「产出经人裁决」而不是「人替机器当编译器」。
+pub fn with_mode(workspace: &str, tools: &[&str], writable: bool) -> String {
+    let mut s = format!(
+        "{SYSTEM_PROMPT}\n\n当前工作区:{workspace}\n可用工具{}:{}",
+        if writable { "" } else { "(只读)" },
+        tools.join(" / ")
+    );
+    if writable {
+        s.push_str(
+            "\n\n交付前自检:改完代码后,用 run_command 跑一遍构建或测试确认它真的能跑\
+             (清单见该工具说明)。测试失败就继续修,别把没跑过的改动交出去;\
+             确实跑不了(缺依赖、无对应命令)就在结论里如实说明,不要含糊带过。",
+        );
+    }
+    s
 }
 
 #[cfg(test)]

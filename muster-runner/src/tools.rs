@@ -1,11 +1,18 @@
-//! 只读工具集 v0:`list_dir` / `read_file` / `grep`,全部圈禁在工作区内。
+//! 工具集:只读三件套 `list_dir`/`read_file`/`grep`,可写模式再加
+//! `write_file`/`replace_in_file`/`run_command`,全部圈禁在工作区内。
 //!
 //! 约定:执行结果永远是 `String`(包括拒绝与错误)——模型应当看见边界与
 //! 失败原因;是否据此调整策略是模型的事,Runner 不替它遮掩。
+//!
+//! `run_command` 的策略与理由在 [`crate::command`];此处只负责:它**只在
+//! 隔离 worktree 里公示**(与写工具同一道闸),以及把它产生的审计事件带出去。
 
 use std::path::{Path, PathBuf};
 
+use muster_audit::EventBody;
 use muster_provider::ToolSpec;
+
+use crate::command::{self, CommandPolicy};
 
 const READ_CAP_BYTES: usize = 16_000;
 const LIST_CAP: usize = 200;
@@ -13,23 +20,56 @@ const GREP_CAP: usize = 50;
 const GREP_FILE_CAP_BYTES: u64 = 1_000_000;
 const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".muster"];
 
+/// 一次工具调用的结果:给模型看的文本,以及**需要留痕时**的审计事件。
+///
+/// 读写文件不产生审计事件——变更本身已由 diff 与 `run.finish` 的
+/// `output_hash` 覆盖。命令执行不同:它有退出码、耗时和「想跑什么」,
+/// 这些在 diff 里一个字都看不出来,必须单独记。
+pub struct ToolOutcome {
+    pub text: String,
+    pub audit: Option<EventBody>,
+}
+
+impl From<String> for ToolOutcome {
+    fn from(text: String) -> Self {
+        Self { text, audit: None }
+    }
+}
+
 pub struct ToolSet {
     workspace: PathBuf,
     /// 是否启用写工具。**仅当工作区是隔离 worktree 时为真**——写在沙盒里
     /// 不需要审批,写用户的工作区才需要(见 crate 文档的设计决策 2)。
     writable: bool,
+    /// 命令执行策略。与写工具同闸:只读模式下 `run_command` 既不公示也不执行。
+    command: CommandPolicy,
 }
 
 impl ToolSet {
     /// 只读工具集(默认):用户工作区直连时的唯一合法形态。
     pub fn new(workspace: &Path) -> std::io::Result<Self> {
-        Ok(Self { workspace: workspace.canonicalize()?, writable: false })
+        Ok(Self {
+            workspace: workspace.canonicalize()?,
+            writable: false,
+            command: CommandPolicy::default(),
+        })
     }
 
     /// 可写工具集:**只应传入隔离 worktree 的路径**。
     /// 调用方(run_task)保证这一点;传用户工作区进来等于绕过审批。
     pub fn writable(workspace: &Path) -> std::io::Result<Self> {
-        Ok(Self { workspace: workspace.canonicalize()?, writable: true })
+        Ok(Self {
+            workspace: workspace.canonicalize()?,
+            writable: true,
+            command: CommandPolicy::default(),
+        })
+    }
+
+    /// 换一套命令允许清单(如 Capsule 里声明的 `shell.allow`)。
+    /// 否决清单不受影响——见 [`crate::command`]。
+    pub fn with_command_policy(mut self, p: CommandPolicy) -> Self {
+        self.command = p;
+        self
     }
 
     pub fn is_writable(&self) -> bool {
@@ -61,6 +101,22 @@ impl ToolSet {
                         "content": { "type": "string", "description": "文件的完整新内容" }
                     },
                     "required": ["path", "content"]
+                }),
+            },
+            ToolSpec {
+                name: "run_command".into(),
+                description: format!(
+                    "在当前隔离工作区里执行一条命令,用来**验证你改的东西**(编译、测试、检查)。\
+                     不经 shell:不支持管道、重定向、变量替换、通配符,一次只给一条命令。\
+                     允许清单:{}。",
+                    self.command.allow_text()
+                ),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "完整命令行,例如 \"cargo test\"" }
+                    },
+                    "required": ["command"]
                 }),
             },
             ToolSpec {
@@ -119,12 +175,13 @@ impl ToolSet {
     }
 
     /// 执行一次调用。`arguments` 是模型原样产出的 JSON 字符串。
-    pub fn execute(&self, name: &str, arguments: &str) -> String {
+    /// 只要文本、不要审计的调用方用 [`ToolSet::execute`]。
+    pub fn call(&self, name: &str, arguments: &str) -> ToolOutcome {
         let args: serde_json::Value = match serde_json::from_str(arguments) {
             Ok(v) => v,
-            Err(e) => return format!("参数不是合法 JSON:{e}"),
+            Err(e) => return format!("参数不是合法 JSON:{e}").into(),
         };
-        match name {
+        let text = match name {
             "list_dir" => self.list_dir(args["path"].as_str().unwrap_or(".")),
             "read_file" => match args["path"].as_str() {
                 Some(p) => self.read_file(p),
@@ -137,6 +194,20 @@ impl ToolSet {
             "write_file" | "replace_in_file" if !self.writable => {
                 format!("拒绝:{name} 是写操作,当前工作区为只读(写入需在隔离 worktree 中进行)")
             }
+            // 命令执行与写工具同闸:只读模式下连**尝试**都不放行。
+            // 隔离才是它的安全前提,没有隔离就没有它。
+            "run_command" if !self.writable => {
+                "拒绝:run_command 只在任务的隔离工作区里可用(隔离是它的安全前提)".into()
+            }
+            "run_command" => {
+                return match args["command"].as_str() {
+                    Some(line) => {
+                        let o = command::run(line, &self.workspace, &self.command);
+                        ToolOutcome { text: o.text, audit: Some(o.audit) }
+                    }
+                    None => "缺少必填参数 command".to_string().into(),
+                };
+            }
             "write_file" => match (args["path"].as_str(), args["content"].as_str()) {
                 (Some(p), Some(c)) => self.write_file(p, c),
                 _ => "缺少必填参数 path / content".into(),
@@ -148,7 +219,13 @@ impl ToolSet {
                 }
             }
             other => format!("未知工具 {other}"),
-        }
+        };
+        text.into()
+    }
+
+    /// 只取文本的简便形式(测试与不需要留痕的场合)。
+    pub fn execute(&self, name: &str, arguments: &str) -> String {
+        self.call(name, arguments).text
     }
 
     /// 路径圈禁:相对路径 join 工作区后 canonicalize,必须仍在工作区内。
@@ -396,6 +473,33 @@ mod tests {
         let r = t.execute("write_file", r#"{"path":"x.txt","content":"x"}"#);
         assert!(r.contains("拒绝") && r.contains("只读"), "{r}");
         assert!(!_d.path().join("x.txt").exists(), "拒绝后不得留下副作用");
+    }
+
+    /// 命令执行与写工具同闸:没有隔离就没有它,既不公示也不执行。
+    #[test]
+    fn read_only_set_refuses_commands() {
+        let (_d, t) = ws();
+        assert!(!t.specs().iter().any(|s| s.name == "run_command"), "只读模式不该公示 run_command");
+        let r = t.call("run_command", r#"{"command":"cargo test"}"#);
+        assert!(r.text.contains("拒绝") && r.text.contains("隔离"), "{}", r.text);
+        assert!(r.audit.is_none(), "没执行就不该伪造一条执行记录");
+    }
+
+    /// 可写模式下命令执行公示、可跑,并且**带回审计事件**。
+    #[test]
+    fn writable_set_runs_commands_and_returns_an_audit_record() {
+        let (d, t) = ws_rw();
+        assert!(t.specs().iter().any(|s| s.name == "run_command"));
+
+        let t = t.with_command_policy(crate::CommandPolicy::with_allow(["git status"]));
+        std::process::Command::new("git").arg("init").arg("-q").current_dir(d.path()).status().unwrap();
+        let o = t.call("run_command", r#"{"command":"git status --short"}"#);
+        assert!(o.text.contains("退出码 0"), "{}", o.text);
+        assert!(matches!(o.audit, Some(EventBody::CommandRun { .. })), "命令执行必须留痕");
+
+        // 文件读写不产生审计事件:变更本身已由 diff 覆盖,不重复记账
+        assert!(t.call("read_file", r#"{"path":"main.rs"}"#).audit.is_none());
+        assert!(t.call("write_file", r#"{"path":"a.txt","content":"x"}"#).audit.is_none());
     }
 
     fn ws_rw() -> (tempfile::TempDir, ToolSet) {

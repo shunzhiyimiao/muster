@@ -39,11 +39,19 @@
 //!   **已处置(批准合入或拒绝丢弃)即回收**。有变更且未裁决的会保留——
 //!   删掉会把「可操作的改动」降级成「一段文本」(没法 `git checkout` 编译、
 //!   没法 `git merge` 合入)。
-//! - 审批目前是单人裁决(裁决人固定为部署者):多人角色与授权范围属 P2。
+//! - 审批的角色与作用域校验已落地([`approval::decide_as`] + muster-identity
+//!   的 `can()`):裁决人不再固定为部署者,越权者在 git 操作与落库**之前**被挡下。
+//!   仍未做的是身份的**来源**——Principal 目前由本机配置装配,OIDC/目录同步属 P2 服务端。
+//! - 命令执行([`command`])的网络封堵**做不到零外发**:能剥的环境变量都剥了、
+//!   能否决的出网命令都否决了,但 `cargo test` 跑的是工作区里的任意代码。
+//!   真正的封堵在进程之外(sandbox-exec / netns / 防火墙)。按铁律四的口径:
+//!   **测不到就不算作零**——演习报告的「外发字节」只覆盖 model.call,
+//!   不要把它读成「本次运行零外发」。
 //! - 字节记账是载荷近似(与桌面壳同口径);wire 级计量属 A2 后续。
 
 pub mod approval;
 pub mod capsule;
+pub mod command;
 pub mod runner;
 pub mod tools;
 pub mod worktree;
@@ -56,5 +64,6 @@ pub use capsule::{
 pub use runner::{
     run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec,
 };
-pub use tools::ToolSet;
+pub use command::CommandPolicy;
+pub use tools::{ToolOutcome, ToolSet};
 pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};
