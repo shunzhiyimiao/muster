@@ -112,6 +112,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n🧑‍⚖️  裁决:{}", out.detail);
     }
 
+    // P4:成功的运行可以就地锻造成 Capsule(第 6 个参数传 forge 触发)
+    if a.get(5).map(String::as_str) == Some("forge") {
+        let (ok, why) = {
+            let store = audit.lock().unwrap();
+            muster_audit::forgeable(store.conn(), &run_id)?
+        };
+        println!("\n可锻造:{ok}({why})");
+        if ok {
+            let spec = muster_runner::draft_spec(
+                &audit,
+                &run_id,
+                prompt,
+                vec!["read_file".into(), "replace_in_file".into()],
+            )?;
+            println!("草稿:{} · 模型 {} · 判据 {} 条", spec.name, spec.model, spec.verification.len());
+            let out = muster_runner::forge(
+                &audit,
+                "A-007",
+                "policy-v1",
+                &run_id,
+                spec,
+                "team",
+                Scope { team: Some("平台组".into()), channel: Some("live".into()) },
+            )?;
+            println!("🧪 已锻造 {} v{} · 定义哈希 {}", out.capsule_id, out.version, &out.content_hash[..20]);
+
+            let store = audit.lock().unwrap();
+            for c in muster_audit::capsules(store.conn())? {
+                println!(
+                    "   能力库:{} v{} · 源运行 {} · 验真 {}",
+                    c.name,
+                    c.version,
+                    c.source_run_id,
+                    match c.verified_rate() {
+                        None => "尚未验真".to_string(),
+                        Some(r) => format!("{:.0}%", r * 100.0),
+                    }
+                );
+            }
+        }
+    }
+
     let store = audit.lock().unwrap();
     let chain: Vec<String> = run_chain(store.conn(), &run_id)?
         .iter()
