@@ -373,6 +373,8 @@ pub async fn verify(
             prompt: spec.goal.clone(),
             workspace: workspace.to_path_buf(),
             workspace_root: Some(workspace_root.to_path_buf()),
+            // 影子重放:产出用于比对,不进审批队列
+            propose_merge: false,
         },
         baseline.as_deref(),
         |e| on_event(e),
@@ -422,6 +424,22 @@ pub async fn verify(
             },
         })
         .map_err(|e| CapsuleError::Audit(e.to_string()))?;
+
+    // 影子重放的 worktree 是比对用的临时物,证据已在 capsule.verify 里,
+    // 不留待处置——否则每验一次就堆一个没人会去裁决的目录。
+    let slug: String =
+        run_id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let wt_path = workspace_root.join(format!("run-{slug}"));
+    if wt_path.exists() {
+        let _ = std::process::Command::new("git")
+            .arg("-C").arg(workspace)
+            .args(["worktree", "remove", "--force", &wt_path.display().to_string()])
+            .output();
+        let _ = std::process::Command::new("git")
+            .arg("-C").arg(workspace)
+            .args(["branch", "-D", &crate::approval::branch_for(&run_id)])
+            .output();
+    }
 
     Ok(VerifyOutcome {
         capsule_id: capsule_id.to_owned(),
@@ -490,6 +508,8 @@ pub async fn run_capsule(
             prompt,
             workspace: workspace.to_path_buf(),
             workspace_root: Some(workspace_root.to_path_buf()),
+            // 用能力干活是真干活,产出照常进审批
+            propose_merge: true,
         },
         on_event,
     )

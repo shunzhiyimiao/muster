@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prompt: prompt.clone(),
         workspace: repo.into(),
         workspace_root: Some(root.clone()),
+        propose_merge: true,
     };
 
     println!("== 任务 {run_id}:{prompt}\n");

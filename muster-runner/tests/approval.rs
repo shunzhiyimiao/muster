@@ -52,6 +52,7 @@ async fn run_fixing_task(
         prompt: "把减法改成加法".into(),
         workspace: base.to_path_buf(),
         workspace_root: Some(root.to_path_buf()),
+        propose_merge: true,
     };
 
     let mut events = Vec::new();

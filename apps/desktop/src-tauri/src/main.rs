@@ -1002,6 +1002,7 @@ async fn run_workspace_task(
         prompt: text,
         workspace: workspace.into(),
         workspace_root: Some(workspace_root.into()),
+        propose_merge: true,
     };
     let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
 

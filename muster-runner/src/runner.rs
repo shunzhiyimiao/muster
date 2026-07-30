@@ -64,6 +64,25 @@ pub struct TaskSpec {
     /// 结束产出 diff;`None` ⇒ 直连 workspace 的**只读**模式(v0 行为)。
     /// 非 git 仓时如实降级为只读并发 Notice,不假装隔离。
     pub workspace_root: Option<PathBuf>,
+    /// 产出变更后是否申请合入(默认 true)。
+    ///
+    /// **影子重放必须设为 false**:它在锻造基线上重跑,产出是用来**比对**的,
+    /// 不是要落地的。若照常申请合入,审批队列会被历史基线的改动污染,
+    /// 还可能诱使人批准一份并非针对当前代码的 diff。
+    pub propose_merge: bool,
+}
+
+impl TaskSpec {
+    /// 常规任务的默认值(申请合入)。
+    pub fn proposing(mut self) -> Self {
+        self.propose_merge = true;
+        self
+    }
+    /// 影子重放:只产出与比对,不申请合入。
+    pub fn shadow(mut self) -> Self {
+        self.propose_merge = false;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -554,8 +573,9 @@ pub async fn run_task_at(
             let (diff, branch) = take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
 
             // P5:有变更就提合入申请。Runner 只申请,绝不自行合入。
+            // 影子重放(propose_merge=false)例外:其产出用于比对而非落地。
             if let (Some(d), Some(wt)) = (&diff, worktree.as_ref()) {
-                if !d.is_empty() {
+                if !d.is_empty() && spec.propose_merge {
                     match crate::approval::request_merge(
                         audit,
                         &cfg.badge,

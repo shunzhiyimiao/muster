@@ -25,6 +25,7 @@ fn spec(run_id: &str, ws: &std::path::Path, sources: Vec<LabelSource>) -> TaskSp
         prompt: "hello.txt 里写了什么?".into(),
         workspace: ws.to_path_buf(),
         workspace_root: None,
+        propose_merge: true,
     }
 }
 
