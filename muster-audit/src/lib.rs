@@ -15,6 +15,10 @@
 //! 2. **外发字节结构化记账,不靠日志解析**:[`event::EgressBytes`] 只有
 //!    `Measured(u64)` 与 `Unmetered` 两种取值;字节数不明按违规记、不按 0
 //!    记([`queries::DrillReport::ok`] 的 fail-closed 语义,与 E2 同一哲学)。
+//!    **口径边界**:这套记账覆盖的是 `model.call`。`command.run` 执行的是
+//!    工作区里的代码,其出网在本进程之外,证据层看不见——所以演习报告的
+//!    「外发字节」是 model 通道的数,不是整机的数,别把它读成「零外发」。
+//!    真正的封堵属操作系统层(见 muster-runner 的 `command` 模块文档)。
 //! 3. **决策事件记「依据」而不只记「结果」**:`route.decide` 携带有效密级、
 //!    促成来源、策略版本与 [`muster_route::DowngradeReason`]——第 7 幕徽章
 //!    悬浮文案直接由 `text_zh()` 供给;审批事件记「申请能力 vs 工牌能力」差值。
@@ -35,6 +39,7 @@
 //!
 //! (`capsule.forge` / `capsule.verify` / `capsule.adopt` 已随 P4 落地,
 //! 不再是预留;锻造前置条件见 [`queries::forgeable`])、
+//! (`command.run` 已随 B2 落地,不再是预留;被拒的命令同样入链)、
 //! `session.stream.start` / `stream.viewer.join` / `session.stream.stop`、
 //! (`session.lock.raise` 已随 E3 于 v1 落地,不再是预留)、
 //! `share.block`(密级拦截)、`convo.share`、`meeting.transcribe`。

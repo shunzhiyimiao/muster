@@ -295,7 +295,7 @@ export function AgentProfile({
             <RouteTag />
           </div>
           <div className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: "#454A5C" }}>
-            负责代码评审与变更验证:静态审查、跑测试、产出修复 diff 与评审意见。当前具备只读工具(list_dir / read_file / grep),工作区圈禁,越权操作一律走审批(P5)。
+            负责代码评审与变更验证:静态审查、跑测试、产出修复 diff 与评审意见。只读工具(list_dir / read_file / grep)始终可用;在任务的隔离工作区里另有写工具与 run_command(按允许清单执行构建/测试,不经 shell)。路径圈禁,合入一律走审批(P5)。
           </div>
           <div className="flex items-center gap-2 mt-3">
             {streamed ? (
@@ -323,7 +323,7 @@ export function AgentProfile({
           {[
             [agent ? String(agent.hired_days) : "—", "入职天数"],
             [agent ? String(agent.total_runs) : "—", "累计 Runs"],
-            ["3", "只读工具"],
+            ["3 / 6", "工具(只读 / 隔离区)"],
             [agent ? fmtBytes(agent.total_egress_bytes) : "—", "累计外发"],
           ].map(([v, l]) => (
             <div key={l} className="rounded-xl p-3.5" style={{ background: T.panel }}>

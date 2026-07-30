@@ -61,10 +61,19 @@ pub fn request_merge(
     run_id: &str,
     scope: Scope,
     diff: &RunDiff,
+    // `outcome`:运行结局。非正常结束时(中流失败、回合耗尽)这句必须传到审批人
+    // 眼前——半成品同样值得复核,但**不能让它看起来像一次跑完的产出**。
+    outcome: &str,
 ) -> Result<String, ApprovalError> {
     let approval_id = approval_id_for(run_id);
+    let caveat = match outcome {
+        "success" => String::new(),
+        "failed:stream" => "。⚠ 该运行**中途失败**(模型调用中断),改动可能不完整,请按半成品复核".into(),
+        "max_turns" => "。⚠ 该运行**回合数耗尽**,Agent 未自称完成,请按半成品复核".into(),
+        other => format!("。⚠ 该运行以 {other} 结束,非正常完成,请按半成品复核"),
+    };
     let reason = format!(
-        "任务 {run_id} 在隔离分支 {} 上产出 {} 个文件变更(+{} −{}),申请合入主仓",
+        "任务 {run_id} 在隔离分支 {} 上产出 {} 个文件变更(+{} −{}),申请合入主仓{caveat}",
         branch_for(run_id),
         diff.files_changed,
         diff.insertions,

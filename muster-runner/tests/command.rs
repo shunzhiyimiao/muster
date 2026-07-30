@@ -159,6 +159,58 @@ async fn refused_command_is_audited_and_does_not_abort_the_run() {
     assert!(store.verify_chain().unwrap().is_ok());
 }
 
+/// **跑失败的运行,它已经干完的活不能就这么没了。**
+///
+/// 真机上撞见的:Agent 改完代码、还用 run_command 跑绿了测试,最后一次模型调用
+/// 撞上限流 ⇒ 运行记为 failed:stream。此前只有成功分支申请合入,于是那份**已验证
+/// 的产出**被提交在隔离分支上、却从不进审批队列——没人看得见,最后还会被保留策略
+/// 当作"最旧的"回收掉。半成品该由人判断值不值得要,不该由一次网络抖动替人决定。
+#[tokio::test]
+async fn work_survives_a_run_that_dies_midway() {
+    let base = repo_with_failing_test();
+    let root = tempfile::tempdir().unwrap();
+    // 改代码 → 跑测试转绿 → 下一次模型调用炸掉
+    let mock = MockProvider::cloud("mock-k")
+        .with_tool_call("replace_in_file", r#"{"path":"calc.py","old":"a - b","new":"a + b"}"#)
+        .with_tool_call("run_command", r#"{"command":"python3 -m unittest -q"}"#)
+        .with_stream_error("rate limited by provider");
+    let router = Router::new(
+        vec![Arc::new(mock) as Arc<dyn ModelProvider>],
+        OrgPolicy::new(Sensitivity::Internal).unwrap(),
+    );
+    let audit = Arc::new(Mutex::new(AuditStore::open_in_memory().unwrap()));
+
+    let mut approval = None;
+    let err = run_task(
+        &router,
+        &audit,
+        &RunnerConfig::default(),
+        spec("RUN-CMD-4", base.path(), root.path(), "修好并验证"),
+        |e| {
+            if let RunnerEvent::ApprovalRequested { approval_id, .. } = e {
+                approval = Some(approval_id);
+            }
+        },
+    )
+    .await;
+    assert!(err.is_err(), "运行本身确实失败了");
+
+    // 但活儿还在,而且进了审批队列
+    let approval_id = approval.expect("失败的运行也要把已产出的改动送去人裁决");
+    let types = chain_types(&audit, "RUN-CMD-4");
+    assert!(types.contains(&"approval.request".to_string()));
+    assert!(types.contains(&"command.run".to_string()), "跑绿的那次验证也要在链上");
+
+    let store = audit.lock().unwrap();
+    let pending = muster_audit::pending_approval_list(store.conn(), None).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].approval_id, approval_id);
+    // 而且审批人必须看得出这是半成品,不能让它冒充一次跑完的产出
+    assert!(pending[0].reason.contains("中途失败"), "理由要写明结局:{}", pending[0].reason);
+    assert!(pending[0].reason.contains("半成品"), "{}", pending[0].reason);
+    assert!(store.verify_chain().unwrap().is_ok());
+}
+
 /// 命令执行不改变治理:产出照旧进审批,Runner 自己永不合入。
 /// (跑绿了 ≠ 可以自己合——这是「验证」与「授权」的分界。)
 #[tokio::test]

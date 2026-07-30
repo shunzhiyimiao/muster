@@ -458,6 +458,45 @@ pub async fn run_task_at(
     let mut total_completion: u64 = 0;
     let mut final_text = String::new();
 
+    // P5:有变更就提合入申请。Runner 只申请,绝不自行合入。
+    //
+    // **成功与失败走同一条路**。真机上撞见过:Agent 已经改完代码、还用 run_command
+    // 跑绿了测试,最后一次模型调用却撞上限流 ⇒ 运行记为 failed:stream。此前只有成功
+    // 分支申请合入,于是那份**已验证的产出**被提交在隔离分支上、却从不进审批队列,
+    // 没人看得见,最后还会被保留策略当作"最旧的"回收掉——干完的活就这么没了。
+    // 半成品该由人来判断值不值得要,不该由一次网络抖动替人决定。
+    // 结局经 `outcome` 传到审批理由里,免得半成品看起来像一次跑完的产出。
+    // 影子重放(propose_merge=false)例外:其产出用于比对而非落地。
+    let propose = |diff: &Option<RunDiff>,
+                   wt: Option<&Worktree>,
+                   outcome: &str,
+                   on_event: &mut dyn FnMut(RunnerEvent)|
+     -> Result<(), RunnerError> {
+        let (Some(d), Some(wt)) = (diff, wt) else { return Ok(()) };
+        if d.is_empty() || !spec.propose_merge {
+            return Ok(());
+        }
+        match crate::approval::request_merge(
+            audit,
+            &cfg.badge,
+            &cfg.policy_version,
+            &spec.run_id,
+            scope.clone(),
+            d,
+            outcome,
+        ) {
+            Ok(approval_id) => {
+                on_event(RunnerEvent::ApprovalRequested {
+                    approval_id,
+                    branch: wt.branch.clone(),
+                    worktree_path: wt.path.display().to_string(),
+                });
+                Ok(())
+            }
+            Err(e) => Err(RunnerError::Audit(e.to_string())),
+        }
+    };
+
     let finish_failed = |audit: &Arc<Mutex<AuditStore>>,
                          class: &str,
                          started: &Instant,
@@ -554,7 +593,9 @@ pub async fn run_task_at(
                 }
                 Some(msg) => {
                     // 失败也要保住已发生的改动:半成品同样是证据(可复核、可丢弃)
-                    take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
+                    let (d, _) =
+                        take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
+                    propose(&d, worktree.as_ref(), "failed:stream", &mut on_event)?;
                     finish_failed(audit, "stream", &started, &append)?;
                     on_event(RunnerEvent::Finished {
                         outcome: "failed:stream".into(),
@@ -573,27 +614,7 @@ pub async fn run_task_at(
             // §7.4:先保存 Diff 与证据,再谈清理。取 diff 失败不吞——如实回报。
             let (diff, branch) = take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
 
-            // P5:有变更就提合入申请。Runner 只申请,绝不自行合入。
-            // 影子重放(propose_merge=false)例外:其产出用于比对而非落地。
-            if let (Some(d), Some(wt)) = (&diff, worktree.as_ref()) {
-                if !d.is_empty() && spec.propose_merge {
-                    match crate::approval::request_merge(
-                        audit,
-                        &cfg.badge,
-                        &cfg.policy_version,
-                        &spec.run_id,
-                        scope.clone(),
-                        d,
-                    ) {
-                        Ok(approval_id) => on_event(RunnerEvent::ApprovalRequested {
-                            approval_id,
-                            branch: wt.branch.clone(),
-                            worktree_path: wt.path.display().to_string(),
-                        }),
-                        Err(e) => return Err(RunnerError::Audit(e.to_string())),
-                    }
-                }
-            }
+            propose(&diff, worktree.as_ref(), "success", &mut on_event)?;
             append(
                 audit,
                 EventBody::RunFinish {
@@ -661,6 +682,7 @@ pub async fn run_task_at(
     }
 
     let (diff, branch) = take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
+    propose(&diff, worktree.as_ref(), "max_turns", &mut on_event)?;
     finish_failed(audit, "max_turns", &started, &append)?;
     let latency_ms = started.elapsed().as_millis() as u64;
     on_event(RunnerEvent::Finished {

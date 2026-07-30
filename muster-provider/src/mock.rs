@@ -21,6 +21,12 @@ use crate::types::{
 static HANG_MARKER: std::sync::LazyLock<StreamEvent> =
     std::sync::LazyLock::new(|| StreamEvent::TextDelta("\u{0}__mock_hang__\u{0}".into()));
 
+/// Wraps a message that `chat_stream` re-raises as a mid-stream `Err`
+/// (see [`MockProvider::with_stream_error`]). NUL-delimited so it can never
+/// collide with text a real backend would emit.
+const ERR_MARKER_OPEN: &str = "\u{0}__mock_err__";
+const ERR_MARKER_CLOSE: &str = "__mock_err__\u{0}";
+
 pub struct MockProvider {
     meta: ProviderMetadata,
     healthy: AtomicBool,
@@ -141,6 +147,31 @@ impl MockProvider {
         self
     }
 
+    /// Script a turn that opens and then **fails mid-stream** (the provider
+    /// hung up, rate-limited, etc.). Observed in the wild: a run does real work
+    /// across several turns, then the last call gets a 429.
+    ///
+    /// Enqueues the failure **twice** on purpose — consumers retry a mid-stream
+    /// failure once, so a single scripted error would silently be swallowed and
+    /// the test would exercise the retry path instead of the failure path.
+    pub fn with_stream_error(self, msg: &str) -> Self {
+        for _ in 0..2 {
+            self.enqueue(MockTurn {
+                response: ChatResponse {
+                    message: ChatMessage::assistant(""),
+                    usage: None,
+                    finish_reason: FinishReason::Other,
+                    model: "mock-model".into(),
+                },
+                stream_events: vec![StreamEvent::TextDelta(format!(
+                    "{}{msg}{}",
+                    ERR_MARKER_OPEN, ERR_MARKER_CLOSE
+                ))],
+            });
+        }
+        self
+    }
+
     fn next_turn(&self) -> Result<MockTurn, ProviderError> {
         if !self.healthy.load(Ordering::SeqCst) {
             return Err(ProviderError::Unreachable("mock marked unhealthy".into()));
@@ -175,7 +206,22 @@ impl ModelProvider for MockProvider {
                 .chain(futures::stream::pending())
                 .boxed());
         }
-        Ok(futures::stream::iter(turn.stream_events.into_iter().map(Ok)).boxed())
+        // 中流失败标记:前面的事件照发,到它这里转成 Err(如实模拟"发了一半断了")。
+        let items: Vec<Result<StreamEvent, ProviderError>> = turn
+            .stream_events
+            .into_iter()
+            .map(|e| match &e {
+                StreamEvent::TextDelta(t) if t.starts_with(ERR_MARKER_OPEN) => {
+                    Err(ProviderError::StreamProtocol(
+                        t.trim_start_matches(ERR_MARKER_OPEN)
+                            .trim_end_matches(ERR_MARKER_CLOSE)
+                            .to_string(),
+                    ))
+                }
+                _ => Ok(e),
+            })
+            .collect();
+        Ok(futures::stream::iter(items).boxed())
     }
 
     async fn health_check(&self) -> Result<(), ProviderError> {
