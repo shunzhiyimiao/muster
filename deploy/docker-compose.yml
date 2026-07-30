@@ -1,0 +1,35 @@
+# 一条命令拉起服务端依赖。全部可自托管——主权前提不靠承诺,靠部署形态。
+#   cd deploy && docker compose up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_PASSWORD: muster
+      POSTGRES_DB: muster
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muster"]
+      interval: 5s
+      retries: 10
+
+  # 媒体面:Apache-2.0,自托管。Muster 不自建 SFU——回声消除、抖动缓冲、
+  # NAT 穿透是一门专业手艺,做完也只是追平一个已被解决透的问题。
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports: ["7880:7880", "7881:7881", "7882:7882/udp"]
+
+  # 转写:**必须是本地的**。会议音频是全系统密级最高的数据流,
+  # 走云端 STT 会让演习报告说「零外发」而整场会议音频都出去了。
+  # 它对 Muster 就是一个 Locality::Local 的 OpenAI 兼容 provider。
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    environment:
+      ASR_MODEL: base
+      ASR_ENGINE: faster_whisper
+    ports: ["9000:9000"]
+
+volumes:
+  pgdata:

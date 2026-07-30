@@ -39,6 +39,12 @@ pub enum Action {
     ViewAudit,
     /// 登录桌面 UI。
     LoginUi,
+    /// 增删成员、建团队/频道、改别人的角色绑定(P2 服务端)。
+    ///
+    /// 单独成一个动作而不是并进 [`Action::ChangePolicy`]:改组织策略是
+    /// "改规则",管理成员是"改谁受规则约束",两者的授权面本就不同——
+    /// 组管理员该能往自己组里加人,但不该能改全组织的 cloud_max。
+    ManageMembers,
 }
 
 impl Action {
@@ -53,6 +59,7 @@ impl Action {
             Action::ChangePolicy => "修改组织策略",
             Action::ViewAudit => "查看审计",
             Action::LoginUi => "登录界面",
+            Action::ManageMembers => "管理成员与编制",
         }
     }
 }
@@ -107,6 +114,7 @@ fn is_write(action: &Action) -> bool {
             | Action::ForgeCapsule
             | Action::AdoptCapsule
             | Action::ChangePolicy
+            | Action::ManageMembers
     )
 }
 
@@ -127,6 +135,9 @@ fn roles_for(action: &Action) -> &'static [Role] {
         Action::ChangePolicy => &[OrgOwner],
         Action::ViewAudit => &[OrgOwner, OrgAdmin, GroupAdmin, Approver],
         Action::LoginUi => &[OrgOwner, OrgAdmin, GroupAdmin, Publisher, Approver, Member, Guest],
+        // 组管理员可管本组(作用域层会把他限制在自己组内);
+        // Publisher/Approver 是**业务**授权,不含人事权,故不在列
+        Action::ManageMembers => &[OrgOwner, OrgAdmin, GroupAdmin],
     }
 }
 

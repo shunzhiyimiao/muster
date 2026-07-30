@@ -18,8 +18,13 @@ const ROLES: [Role; 9] = [
     Role::RunnerAccount,
 ];
 
+/// 穷举矩阵的动作全集。
+///
+/// 下面那个 `match` 不是多余的:它让**新增一个 Action 而忘了加进矩阵**
+/// 变成编译错误,而不是"测试照样绿、覆盖率悄悄少一块"。穷举验证的价值
+/// 全在"真的穷举"上,漏一个变体就等于这条保证有个洞。
 fn actions() -> Vec<Action> {
-    vec![
+    let all = vec![
         Action::SendMessage,
         Action::CreateTask,
         Action::ApproveMerge,
@@ -29,7 +34,24 @@ fn actions() -> Vec<Action> {
         Action::ChangePolicy,
         Action::ViewAudit,
         Action::LoginUi,
-    ]
+        Action::ManageMembers,
+    ];
+    // 编译期穷举闸:漏了哪个变体,这里就编不过
+    for a in &all {
+        match a {
+            Action::SendMessage
+            | Action::CreateTask
+            | Action::ApproveMerge
+            | Action::ForgeCapsule
+            | Action::AdoptCapsule
+            | Action::ToggleDrill
+            | Action::ChangePolicy
+            | Action::ViewAudit
+            | Action::LoginUi
+            | Action::ManageMembers => {}
+        }
+    }
+    all
 }
 
 fn scopes() -> Vec<Scope> {
@@ -92,6 +114,9 @@ fn exhaustive_matrix_upholds_invariants() {
 
                             // I1:组织级禁止不可推翻——冻结时任何写操作都不许
                             if freeze {
+                                // 与 decide.rs 的 is_write 必须一致。这里是**独立
+                                // 重述**而非调用同一个函数——测试若复用被测代码的
+                                // 判断,就等于拿实现验证实现。
                                 let is_write = matches!(
                                     action,
                                     Action::SendMessage
@@ -100,6 +125,7 @@ fn exhaustive_matrix_upholds_invariants() {
                                         | Action::ForgeCapsule
                                         | Action::AdoptCapsule
                                         | Action::ChangePolicy
+                                        | Action::ManageMembers
                                 );
                                 if is_write {
                                     assert!(
@@ -143,7 +169,12 @@ fn exhaustive_matrix_upholds_invariants() {
         }
     }
 
-    assert_eq!(checked, 9 * 5 * 3 * 9 * 5 * 2);
+    // 由各维度的实际长度算出,而不是写死一个数字——写死的话,
+    // 哪天某个维度悄悄少一项,这里仍然"通过",而覆盖率已经缩水了。
+    let expected =
+        ROLES.len() * scopes().len() * kinds().len() * actions().len() * scopes().len() * 2;
+    assert_eq!(checked, expected, "穷举组数与各维度长度对不上,说明有维度被漏掉");
+    assert!(checked >= 12_150, "矩阵规模不该缩水(历史基线 12,150 组):{checked}");
     assert!(allowed > 0 && allowed < checked, "矩阵不该全允许或全拒绝:{allowed}/{checked}");
     println!("穷举 {checked} 组,允许 {allowed} 组");
 }

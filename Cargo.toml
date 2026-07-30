@@ -9,4 +9,5 @@ members = [
     "muster-audit",
     "muster-runner",
     "muster-gateway",
+    "muster-server",
 ]
