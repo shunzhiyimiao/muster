@@ -709,9 +709,10 @@ function ForgeSection({
       </div>
 
       {live.length === 0 ? (
-        <Card className="p-5 text-xs mb-4" style={{ color: T.sub }}>
-          还没有锻造过能力。一次**成功完成且经审批**的任务运行就可以被固化成 Capsule——
-          它复制的不是提示词,而是那次运行的完整重放引用(仓库快照 / 依赖锁 / 模型 / 工具环境)。
+        <Card className="p-5 text-xs leading-relaxed mb-4" style={{ color: T.sub }}>
+          还没有锻造过能力。一次<b>成功完成且经审批</b>的任务运行就可以被固化成 Capsule——
+          它复制的不是提示词,而是那次运行的完整重放引用(仓库快照 / 依赖锁 / 模型 / 工具环境),
+          所以"照着它再跑一次"的条件天然齐备。
         </Card>
       ) : (
         <div className="grid grid-cols-2 gap-4 mb-4">
@@ -786,8 +787,15 @@ function ForgeSection({
         </span>
       </div>
       {forgeable.length === 0 ? (
-        <Card className="p-5 text-xs" style={{ color: T.sub }}>
-          暂无可锻造的运行。用「▶ 任务」跑一个成功的任务后,它会出现在这里。
+        <Card className="p-5 text-xs leading-relaxed" style={{ color: T.sub }}>
+          {canRun ? (
+            <>暂无可锻造的运行。用「▶ 任务」跑一个成功的任务后,它会出现在这里。</>
+          ) : (
+            <>
+              暂无可锻造的运行。<b>当前身份无权发起任务</b>,无法自行产生可锻造的运行——
+              需要成员及以上角色(访客不能调用敏感 Runner)。
+            </>
+          )}
         </Card>
       ) : (
         <Card className="p-4">
