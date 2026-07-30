@@ -269,7 +269,7 @@ export function ChatPane({
             disabled={isBusy}
             title="任务模式:Agent 在隔离分支上真改代码,产出 diff 后需人工批准才合入"
             className="inline-flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg shrink-0"
-            style={{ background: T.tealSoft, color: T.teal, opacity: isBusy ? 0.5 : draft.trim() ? 1 : 0.7 }}
+            style={{ background: T.indigo, color: "#fff", opacity: isBusy ? 0.5 : draft.trim() ? 1 : 0.7 }}
           >
             <Play size={11} /> 任务
           </button>
@@ -277,14 +277,20 @@ export function ChatPane({
             onClick={() => doSend(false)}
             disabled={isBusy}
             className="inline-flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg shrink-0"
-            style={{ background: T.indigo, color: "#fff", opacity: isBusy ? 0.5 : draft.trim() ? 1 : 0.7 }}
+            style={{ background: T.soft, color: T.sub, opacity: isBusy ? 0.5 : draft.trim() ? 1 : 0.7 }}
           >
-            <Send size={11} /> 发送
+            <Send size={11} /> 仅对话
           </button>
         </div>
         <div className="mt-1.5 px-1 flex items-center gap-2 text-[10px]" style={{ color: hint ? T.amber : T.faint }}>
-          {hint ? <b>{hint}</b> : <LvTag level={channel.level} />}
-          {hint ? null : null}
+          {hint ? (
+            <b>{hint}</b>
+          ) : (
+            <>
+              <LvTag level={channel.level} />
+              <span>▶ 任务 = Agent 真改代码(隔离分支 + 审批);仅对话 = 只聊天,无工具</span>
+            </>
+          )}
           {channel.personal ? "私有会话默认不进团队;串流/分享是唯一出口" : "消息经 E2 路由决策,全程写入审计哈希链"}
         </div>
       </div>
