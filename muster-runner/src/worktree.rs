@@ -89,18 +89,41 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
 }
 
 impl Worktree {
-    /// 在 `base` 仓库上为 `run_id` 建一个独立 worktree。
+    /// 在 `base` 仓库上为 `run_id` 建一个独立 worktree(从当前 HEAD)。
     ///
     /// `parent` 是 worktree 的落地根目录(总规划的 `WORKSPACE_ROOT`)。
     pub fn create(base: &Path, parent: &Path, run_id: &str) -> Result<Self, WorktreeError> {
+        Self::create_at(base, parent, run_id, None)
+    }
+
+    /// 从**指定基线** commit 建 worktree——影子重放靠它把工作区对齐到锻造时的
+    /// 代码状态,而不是拿今天的 HEAD 去跑昨天的能力。
+    /// `at = None` 等价于 [`create`](Self::create)。
+    pub fn create_at(
+        base: &Path,
+        parent: &Path,
+        run_id: &str,
+        at: Option<&str>,
+    ) -> Result<Self, WorktreeError> {
         let base = base
             .canonicalize()
             .map_err(|e| WorktreeError::NotGitRepo(format!("{}: {e}", base.display())))?;
         // 必须是 git 仓:非 git 目录不猜、不降级,直接报错(上层可选择不用 worktree)
-        let head = git(&base, &["rev-parse", "HEAD"])
-            .map_err(|_| WorktreeError::NotGitRepo(base.display().to_string()))?
-            .trim()
-            .to_owned();
+        let head = match at {
+            // 指定基线必须真实存在——不存在就报错,绝不静默退回 HEAD
+            // (那会让"在锻造基线上重放"变成"在今天的代码上重放"而无人察觉)
+            Some(rev) => git(&base, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")])
+                .map_err(|e| WorktreeError::Git {
+                    op: format!("解析基线 {rev}"),
+                    stderr: format!("{e};该 commit 在本仓库中不存在"),
+                })?
+                .trim()
+                .to_owned(),
+            None => git(&base, &["rev-parse", "HEAD"])
+                .map_err(|_| WorktreeError::NotGitRepo(base.display().to_string()))?
+                .trim()
+                .to_owned(),
+        };
 
         let slug: String =
             run_id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
@@ -325,6 +348,47 @@ mod tests {
         // 分支也一并回收,不留孤儿
         let branches = git(base.path(), &["branch", "--list", "muster/run-*"]).unwrap();
         assert!(!branches.contains("RUN-0") && branches.contains("RUN-2"), "{branches}");
+    }
+
+    /// 影子重放的地基:能把工作区切到**指定基线**,而不是拿今天的 HEAD 去跑。
+    #[test]
+    fn worktree_can_be_created_at_a_given_baseline() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        let old = git(base.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+
+        // 主仓继续前进(模拟"改动已合入")
+        std::fs::write(base.path().join("main.rs"), "fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        git(base.path(), &["add", "-A"]).unwrap();
+        git(base.path(), &["commit", "-qm", "已修复"]).unwrap();
+        let head = git(base.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        assert_ne!(old, head);
+
+        // 从旧基线建树:内容应是修复**之前**的样子
+        let wt = Worktree::create_at(base.path(), root.path(), "RUN-AT", Some(&old)).unwrap();
+        assert_eq!(wt.base_commit, old);
+        let src = std::fs::read_to_string(wt.path.join("main.rs")).unwrap();
+        assert!(src.contains("a - b"), "必须回到锻造时的代码状态:{src}");
+        // 此时 diff 相对旧基线为空(工作区就是那个基线)
+        assert!(wt.diff().unwrap().is_empty());
+        wt.cleanup().unwrap();
+
+        // 不指定基线 ⇒ 用当前 HEAD(已修复的样子)
+        let wt2 = Worktree::create(base.path(), root.path(), "RUN-HEAD").unwrap();
+        assert!(std::fs::read_to_string(wt2.path.join("main.rs")).unwrap().contains("a + b"));
+        wt2.cleanup().unwrap();
+    }
+
+    /// 指定的基线不存在时**必须报错**,绝不静默退回 HEAD——
+    /// 那会让"在锻造基线上重放"变成"在今天的代码上重放"而无人察觉。
+    #[test]
+    fn nonexistent_baseline_is_an_error_not_a_silent_fallback() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        let err = Worktree::create_at(base.path(), root.path(), "RUN-X", Some("0000000000000000000000000000000000000000"))
+            .unwrap_err();
+        assert!(err.to_string().contains("不存在"), "{err}");
+        assert!(!root.path().join("run-RUN-X").exists(), "失败不得留下半成品");
     }
 
     #[test]

@@ -84,8 +84,19 @@ pub struct ModelRef {
 /// 要么经 [`ContentHash`] 内容寻址。全部字段非 Option——写不出不合规的 run.start。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayRefs {
-    /// 仓库快照(如 git tree hash)。
+    /// 仓库快照的规范化哈希——用于**比对**(判断环境是否漂移)与防篡改。
     pub repo_snapshot: ContentHash,
+    /// 仓库快照的**可操作原值**,如 git commit id(`git-head:` 去前缀后的部分)。
+    ///
+    /// 为什么两个字段都要:`repo_snapshot` 把 commit 又套了一层 sha256,
+    /// 哈希不可反推,于是重放时**没法把工作区切到正确基线**——影子重放因此
+    /// 永远只能报"环境已漂移"。commit id 本身已是内容寻址,保留原值不损失
+    /// 任何安全性,却让"照着它再跑一次"从口号变成可执行。
+    ///
+    /// `Option` 是为**向后兼容**:该字段之前不存在,旧事件反序列化得 `None`,
+    /// 此时退回"只能比对、不能检出"的旧行为,不报错、不假装能检出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_ref: Option<String>,
     /// 依赖锁定文件哈希(Cargo.lock / package-lock…)。
     pub deps_lock: ContentHash,
     pub model: ModelRef,

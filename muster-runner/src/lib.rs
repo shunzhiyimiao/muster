@@ -53,6 +53,8 @@ pub use capsule::{
     draft_spec, forge, forge_and_store, verify, CapsuleError, CapsuleSpec, CapsuleStore,
     ForgeOutcome, VerifyOutcome,
 };
-pub use runner::{run_task, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
+pub use runner::{
+    run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec,
+};
 pub use tools::ToolSet;
 pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};

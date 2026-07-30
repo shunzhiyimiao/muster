@@ -302,18 +302,15 @@ fn source_output_hash(
 /// - **哈希相同 ⇒ 通过,不同 ⇒ 存疑而非确凿失败**:两段语义等价的 diff 哈希不同
 ///   是常态。本函数不做语义等价判定(那需要跑测试或人来看),只如实记录差异,
 ///   把"是否等价"留给人与后续的判据(spec.verification)。
-/// - **⚠️ 使用前提:必须在与锻造时同一基线的工作区上重放**。
+/// - **基线自动对齐**:重放不在当前 HEAD 上跑,而是把隔离工作区检出到
+///   [`ReplayRefs::repo_ref`] 记录的锻造基线。所以典型流程
+///   「任务 → 审批合入 → 锻造 → 验真」中,即便主仓 HEAD 已因合入而前进,
+///   验真依然成立——拿今天的代码去跑昨天的能力,比出来的差异说明不了任何问题。
 ///
-///   实测发现的陷阱:典型流程是「任务 → 审批合入 → 锻造」,合入那一刻主仓
-///   HEAD 就变了,于是**紧接着在主仓上验真必然报漂移**。这不是 bug,是本函数
-///   在如实拒绝一次无意义的比较——但它意味着正确用法是:在合入**之前**验真,
-///   或把仓库检出到锻造时的那个 commit 的副本上再验。
-///
-///   根因值得记一笔:[`ReplayRefs::repo_snapshot`] 存的是 `sha256("git-head:<commit>")`,
-///   **哈希无法反推 commit**,所以本函数没法自动把工作区切到正确基线。
-///   commit hash 本身已是内容寻址,再套一层 sha256 属于信息损失。改进方向是让
-///   重放引用保留可用于检出的原值——那要动 A9 的核心类型与既有哈希链,
-///   留待专门一轮处理,不在此处顺手改。
+///   历史注记:早期 [`ReplayRefs`] 只存 `sha256("git-head:<commit>")`,哈希不可
+///   反推,验真因此永远只能报"环境已漂移"。现补了可检出的原值
+///   (commit id 本身已是内容寻址,保留原值不损失安全性)。**锻造于该修复之前
+///   的 Capsule 没有此字段**,退回旧行为:快照一致才能验,漂移则如实拒绝。
 pub async fn verify(
     router: &muster_route::Router,
     audit: &Arc<Mutex<AuditStore>>,
@@ -326,25 +323,32 @@ pub async fn verify(
 ) -> Result<VerifyOutcome, CapsuleError> {
     let (replay, content_hash, version, source_run) = forge_record(audit, capsule_id)?;
 
-    // 前置检查按"最根本且最便宜"排序:
-    // ① 环境漂移——环境都不是同一个了,后面一切比对都没有意义,先挡在这里
-    let now_snapshot = crate::runner::repo_snapshot_of(workspace);
-    if now_snapshot != replay.repo_snapshot {
-        return Err(CapsuleError::Unverifiable(format!(
-            "仓库快照已漂移(锻造时 {} / 现在 {}),同一份能力在不同代码基线上的产出本就不可比",
-            &replay.repo_snapshot.0[..replay.repo_snapshot.0.len().min(19)],
-            &now_snapshot.0[..now_snapshot.0.len().min(19)]
-        )));
-    }
+    // ① 基线对齐。有可检出的原值就**把重放工作区切到锻造时的 commit**——
+    //    这才是"照着它再跑一次"的字面含义;否则退回"只能比对"的旧行为。
+    let (now_hash, _) = crate::runner::repo_snapshot_of(workspace);
+    let baseline: Option<String> = match (&replay.repo_ref, now_hash == replay.repo_snapshot) {
+        // 有原值:直接对齐,主仓 HEAD 是否已前进都无所谓
+        (Some(rev), _) => Some(rev.clone()),
+        // 无原值(旧事件)但当前快照恰好一致:可以在当前 HEAD 上重放
+        (None, true) => None,
+        // 无原值且已漂移:确实没法验真——如实拒绝,不落库
+        (None, false) => {
+            return Err(CapsuleError::Unverifiable(format!(
+                "仓库快照已漂移(锻造时 {} / 现在 {}),且该 Capsule 锻造于旧版本、\
+                 未保留可检出的基线引用,无法对齐;请在锻造基线的副本上验真",
+                &replay.repo_snapshot.0[..replay.repo_snapshot.0.len().min(19)],
+                &now_hash.0[..now_hash.0.len().min(19)]
+            )));
+        }
+    };
     // ② 正文完整性——被改过就拒绝重放(审计哈希是它的校验和)
     let spec = store.load(capsule_id, &content_hash)?;
     // ③ 比对基准存在
     let expected_hash = source_output_hash(audit, &source_run)?;
 
-    // 重放:同一 goal、同一工作区、隔离 worktree(影子=不碰主仓)
+    // 重放:同一 goal、对齐到锻造基线、隔离 worktree(影子=不碰主仓)
     let run_id = format!("RUN-VERIFY-{capsule_id}-{}", std::process::id());
-    let spec_prompt = spec.goal.clone();
-    let summary = crate::runner::run_task(
+    let summary = crate::runner::run_task_at(
         router,
         audit,
         cfg,
@@ -356,10 +360,11 @@ pub async fn verify(
             sources: vec![],
             requested_provider: None,
             default_provider: Some(replay.model.provider_id.clone()),
-            prompt: spec_prompt,
+            prompt: spec.goal.clone(),
             workspace: workspace.to_path_buf(),
             workspace_root: Some(workspace_root.to_path_buf()),
         },
+        baseline.as_deref(),
         |e| on_event(e),
     )
     .await
@@ -428,6 +433,7 @@ mod tests {
         let mut s = AuditStore::open_in_memory().unwrap();
         let replay = ReplayRefs {
             repo_snapshot: ContentHash::sha256(b"git-head:deadbeef"),
+            repo_ref: None,
             deps_lock: ContentHash::sha256(b"lock"),
             model: ModelRef {
                 provider_id: "kimi".into(),

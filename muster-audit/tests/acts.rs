@@ -12,6 +12,7 @@ fn ch(s: &str) -> ContentHash {
 fn replay() -> ReplayRefs {
     ReplayRefs {
         repo_snapshot: ch("git-tree:payments@abc123"),
+        repo_ref: Some("abc123".into()),
         deps_lock: ch("Cargo.lock@v42"),
         model: ModelRef {
             provider_id: "ollama-local".into(),

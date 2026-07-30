@@ -129,16 +129,14 @@ pub enum RunnerError {
 
 // ---------------------------------------------------------------- ReplayRefs 取真值
 
-/// git HEAD 优先(`git-head:` 前缀);非 git 目录降级为顶层清单(`dir:` 前缀)。
-/// 前缀进哈希原文——重放校验时能看出快照口径,不伪造精度。
+/// 仓库快照:同时给出**用于比对的哈希**与**用于检出的原值**。
 ///
-/// 对外公开(`repo_snapshot_of`)供 Capsule 验真做环境漂移检测:
-/// **必须与锻造时用同一个函数**,否则比的是两把尺子。
-pub fn repo_snapshot_of(ws: &std::path::Path) -> ContentHash {
-    repo_snapshot(ws)
-}
-
-fn repo_snapshot(ws: &std::path::Path) -> ContentHash {
+/// git 仓返回 `(sha256("git-head:<commit>"), Some(commit))`;非 git 目录降级为
+/// 顶层清单哈希且原值为 `None`——降级口径进哈希原文(`dir:` 前缀),
+/// 重放校验时能看出精度,不伪造。
+///
+/// **锻造与验真必须用同一个函数**,否则比的是两把尺子。
+pub fn repo_snapshot_of(ws: &std::path::Path) -> (ContentHash, Option<String>) {
     let head = std::process::Command::new("git")
         .arg("-C")
         .arg(ws)
@@ -146,8 +144,11 @@ fn repo_snapshot(ws: &std::path::Path) -> ContentHash {
         .output();
     if let Ok(o) = head {
         if o.status.success() {
-            let head = String::from_utf8_lossy(&o.stdout);
-            return ContentHash::sha256(format!("git-head:{}", head.trim()).as_bytes());
+            let commit = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+            return (
+                ContentHash::sha256(format!("git-head:{commit}").as_bytes()),
+                Some(commit),
+            );
         }
     }
     let mut names: Vec<String> = std::fs::read_dir(ws)
@@ -158,7 +159,7 @@ fn repo_snapshot(ws: &std::path::Path) -> ContentHash {
         })
         .unwrap_or_default();
     names.sort();
-    ContentHash::sha256(format!("dir:{}", names.join(",")).as_bytes())
+    (ContentHash::sha256(format!("dir:{}", names.join(",")).as_bytes()), None)
 }
 
 fn deps_lock_hash(ws: &std::path::Path) -> ContentHash {
@@ -239,6 +240,21 @@ pub async fn run_task(
     audit: &Arc<Mutex<AuditStore>>,
     cfg: &RunnerConfig,
     spec: TaskSpec,
+    on_event: impl FnMut(RunnerEvent) + Send,
+) -> Result<RunSummary, RunnerError> {
+    run_task_at(router, audit, cfg, spec, None, on_event).await
+}
+
+/// 与 [`run_task`] 相同,但把隔离工作区建在**指定基线** commit 上。
+///
+/// 影子重放靠它把代码状态对齐到锻造时刻——拿今天的 HEAD 去跑昨天的能力,
+/// 比出来的差异说明不了任何问题。`at = None` 即普通任务(从当前 HEAD)。
+pub async fn run_task_at(
+    router: &Router,
+    audit: &Arc<Mutex<AuditStore>>,
+    cfg: &RunnerConfig,
+    spec: TaskSpec,
+    at: Option<&str>,
     mut on_event: impl FnMut(RunnerEvent) + Send,
 ) -> Result<RunSummary, RunnerError> {
     // commit 主题取任务提示词首行(截断),让主仓历史一眼能看出这次改动为何而来
@@ -252,7 +268,7 @@ pub async fn run_task(
     // 非 git 仓不假装隔离——如实降级为只读并告知,绝不在用户工作区上开写权限。
     let mut worktree: Option<Worktree> = None;
     if let Some(root) = &spec.workspace_root {
-        match Worktree::create(&spec.workspace, root, &spec.run_id) {
+        match Worktree::create_at(&spec.workspace, root, &spec.run_id, at) {
             Ok(wt) => {
                 on_event(RunnerEvent::WorkspaceReady {
                     path: wt.path.display().to_string(),
@@ -334,6 +350,11 @@ pub async fn run_task(
     };
 
     // ---- run.start(Capsule-ready:ReplayRefs 全真值)
+    // 快照取**基础仓库**而非 worktree:worktree 是从基线派生的副本,
+    // 记它的 HEAD 等于记一个用完就删的引用,重放时无从检出。
+    let (snapshot_hash, snapshot_ref) = repo_snapshot_of(
+        worktree.as_ref().map(|w| w.base.as_path()).unwrap_or(tools.workspace()),
+    );
     let specs = tools.specs();
     let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     let params_repr = serde_json::json!({
@@ -347,7 +368,8 @@ pub async fn run_task(
         EventBody::RunStart {
             task_kind: "chat.tools.v0".into(),
             replay: ReplayRefs {
-                repo_snapshot: repo_snapshot(tools.workspace()),
+                repo_snapshot: snapshot_hash,
+                repo_ref: snapshot_ref,
                 deps_lock: deps_lock_hash(tools.workspace()),
                 model: ModelRef {
                     provider_id: meta.id.clone(),

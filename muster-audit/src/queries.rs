@@ -562,6 +562,7 @@ mod home_query_tests {
     fn replay_refs() -> ReplayRefs {
         ReplayRefs {
             repo_snapshot: ContentHash::sha256(b"git-head:abc"),
+            repo_ref: Some("abc".into()),
             deps_lock: ContentHash::sha256(b"lock"),
             model: ModelRef {
                 provider_id: "kimi".into(),
