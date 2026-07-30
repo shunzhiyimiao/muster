@@ -252,13 +252,11 @@ const PinCap = ({ name, ver, rate, from, fresh }: { name: string; ver: string; r
 /* ==================== 编制管理(D6 概念) ==================== */
 
 export function RosterView({
-  approved,
   filter,
   setFilter,
   team,
   live,
 }: {
-  approved: boolean;
   filter: string;
   setFilter: (f: string) => void;
   team: string;
@@ -275,7 +273,7 @@ export function RosterView({
   const inTeam = ROSTER.filter((r) => r.team === team);
   const conceptFiltered = inTeam.filter((r) =>
     filter === "全部" ? true : filter === "人类" ? r.kind === "human" : filter === "Agent" ? r.kind === "agent"
-      : r.tiles.some((t) => (t.hot && !approved) || t.hot2)
+      : r.tiles.some((t) => t.hot || t.hot2)
   );
 
   return (
@@ -329,7 +327,7 @@ export function RosterView({
         <Card className="p-5 text-center text-xs" style={{ color: T.sub }}>本团队当前筛选下没有概念条目</Card>
       ) : (
         <div className="grid grid-cols-3 gap-4">
-          {conceptFiltered.map((p) => <PersonCard key={p.name} p={p} approved={approved} />)}
+          {conceptFiltered.map((p) => <PersonCard key={p.name} p={p} />)}
         </div>
       )}
     </div>
@@ -385,7 +383,7 @@ function LiveCard({ r }: { r: RosterEntryOut }) {
   );
 }
 
-function PersonCard({ p, approved }: { p: RosterEntry; approved: boolean }) {
+function PersonCard({ p }: { p: RosterEntry }) {
   const feat = p.feat, isA = p.kind === "agent";
   return (
     <div className="rounded-2xl flex flex-col" style={feat
@@ -413,8 +411,8 @@ function PersonCard({ p, approved }: { p: RosterEntry; approved: boolean }) {
       <div className="grid grid-cols-3 gap-2 mt-3.5">
         {p.tiles.map((t, i) => {
           const Ic = TICON[t.i];
-          const hot = (t.hot && !approved) || t.hot2;
-          const v = t.hot && approved ? "0 项" : t.v;
+          const hot = t.hot || t.hot2;
+          const v = t.v;
           return (
             <div key={i} className="rounded-xl px-1.5 py-2.5 text-center" style={{ background: feat ? "rgba(255,255,255,.13)" : T.soft }}>
               <div className="flex justify-center" style={{ color: feat ? "#DCDCFE" : hot ? T.red : "#5A5E70" }}><Ic size={14} /></div>

@@ -9,16 +9,15 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  CapsuleOut, ForgeableRun, PendingApprovalOut, RosterEntryOut, WhoAmI, fmtBytes,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RosterEntryOut, TeamCount, WhoAmI, fmtBytes,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
-import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } from "./ui";
+import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
 import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
-import { TEAM_META } from "./data";
 
 const RAIL = [
   { id: "console", icon: LayoutDashboard, label: "控制台", ok: true },
@@ -40,8 +39,6 @@ export default function App() {
   const [team, setTeam] = useState("platform");
   const [channelId, setChannelId] = useState("platform");
   const [notice, setNotice] = useState("");
-  const [approved, setApproved] = useState(false);
-  const [modal, setModal] = useState(false);
   const [introduced, setIntroduced] = useState(false);
   const [convo, setConvo] = useState<"closed" | "open" | "blocked">("closed");
   const [fab, setFab] = useState(false);
@@ -61,6 +58,7 @@ export default function App() {
   const [home, setHome] = useState<HomeStats | null>(null);
   const [agent, setAgent] = useState<AgentStats | null>(null);
   const [rosterLive, setRosterLive] = useState<RosterEntryOut[]>([]);
+  const [teamCounts, setTeamCounts] = useState<TeamCount[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
@@ -75,6 +73,7 @@ export default function App() {
     api.homeStats().then(setHome).catch(() => {});
     api.agentStats().then(setAgent).catch(() => {});
     api.rosterStats().then(setRosterLive).catch(() => {});
+    api.rosterCounts().then(setTeamCounts).catch(() => {});
     api.approvalsPending().then(setApprovals).catch(() => {});
     api.capsulesList().then(setCapsules).catch(() => {});
     api.forgeableRuns().then(setForgeable).catch(() => {});
@@ -290,7 +289,7 @@ export default function App() {
                 const open = !!expanded[t.id];
                 const isActiveTeam = team === t.id && (view === "channel" || view === "roster");
                 const rosterOn = view === "roster" && team === t.id;
-                const meta = TEAM_META[t.id] ?? { people: 0, agents: 0 };
+                const meta = teamCounts.find((c) => c.team === t.name) ?? { people: 0, agents: 0 };
                 return (
                   <div key={t.id} className="mb-0.5">
                     <button onClick={() => setExpanded((e) => ({ ...e, [t.id]: !open }))} className="w-full flex items-center gap-2 px-2 py-2 rounded-xl text-left">
@@ -347,10 +346,13 @@ export default function App() {
             </div>
           )}
           <div className="flex-1 min-h-0">
-            {view === "home" && <ConsoleHome home={home} approved={approved} onApprove={() => setModal(true)} />}
+            {view === "home" && (
+              <ConsoleHome home={home} pending={approvals}
+                onGoApprovals={() => { setModule("team"); setView("channel"); }} />
+            )}
             {view === "audit" && <AuditCenter rows={audit} chain={chain} onRefresh={refreshAll} />}
             {view === "phome" && (
-              <PersonalHome personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
+              <PersonalHome me={me} personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
                 allMsgs={chat.msgs} channels={channels}
                 onStream={() => setPicker(true)} onStop={() => setStreamed(false)}
                 goAgent={() => setView("agent")} goChat={goPersonalChat}
@@ -376,7 +378,7 @@ export default function App() {
                 approvals={approvals} onApprovalsChanged={refreshAll} canApprove={me?.can.approve_merge ?? true} />
             )}
             {view === "roster" && (
-              <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
+              <RosterView filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
             )}
             {view === "meeting" && <MeetingView />}
             {view === "caps" && (
@@ -489,35 +491,6 @@ export default function App() {
               </div>
               <div className="mt-3.5 text-[10.5px] leading-relaxed" style={{ color: T.faint }}>
                 串流为只读投屏:队友可围观与提问,接手需你授权。全程计入审计。<b>串流通道为 v1.x 演示,当前仅 UI 状态。</b>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===== 审批弹窗(概念示例,P5 真实化) ===== */}
-      {modal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
-          <div className="w-[392px] rounded-2xl overflow-hidden fade" style={{ background: "#fff", boxShadow: "0 24px 60px rgba(23,24,28,.25)" }}>
-            <div className="px-5 py-3.5 flex items-center gap-2 text-[13px] font-semibold" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
-              <ShieldAlert size={15} /> 审批请求 <Tag>概念示例</Tag>
-            </div>
-            <div className="p-5 space-y-3.5">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-2xl flex items-center justify-center" style={{ background: T.indigoSoft, color: T.indigo }}><Bot size={20} /></div>
-                <div>
-                  <div className="text-sm font-bold">Agent-007 <span className="font-normal text-[11.5px]" style={{ color: T.sub }}>· 代码评审员</span></div>
-                  <div className="text-[11.5px] mt-0.5" style={{ color: T.sub }}>权限:只读仓库 / 发评论 / 跑测试</div>
-                </div>
-                <span className="ml-auto"><Tag tone="ind">编制 A-007</Tag></span>
-              </div>
-              <div className="text-[13.5px] leading-relaxed">
-                申请执行 <code className="text-[11.5px] px-2 py-1 rounded-lg" style={{ background: T.redSoft, color: T.red }}>rm -rf .cache/fixtures</code>
-                <div className="text-[11.5px] mt-1.5" style={{ color: T.sub }}>该操作超出其岗位权限。批准与拒绝都会写入审计(approval.* 事件已在 A9 就绪)。</div>
-              </div>
-              <div className="flex gap-2 pt-0.5">
-                <IBtn onClick={() => { setModal(false); setApproved(true); }} className="px-5 py-2.5">批准执行</IBtn>
-                <button onClick={() => setModal(false)} className="px-5 py-2.5 rounded-xl text-xs font-medium" style={{ background: T.soft, color: T.sub }}>拒绝</button>
               </div>
             </div>
           </div>

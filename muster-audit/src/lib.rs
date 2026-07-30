@@ -58,7 +58,7 @@ pub use event::{
 pub use queries::{
     actor_first_seen, capsules, day_throughput, decision_of, distinct_runs, downgrades_zh,
     drill_report, forgeable, pending_approval_list, pending_approvals, recent_events,
-    recent_events_of, roster, run_chain, run_start_of, session_lock, CapsuleRow, DayThroughput,
+    recent_events_of, roster, roster_counts, run_chain, run_start_of, session_lock, CapsuleRow, DayThroughput,
     DrillReport, PendingApproval, RosterRow,
 };
 pub use store::{AuditStore, ChainError, StoreError};

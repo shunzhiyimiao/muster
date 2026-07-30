@@ -1567,6 +1567,26 @@ struct RosterEntryOut {
     last_locality: Option<String>,
 }
 
+/// 侧栏「N人·M AI」:与在册编制同一口径(审计链里真干过活的 actor)。
+#[derive(Serialize)]
+struct TeamCountOut {
+    team: String,
+    people: u64,
+    agents: u64,
+}
+
+#[tauri::command]
+fn roster_counts_cmd(state: State<'_, AppState>) -> Result<Vec<TeamCountOut>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    Ok(muster_audit::roster_counts(store.conn())
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|(team, people, agents)| TeamCountOut { team, people, agents })
+        .collect())
+}
+
 #[tauri::command]
 fn roster_stats(state: State<'_, AppState>, team: Option<String>) -> Result<Vec<RosterEntryOut>, String> {
     let guard = state.0.lock().unwrap();
@@ -1667,6 +1687,7 @@ fn main() {
             agent_stats,
             history_bulk,
             roster_stats,
+            roster_counts_cmd,
             approvals_pending,
             approvals_decide,
             capsules_list,

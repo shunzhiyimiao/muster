@@ -458,6 +458,34 @@ pub fn roster(conn: &Connection, team: Option<&str>) -> Result<Vec<RosterRow>, S
     Ok(out)
 }
 
+/// 各团队的在册人数(侧栏「N人·M AI」)。
+///
+/// 与 [`roster`] 同一口径——**编制 = 在审计链里真实干过活的 actor**,
+/// 而不是某处配置里写了几个人。`system` 类不算人手。
+/// 一个 actor 在多个团队干过活就在各团队各算一次:这不是重复计数,
+/// 「谁参与了这个团队」本来就该按团队问。
+pub const SQL_ROSTER_COUNTS: &str = r#"
+SELECT team,
+       COUNT(DISTINCT CASE WHEN actor_kind='human' THEN actor_id END),
+       COUNT(DISTINCT CASE WHEN actor_kind='agent' THEN actor_id END)
+FROM audit_event
+WHERE team IS NOT NULL AND actor_kind <> 'system'
+GROUP BY team
+"#;
+
+/// `(团队, 人数, Agent 数)`。
+pub fn roster_counts(conn: &Connection) -> Result<Vec<(String, u64, u64)>, StoreError> {
+    let mut stmt = conn.prepare(SQL_ROSTER_COUNTS)?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Agent 档案页「入职时间」:该 actor 的首条审计事件时刻(ULID 即时序)。
 pub const SQL_ACTOR_FIRST_SEEN: &str =
     "SELECT MIN(ts_ms) FROM audit_event WHERE actor_id = ?1";
@@ -856,6 +884,36 @@ mod home_query_tests {
 
         // 团队过滤:事件的 scope.team 为空,按团队查应当查不到
         assert!(roster(store.conn(), Some("平台组")).unwrap().is_empty());
+        // 无团队的事件不进分团队计数(侧栏不该凭空多出一个组)
+        assert!(roster_counts(store.conn()).unwrap().is_empty());
+    }
+
+    /// 侧栏「N人·M AI」:与在册编制同一口径,按团队分开数,人与 Agent 分开数。
+    #[test]
+    fn roster_counts_split_by_team_and_kind() {
+        let mut store = AuditStore::open_in_memory().unwrap();
+        let mut mk = |team: &str, actor: Actor| {
+            let mut e = call_event("RUN-X", Locality::Local);
+            e.actor = actor;
+            e.scope = Scope { team: Some(team.into()), channel: None };
+            store.append(e).unwrap();
+        };
+        mk("平台组", Actor::agent("A-007"));
+        mk("平台组", Actor::agent("A-007")); // 同一人多次活动只算一个
+        mk("平台组", Actor::human("alice"));
+        mk("支付组", Actor::agent("A-012"));
+        // 跨团队干活的人在两边各算一次——「谁参与了这个团队」本就该按团队问
+        mk("支付组", Actor::human("alice"));
+        // system 不算人手(与在册编制口径一致)
+        mk("平台组", Actor::system("scheduler"));
+
+        let mut got = roster_counts(store.conn()).unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("平台组".to_string(), 1, 1), ("支付组".to_string(), 1, 1)],
+            "平台组 1人1AI(system 不计)· 支付组 1人1AI"
+        );
     }
 
     #[test]

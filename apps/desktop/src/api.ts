@@ -168,6 +168,12 @@ export interface ForgeableRun {
   output_hash: string;
   duration_ms: number;
 }
+/** 侧栏「N人·M AI」:与在册编制同一口径——审计链里真干过活的 actor */
+export interface TeamCount {
+  team: string;
+  people: number;
+  agents: number;
+}
 export interface PendingApprovalOut {
   approval_id: string;
   ts_ms: number;
@@ -232,6 +238,7 @@ export const api = {
   agentStats: () => invoke<AgentStats>("agent_stats"),
   historyBulk: (limit: number) => invoke<StoredMsg[]>("history_bulk", { limit }),
   rosterStats: (team?: string) => invoke<RosterEntryOut[]>("roster_stats", { team: team ?? null }),
+  rosterCounts: () => invoke<TeamCount[]>("roster_counts_cmd"),
   approvalsPending: () => invoke<PendingApprovalOut[]>("approvals_pending"),
   approvalsDecide: (runId: string, granted: boolean, note?: string) =>
     invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),

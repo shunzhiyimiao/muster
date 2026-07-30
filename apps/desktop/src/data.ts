@@ -1,12 +1,9 @@
 /* 概念稿静态数据(编制卡 / 能力库 / 会议字幕 / 记忆时间线)。
-   这些是 v4 的产品叙事占位,真实化排期:编制=D6、能力库=P4、会议=v1.x。 */
+   **本文件里的一切都不是真的**,消费处一律带「演示叙事 / 概念示例」标签。
+   真数据走 api.ts,别把这里的东西混进真实统计旁边不加标注——
+   在一个卖「你能看见真实发生了什么」的产品里,分不清真假比缺功能更糟。
+   真实化排期:编制=D6、能力库=P4、会议=v1.x(P3 多端在线之后)。 */
 import { Cloud, HardDrive, Play, Shield, TrendingUp, Video } from "lucide-react";
-
-export const TEAM_META: Record<string, { people: number; agents: number }> = {
-  platform: { people: 2, agents: 2 },
-  pay: { people: 1, agents: 1 },
-  sec: { people: 1, agents: 1 },
-};
 
 export interface RosterTile {
   i: keyof typeof TICON;

@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { T, LV } from "../theme";
 import { Card, ChipDd, IBtn, RouteTag, Tag } from "../ui";
-import { AgentStats, Channel, HomeStats, fmtBytes, fmtDate } from "../api";
+import { AgentStats, Channel, HomeStats, WhoAmI, fmtBytes, fmtDate } from "../api";
 import { Msg } from "../chat";
 import { MEMO } from "../data";
 
@@ -23,6 +23,7 @@ export function PersonalHome({
   goChannel,
   openConvo,
   onOpenChannel,
+  me,
 }: {
   personalMsgs: Msg[];
   agent: AgentStats | null;
@@ -37,6 +38,8 @@ export function PersonalHome({
   goChannel: () => void;
   openConvo: () => void;
   onOpenChannel: (c: Channel) => void;
+  /** 当前身份;用户消息署谁的名由它决定 */
+  me: WhoAmI | null;
 }) {
   const lastUser = [...personalMsgs].reverse().find((m) => m.role === "user");
   const lastAgent = [...personalMsgs].reverse().find((m) => m.role === "agent" && m.text);
@@ -64,7 +67,7 @@ export function PersonalHome({
 
           {hasConvo ? (
             <div className="mt-3.5 rounded-xl p-3.5 space-y-2.5" style={{ background: T.panel }}>
-              {lastUser && <PSnip who="Alice" text={lastUser.text} />}
+              {lastUser && <PSnip who={me?.display_name ?? "我"} text={lastUser.text} />}
               {lastAgent && <PSnip who="小七" bot text={lastAgent.text} />}
             </div>
           ) : (
@@ -82,8 +85,9 @@ export function PersonalHome({
                 <button onClick={goChannel} className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl" style={{ background: T.soft }}>
                   <Hash size={13} /> 去 #platform 看围观
                 </button>
-                <span className="ml-auto flex items-center gap-1 text-[11px]" style={{ color: T.sub }}>
-                  <Eye size={12} /> 12 人围观中
+                <span className="ml-auto flex items-center gap-1 text-[11px]" style={{ color: T.faint }}
+                  title="围观人数需要多端在线状态(P3 WebSocket),单机部署下没有这个数">
+                  <Eye size={12} /> 围观统计待多端接入
                 </span>
               </>
             ) : (
@@ -274,7 +278,7 @@ export function AgentProfile({
             <Bot size={56} style={{ color: T.indigo }} />
           </div>
           <div className="absolute left-2 bottom-2 text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ background: "#fff", color: T.sub }}>
-            ID: a7f0-007
+            {agent?.badge ?? "—"}
           </div>
           <div className="absolute -right-3 -bottom-3 w-9 h-9 rounded-full flex items-center justify-center"
             style={{ background: "#fff", border: `1px solid ${T.line}`, color: T.indigo }}>
@@ -284,7 +288,7 @@ export function AgentProfile({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5">
             <span className="text-2xl font-extrabold">小七</span>
-            <Tag tone="ind">编制 A-007 · 代码评审员</Tag>
+            <Tag tone="ind">编制 {agent?.badge ?? "—"} · 代码评审员</Tag>
             <button disabled title="Agent 档案编辑尚未实现" className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg" style={{ background: T.soft, color: T.sub , opacity: 0.45, cursor: "not-allowed"}}>
               <Pencil size={11} /> 编辑
             </button>

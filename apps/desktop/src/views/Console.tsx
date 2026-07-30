@@ -5,18 +5,19 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { ApRow, Card, ChipDd, Kpi, LegRow, Pct, Tag, TodoRow } from "../ui";
-import { AuditRow, ChainStatus, HomeStats, fmtBytes, fmtDate, fmtTime } from "../api";
+import { AuditRow, ChainStatus, HomeStats, PendingApprovalOut, fmtBytes, fmtDate, fmtTime } from "../api";
 
 const WEEKDAY_ZH = ["日", "一", "二", "三", "四", "五", "六"];
 
 export function ConsoleHome({
   home,
-  approved,
-  onApprove,
+  pending,
+  onGoApprovals,
 }: {
   home: HomeStats | null;
-  approved: boolean;
-  onApprove: () => void;
+  /** 真实待裁决申请(与频道右栏「待我审批」同一来源) */
+  pending: PendingApprovalOut[];
+  onGoApprovals: () => void;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   if (!home) {
@@ -33,6 +34,11 @@ export function ConsoleHome({
   const todayTotal = today.local + today.cloud;
   const frLocal = todayTotal ? today.local / todayTotal : 0;
   const frCloud = todayTotal ? today.cloud / todayTotal : 0;
+  // 第三环也要是今日的:downgrades 是 7 日窗口,直接拿它的条数当今日占比
+  // 会把两个窗口混在一张图里。按当天零点过滤后再算。
+  const dayStart = new Date(new Date().setHours(0, 0, 0, 0)).getTime();
+  const downToday = home.downgrades.filter((d) => d.ts_ms >= dayStart).length;
+  const frDown = todayTotal ? Math.min(1, downToday / todayTotal) : 0;
 
   const arc = (r: number, fr: number, col: string, rot = -90) => {
     const C = 2 * Math.PI * r;
@@ -69,7 +75,7 @@ export function ConsoleHome({
             label="本周任务(Runs)" val={home.runs_week} cap="较上周 · 全组织" />
           <Kpi icon={<Shield size={16} />}
             pct={home.pending_approvals === 0 ? <Pct up>已清零</Pct> : <Pct>+{home.pending_approvals}</Pct>}
-            label="待我审批" val={home.pending_approvals} cap="审批流于 P5 接入" />
+            label="待我审批" val={home.pending_approvals} cap="有产出待裁决即在此计数" />
           <Kpi icon={<Cloud size={16} />}
             pct={<Pct up={egressDiff <= 0}>{egressDiff === 0 ? "持平" : `${egressDiff > 0 ? "+" : "−"}${fmtBytes(Math.abs(egressDiff))}`}</Pct>}
             label="云端外发流量 · 7日" val={fmtBytes(home.egress_week_bytes)} cap="较上周 · 越少越好" />
@@ -150,7 +156,7 @@ export function ConsoleHome({
             <svg width="140" height="140" viewBox="0 0 140 140">
               {arc(58, frCloud, T.indigo)}
               {arc(44, frLocal, T.teal, 30)}
-              {arc(30, home.downgrades.length > 0 ? 0.12 : 0, T.amber, -40)}
+              {arc(30, frDown, T.amber, -40)}
             </svg>
             <div>
               <div className="text-2xl font-extrabold">{todayTotal}</div>
@@ -167,20 +173,44 @@ export function ConsoleHome({
         <Card className="px-5 pt-4 pb-2">
           <div className="flex items-center">
             <b className="text-[15px]">审批监控</b>
-            <Tag style={{ marginLeft: 8 }}>概念示例 · P5 接入</Tag>
             <span className="ml-auto"><ChipDd>实时</ChipDd></span>
           </div>
-          <ApRow bg={T.indigo} nm="Agent-007" sb="rm -rf .cache/fixtures · 越权"
-            right={approved ? <Pct up>已批准</Pct> : (
-              <button onClick={onApprove} className="text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.indigo, color: "#fff" }}>
-                立即审批
-              </button>
-            )} />
-          <ApRow bg="#8A8DF0" nm="Agent-012" sb="Release v1.3 · 跨团队发布"
-            right={<button disabled title="此为概念示例;真实审批在频道右栏「待我审批」" className="text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.indigoSoft, color: T.indigo, opacity: 0.45, cursor: "not-allowed" }}>审批</button>} />
-          <ApRow bg="#9DA1B5" icon={<Shield size={15} />} nm="路由中心"
-            sb={home.downgrades[0]?.text ?? "sec-ops → restricted · 仅本地可落"}
-            right={<Tag tone="ind">通知</Tag>} />
+          {pending.length === 0 && home.downgrades.length === 0 ? (
+            <div className="py-5 text-center text-[11.5px]" style={{ color: T.sub, borderTop: `1px solid ${T.line}` }}>
+              当前没有待裁决的申请。
+              <br />
+              Agent 产出代码变更后会在这里出现。
+            </div>
+          ) : (
+            <>
+              {pending.slice(0, 3).map((p) => (
+                <ApRow
+                  key={p.approval_id}
+                  bg={T.indigo}
+                  nm={p.actor_id}
+                  sb={`${p.run_id ?? p.approval_id} · ${p.requested_capability}`}
+                  right={
+                    <button
+                      onClick={onGoApprovals}
+                      className="text-[11px] font-semibold px-3 py-1.5 rounded-full"
+                      style={{ background: T.indigo, color: "#fff" }}
+                    >
+                      去裁决
+                    </button>
+                  }
+                />
+              ))}
+              {home.downgrades[0] && (
+                <ApRow bg="#9DA1B5" icon={<Shield size={15} />} nm="路由中心"
+                  sb={home.downgrades[0].text} right={<Tag tone="ind">通知</Tag>} />
+              )}
+            </>
+          )}
+          {pending.length > 3 && (
+            <div className="pb-2 text-[10.5px]" style={{ color: T.faint }}>
+              另有 {pending.length - 3} 项未列出——「去裁决」可看全部
+            </div>
+          )}
         </Card>
       </div>
     </div>
