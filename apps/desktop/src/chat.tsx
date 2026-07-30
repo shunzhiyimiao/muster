@@ -163,7 +163,9 @@ export function ChatPane({
   header?: React.ReactNode;
 }) {
   const [draft, setDraft] = useState("");
+  const [hint, setHint] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const list = chat.msgs[channel.id] ?? [];
   const isBusy = !!chat.busy[channel.id];
 
@@ -172,7 +174,15 @@ export function ChatPane({
   }, [list.length, list[list.length - 1]?.text]);
 
   const doSend = (asTask: boolean) => {
-    if (!draft.trim() || isBusy) return;
+    if (isBusy) return;
+    // 空输入时不能"点了没反应"——按钮该引导,不该沉默
+    if (!draft.trim()) {
+      setHint(asTask ? "先描述要做什么,再交给 Agent 执行" : "先输入内容再发送");
+      inputRef.current?.focus();
+      setTimeout(() => setHint(null), 2600);
+      return;
+    }
+    setHint(null);
     chat.send(channel.id, draft, asTask);
     setDraft("");
   };
@@ -237,6 +247,7 @@ export function ChatPane({
       <div className="px-4 pb-4">
         <div className="flex items-end gap-2 px-4 py-2.5 rounded-xl" style={{ background: T.soft }}>
           <textarea
+            ref={inputRef}
             value={draft}
             disabled={isBusy}
             placeholder={
@@ -255,24 +266,25 @@ export function ChatPane({
           />
           <button
             onClick={() => doSend(true)}
-            disabled={isBusy || !draft.trim()}
-            title="任务模式:在工作区 ~/muster 上运行只读工具循环"
+            disabled={isBusy}
+            title="任务模式:Agent 在隔离分支上真改代码,产出 diff 后需人工批准才合入"
             className="inline-flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg shrink-0"
-            style={{ background: T.tealSoft, color: T.teal, opacity: isBusy || !draft.trim() ? 0.5 : 1 }}
+            style={{ background: T.tealSoft, color: T.teal, opacity: isBusy ? 0.5 : draft.trim() ? 1 : 0.7 }}
           >
             <Play size={11} /> 任务
           </button>
           <button
             onClick={() => doSend(false)}
-            disabled={isBusy || !draft.trim()}
+            disabled={isBusy}
             className="inline-flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg shrink-0"
-            style={{ background: T.indigo, color: "#fff", opacity: isBusy || !draft.trim() ? 0.5 : 1 }}
+            style={{ background: T.indigo, color: "#fff", opacity: isBusy ? 0.5 : draft.trim() ? 1 : 0.7 }}
           >
             <Send size={11} /> 发送
           </button>
         </div>
-        <div className="mt-1.5 px-1 flex items-center gap-2 text-[10px]" style={{ color: T.faint }}>
-          <LvTag level={channel.level} />
+        <div className="mt-1.5 px-1 flex items-center gap-2 text-[10px]" style={{ color: hint ? T.amber : T.faint }}>
+          {hint ? <b>{hint}</b> : <LvTag level={channel.level} />}
+          {hint ? null : null}
           {channel.personal ? "私有会话默认不进团队;串流/分享是唯一出口" : "消息经 E2 路由决策,全程写入审计哈希链"}
         </div>
       </div>
