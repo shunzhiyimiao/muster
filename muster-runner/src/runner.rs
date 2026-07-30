@@ -22,6 +22,7 @@ use muster_provider::{
 use muster_route::{LabelSource, RoutePlan, RouteRequest, Router};
 
 use crate::tools::ToolSet;
+use crate::worktree::{RunDiff, Worktree};
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -54,6 +55,12 @@ pub struct TaskSpec {
     pub default_provider: Option<String>,
     pub prompt: String,
     pub workspace: PathBuf,
+    /// worktree 落地根目录(总规划的 `WORKSPACE_ROOT`)。
+    ///
+    /// `Some` 且 `workspace` 是 git 仓 ⇒ 每 run 建独立 worktree、启用写工具、
+    /// 结束产出 diff;`None` ⇒ 直连 workspace 的**只读**模式(v0 行为)。
+    /// 非 git 仓时如实降级为只读并发 Notice,不假装隔离。
+    pub workspace_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +88,10 @@ pub enum RunnerEvent {
         prompt_tokens: u64,
         completion_tokens: u64,
     },
+    /// 隔离工作区就绪(worktree 模式);UI 可据此显示"在分支上工作"。
+    WorkspaceReady { path: String, branch: String, writable: bool },
+    /// 本次运行的真实代码变更(worktree 模式,`Finished` 之前发出)。
+    Diff { diff: RunDiff, branch: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +103,11 @@ pub struct RunSummary {
     pub latency_ms: u64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// worktree 模式下的真实代码变更(只读模式为 None)。
+    /// 正文属 run 存储侧;审计只存其 [`ContentHash`]。
+    pub diff: Option<RunDiff>,
+    /// 隔离分支名(供人工检出复核;合入与 push 需单独授权,Runner 不做)。
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -142,6 +158,25 @@ fn deps_lock_hash(ws: &std::path::Path) -> ContentHash {
     ContentHash::sha256(b"deps:none")
 }
 
+/// 取走本次运行的变更并广播。失败**不吞**:发 Notice 如实告知,
+/// 因为"没有 diff"与"取 diff 失败"在证据层面是两回事。
+fn take_diff(
+    worktree: &Option<Worktree>,
+    on_event: &mut impl FnMut(RunnerEvent),
+) -> (Option<RunDiff>, Option<String>) {
+    let Some(wt) = worktree else { return (None, None) };
+    match wt.diff() {
+        Ok(d) => {
+            on_event(RunnerEvent::Diff { diff: d.clone(), branch: wt.branch.clone() });
+            (Some(d), Some(wt.branch.clone()))
+        }
+        Err(e) => {
+            on_event(RunnerEvent::Notice { text: format!("取 diff 失败:{e}") });
+            (None, Some(wt.branch.clone()))
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 主循环
 
 pub async fn run_task(
@@ -151,7 +186,29 @@ pub async fn run_task(
     spec: TaskSpec,
     mut on_event: impl FnMut(RunnerEvent) + Send,
 ) -> Result<RunSummary, RunnerError> {
-    let tools = ToolSet::new(&spec.workspace).map_err(|e| RunnerError::Workspace(e.to_string()))?;
+    // ---- 工作区:worktree 隔离(可写)或直连(只读)
+    // 非 git 仓不假装隔离——如实降级为只读并告知,绝不在用户工作区上开写权限。
+    let mut worktree: Option<Worktree> = None;
+    if let Some(root) = &spec.workspace_root {
+        match Worktree::create(&spec.workspace, root, &spec.run_id) {
+            Ok(wt) => {
+                on_event(RunnerEvent::WorkspaceReady {
+                    path: wt.path.display().to_string(),
+                    branch: wt.branch.clone(),
+                    writable: true,
+                });
+                worktree = Some(wt);
+            }
+            Err(e) => on_event(RunnerEvent::Notice {
+                text: format!("无法建立隔离工作区({e}),本次以只读模式运行"),
+            }),
+        }
+    }
+    let tools = match &worktree {
+        Some(wt) => ToolSet::writable(&wt.path),
+        None => ToolSet::new(&spec.workspace),
+    }
+    .map_err(|e| RunnerError::Workspace(e.to_string()))?;
     let started = Instant::now();
 
     // ---- 路由(一次)。拒绝也是证据:落 route.refuse(E4),写失败按审计失败处理。
@@ -215,6 +272,8 @@ pub async fn run_task(
     };
 
     // ---- run.start(Capsule-ready:ReplayRefs 全真值)
+    let specs = tools.specs();
+    let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     let params_repr = serde_json::json!({
         "system_prompt": cfg.system_prompt,
         "temperature": null,
@@ -233,11 +292,14 @@ pub async fn run_task(
                     model: meta.model.clone(),
                     params_hash: ContentHash::sha256(params_repr.as_bytes()),
                 },
+                // 工具环境按实际形态记账:读写模式不同 ⇒ 哈希不同,
+                // Capsule 重放时不会把可写运行误认成只读运行。
                 tool_env: ContentHash::sha256(
                     serde_json::json!({
-                        "tools": ["list_dir", "read_file", "grep"],
+                        "tools": tool_names,
                         "workspace": tools.workspace().display().to_string(),
-                        "mode": "read_only",
+                        "mode": if tools.is_writable() { "worktree_rw" } else { "read_only" },
+                        "branch": worktree.as_ref().map(|w| w.branch.clone()),
                     })
                     .to_string()
                     .as_bytes(),
@@ -263,23 +325,31 @@ pub async fn run_task(
     )?;
 
     // ---- 工具循环
+    let tool_list: Vec<&str> = tool_names.iter().map(String::as_str).collect();
     let mut messages = vec![
         ChatMessage::system(if cfg.system_prompt == muster_prompt::SYSTEM_PROMPT {
             // 默认提示词走 A1 的标准拼装(工作区 + 工具清单在同一处维护)
-            muster_prompt::with_workspace(
+            let mut s = muster_prompt::with_workspace(
                 &tools.workspace().display().to_string(),
-                &["list_dir", "read_file", "grep"],
-            )
+                &tool_list,
+            );
+            if let Some(wt) = &worktree {
+                s.push_str(&format!(
+                    "\n这是本任务的隔离工作区(分支 {}),改动不影响主仓;完成后会以 diff 呈交人工复核。",
+                    wt.branch
+                ));
+            }
+            s
         } else {
             format!(
-                "{}\n工作区:{}(只读工具:list_dir / read_file / grep)",
+                "{}\n工作区:{}(工具:{})",
                 cfg.system_prompt,
-                tools.workspace().display()
+                tools.workspace().display(),
+                tool_list.join(" / ")
             )
         }),
         ChatMessage::user(spec.prompt.clone()),
     ];
-    let specs = tools.specs();
     let mut total_prompt: u64 = 0;
     let mut total_completion: u64 = 0;
     let mut final_text = String::new();
@@ -379,6 +449,8 @@ pub async fn run_task(
                     continue;
                 }
                 Some(msg) => {
+                    // 失败也要保住已发生的改动:半成品同样是证据(可复核、可丢弃)
+                    take_diff(&worktree, &mut on_event);
                     finish_failed(audit, "stream", &started, &append)?;
                     on_event(RunnerEvent::Finished {
                         outcome: "failed:stream".into(),
@@ -394,12 +466,19 @@ pub async fn run_task(
 
         if tool_calls.is_empty() {
             final_text = text;
+            // §7.4:先保存 Diff 与证据,再谈清理。取 diff 失败不吞——如实回报。
+            let (diff, branch) = take_diff(&worktree, &mut on_event);
             append(
                 audit,
                 EventBody::RunFinish {
                     outcome: RunOutcome::Success,
                     duration_ms: started.elapsed().as_millis() as u64,
-                    output_hash: Some(ContentHash::sha256(final_text.as_bytes())),
+                    // 有变更时输出哈希取 diff(证据指向代码变更本身),
+                    // 否则取回答文本。审计只存哈希,正文留 run 存储侧。
+                    output_hash: Some(match &diff {
+                        Some(d) if !d.is_empty() => ContentHash::sha256(d.patch.as_bytes()),
+                        _ => ContentHash::sha256(final_text.as_bytes()),
+                    }),
                 },
             )?;
             let latency_ms = started.elapsed().as_millis() as u64;
@@ -418,6 +497,8 @@ pub async fn run_task(
                 latency_ms,
                 prompt_tokens: total_prompt,
                 completion_tokens: total_completion,
+                diff,
+                branch,
             });
         }
 
@@ -448,6 +529,7 @@ pub async fn run_task(
         }
     }
 
+    let (diff, branch) = take_diff(&worktree, &mut on_event);
     finish_failed(audit, "max_turns", &started, &append)?;
     let latency_ms = started.elapsed().as_millis() as u64;
     on_event(RunnerEvent::Finished {
@@ -465,5 +547,7 @@ pub async fn run_task(
         latency_ms,
         prompt_tokens: total_prompt,
         completion_tokens: total_completion,
+        diff,
+        branch,
     })
 }

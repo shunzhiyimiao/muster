@@ -18,3 +18,4 @@ thiserror = "1"
 [dev-dependencies]
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
+sha2 = "0.10"

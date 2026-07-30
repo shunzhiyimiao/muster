@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, Play, Send } from "lucide-react";
-import { api, Channel, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
+import { api, Channel, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -21,6 +21,8 @@ export interface ChatState {
   lastStart: StartPayload | null;
   lastDone: DonePayload | null;
   lastFail: FailPayload | null;
+  /// P1-04:最近一次任务的真实代码变更(worktree 模式)。
+  lastDiff: DiffPayload | null;
   send: (channelId: string, text: string, asTask: boolean) => void;
   /// C1:把持久化历史灌进尚未有内容的频道(避免与本次会话消息重复)。
   hydrate: (rows: StoredMsg[]) => void;
@@ -32,6 +34,7 @@ export function useChat(onActivity: () => void): ChatState {
   const [lastStart, setLastStart] = useState<StartPayload | null>(null);
   const [lastDone, setLastDone] = useState<DonePayload | null>(null);
   const [lastFail, setLastFail] = useState<FailPayload | null>(null);
+  const [lastDiff, setLastDiff] = useState<DiffPayload | null>(null);
   const runIndex = useRef<Record<string, { channelId: string; msgKey: string }>>({});
   const pending = useRef<Record<string, string[]>>({});
   const activity = useRef(onActivity);
@@ -60,7 +63,9 @@ export function useChat(onActivity: () => void): ChatState {
         setLastStart(e.payload);
         setLastDone(null);
         setLastFail(null);
+        setLastDiff(null);
       }),
+      listen<DiffPayload>("task-diff", (e) => setLastDiff(e.payload)),
       listen<{ run_id: string; text: string }>("task-delta", (e) => {
         patch(e.payload.run_id, (m) => ({ ...m, text: m.text + e.payload.text }));
       }),
@@ -141,7 +146,7 @@ export function useChat(onActivity: () => void): ChatState {
     });
   };
 
-  return { msgs, busy, lastStart, lastDone, lastFail, send, hydrate };
+  return { msgs, busy, lastStart, lastDone, lastFail, lastDiff, send, hydrate };
 }
 
 /* ---------- 真实消息流 + 输入区(v4 皮肤) ---------- */

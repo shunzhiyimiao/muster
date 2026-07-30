@@ -1,0 +1,230 @@
+//! 每 Task Run 一个独立 git worktree(总规划 §7.4)。
+//!
+//! **为什么 worktree 是"允许写"的前提**:B1 v0 只给只读工具,理由是"无审批
+//! 不写"。worktree 化解了这个张力——写发生在**隔离分支的独立目录**里,用户
+//! 的工作区一个字节都不动;产出 diff 供人审阅;真正需要审批的是**合入与
+//! push**,而不是在沙盒里写字。所以本模块落地后,写工具才被允许启用。
+//!
+//! ## §7.4 的规则如何落地
+//!
+//! | 规则 | 实现 |
+//! |---|---|
+//! | 一个 Task Run 一个独立 Worktree,禁止共享可写目录 | [`Worktree::create`] 以 run_id 命名目录与分支 |
+//! | 分支名含 task_id | `muster/run-<run_id>` |
+//! | 执行前检测基础仓库状态 | 非 git 仓 / 分支已存在 → 明确报错,不猜 |
+//! | 命令 cwd 约束在 worktree 内 | 工具集 canonicalize 圈禁(见 [`crate::tools`]) |
+//! | 结束先保存 Diff 再按策略清理 | [`Worktree::diff`] 先于 [`Worktree::cleanup`] |
+//! | 自动 Push / PR 需单独授权 | **本模块不提供**,连接口都不给 |
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde::Serialize;
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorktreeError {
+    #[error("不是 git 仓库:{0}")]
+    NotGitRepo(String),
+    #[error("git {op} 失败:{stderr}")]
+    Git { op: String, stderr: String },
+    #[error("worktree 已存在(run_id 重复?):{0}")]
+    Exists(String),
+}
+
+/// 一个 run 的隔离工作区。`Drop` 不自动清理——diff 必须先被取走
+/// (§7.4:先保存证据,再依保留策略清理)。
+#[derive(Debug)]
+pub struct Worktree {
+    /// 基础仓库路径。
+    pub base: PathBuf,
+    /// worktree 目录(命令的 cwd)。
+    pub path: PathBuf,
+    /// 分支名,含 run_id。
+    pub branch: String,
+    /// 建 worktree 时基础仓的 HEAD(diff 的对照基线)。
+    pub base_commit: String,
+}
+
+/// 单个文件的变更摘要(UI 直接消费)。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    /// `A` 新增 / `M` 修改 / `D` 删除 / `R` 重命名。
+    pub status: String,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// 一个 run 的完整变更(diff 正文属 run 存储侧,审计只存其哈希)。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct RunDiff {
+    pub files: Vec<FileChange>,
+    /// 统一 diff 全文(可能很长,UI 侧自行折叠)。
+    pub patch: String,
+    pub files_changed: usize,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+impl RunDiff {
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.patch.is_empty()
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| WorktreeError::Git { op: args.join(" "), stderr: e.to_string() })?;
+    if !out.status.success() {
+        return Err(WorktreeError::Git {
+            op: args.join(" "),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+impl Worktree {
+    /// 在 `base` 仓库上为 `run_id` 建一个独立 worktree。
+    ///
+    /// `parent` 是 worktree 的落地根目录(总规划的 `WORKSPACE_ROOT`)。
+    pub fn create(base: &Path, parent: &Path, run_id: &str) -> Result<Self, WorktreeError> {
+        let base = base
+            .canonicalize()
+            .map_err(|e| WorktreeError::NotGitRepo(format!("{}: {e}", base.display())))?;
+        // 必须是 git 仓:非 git 目录不猜、不降级,直接报错(上层可选择不用 worktree)
+        let head = git(&base, &["rev-parse", "HEAD"])
+            .map_err(|_| WorktreeError::NotGitRepo(base.display().to_string()))?
+            .trim()
+            .to_owned();
+
+        let slug: String =
+            run_id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let branch = format!("muster/run-{slug}");
+        let path = parent.join(format!("run-{slug}"));
+        if path.exists() {
+            return Err(WorktreeError::Exists(path.display().to_string()));
+        }
+        std::fs::create_dir_all(parent).map_err(|e| WorktreeError::Git {
+            op: "mkdir workspace root".into(),
+            stderr: e.to_string(),
+        })?;
+
+        git(&base, &["worktree", "add", "-b", &branch, &path.display().to_string(), &head])?;
+        Ok(Self { base, path: path.canonicalize().unwrap_or(path), branch, base_commit: head })
+    }
+
+    /// 相对建树时 HEAD 的全部变更(含未跟踪文件)。
+    ///
+    /// 先 `add -A` 进索引再 `diff --cached`:未跟踪的新文件也要计入,
+    /// 否则"Agent 新建了文件"这种最常见的产出会被漏掉。索引改动只发生在
+    /// worktree 内,不影响基础仓。
+    pub fn diff(&self) -> Result<RunDiff, WorktreeError> {
+        git(&self.path, &["add", "-A"])?;
+        let numstat = git(&self.path, &["diff", "--cached", "--numstat", &self.base_commit])?;
+        let namestatus = git(&self.path, &["diff", "--cached", "--name-status", &self.base_commit])?;
+        let patch = git(&self.path, &["diff", "--cached", &self.base_commit])?;
+
+        let mut status_of = std::collections::HashMap::new();
+        for line in namestatus.lines() {
+            let mut it = line.split('\t');
+            if let (Some(st), Some(p)) = (it.next(), it.last()) {
+                status_of.insert(p.to_owned(), st.chars().next().unwrap_or('M').to_string());
+            }
+        }
+
+        let mut files = Vec::new();
+        let (mut ins, mut del) = (0u32, 0u32);
+        for line in numstat.lines() {
+            let mut it = line.split('\t');
+            let (a, r, p) = (it.next(), it.next(), it.last());
+            let (Some(a), Some(r), Some(p)) = (a, r, p) else { continue };
+            // 二进制文件 numstat 为 "-"
+            let added: u32 = a.parse().unwrap_or(0);
+            let removed: u32 = r.parse().unwrap_or(0);
+            ins += added;
+            del += removed;
+            files.push(FileChange {
+                status: status_of.get(p).cloned().unwrap_or_else(|| "M".into()),
+                path: p.to_owned(),
+                added,
+                removed,
+            });
+        }
+
+        Ok(RunDiff { files_changed: files.len(), files, patch, insertions: ins, deletions: del })
+    }
+
+    /// 移除 worktree 与其分支。**必须在 [`diff`](Self::diff) 之后调用**。
+    pub fn cleanup(self) -> Result<(), WorktreeError> {
+        git(&self.base, &["worktree", "remove", "--force", &self.path.display().to_string()])?;
+        // 分支删除失败不算致命(可能已被手动处理),但要如实回报
+        git(&self.base, &["branch", "-D", &self.branch]).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path();
+        git(p, &["init", "-q", "-b", "main"]).unwrap();
+        git(p, &["config", "user.email", "t@t"]).unwrap();
+        git(p, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(p.join("main.rs"), "fn add(a: i32, b: i32) -> i32 { a - b }\n").unwrap();
+        git(p, &["add", "-A"]).unwrap();
+        git(p, &["commit", "-qm", "init"]).unwrap();
+        d
+    }
+
+    #[test]
+    fn isolated_write_does_not_touch_base_repo() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        let wt = Worktree::create(base.path(), root.path(), "RUN-1").unwrap();
+        assert!(wt.branch.contains("RUN-1"), "分支名必须含 run_id:{}", wt.branch);
+
+        // 在 worktree 里改文件 + 新建文件
+        std::fs::write(wt.path.join("main.rs"), "fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        std::fs::write(wt.path.join("NEW.md"), "新文件\n").unwrap();
+
+        let d = wt.diff().unwrap();
+        assert_eq!(d.files_changed, 2, "{:?}", d.files);
+        assert!(d.patch.contains("a + b") && d.patch.contains("-fn add"), "{}", d.patch);
+        let new_file = d.files.iter().find(|f| f.path == "NEW.md").expect("未跟踪的新文件必须计入");
+        assert_eq!(new_file.status, "A");
+        assert!(d.insertions >= 2);
+
+        // 基础仓一个字节都没变——这是"允许写"的前提
+        let base_src = std::fs::read_to_string(base.path().join("main.rs")).unwrap();
+        assert!(base_src.contains("a - b"), "基础仓被污染了:{base_src}");
+        assert!(!base.path().join("NEW.md").exists());
+
+        wt.cleanup().unwrap();
+    }
+
+    #[test]
+    fn non_git_dir_is_refused_not_guessed() {
+        let plain = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let err = Worktree::create(plain.path(), root.path(), "RUN-2").unwrap_err();
+        assert!(matches!(err, WorktreeError::NotGitRepo(_)), "{err:?}");
+    }
+
+    #[test]
+    fn no_change_yields_empty_diff() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        let wt = Worktree::create(base.path(), root.path(), "RUN-3").unwrap();
+        let d = wt.diff().unwrap();
+        assert!(d.is_empty(), "{d:?}");
+        assert_eq!((d.insertions, d.deletions), (0, 0));
+        wt.cleanup().unwrap();
+    }
+}

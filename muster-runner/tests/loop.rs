@@ -24,6 +24,7 @@ fn spec(run_id: &str, ws: &std::path::Path, sources: Vec<LabelSource>) -> TaskSp
         default_provider: Some("mock-k".into()),
         prompt: "hello.txt 里写了什么?".into(),
         workspace: ws.to_path_buf(),
+        workspace_root: None,
     }
 }
 
@@ -80,6 +81,105 @@ async fn tool_loop_end_to_end_with_audit_chain() {
     );
     let verified = store.verify_chain().unwrap();
     assert_eq!(verified.unwrap(), 5, "哈希链逐行校验通过");
+}
+
+/// P1-04:worktree 模式下 Agent 真的改了代码,且 diff 可呈交、主仓零污染。
+#[tokio::test]
+async fn worktree_run_produces_real_diff_without_touching_base_repo() {
+    // 基础仓:一个有 bug 的加法
+    let base = tempfile::tempdir().unwrap();
+    let g = |args: &[&str]| {
+        std::process::Command::new("git").arg("-C").arg(base.path()).args(args).output().unwrap()
+    };
+    g(&["init", "-q", "-b", "main"]);
+    g(&["config", "user.email", "t@t"]);
+    g(&["config", "user.name", "t"]);
+    std::fs::write(base.path().join("main.rs"), "fn add(a: i32, b: i32) -> i32 { a - b }\n").unwrap();
+    g(&["add", "-A"]);
+    g(&["commit", "-qm", "init"]);
+    let root = tempfile::tempdir().unwrap();
+
+    // 剧本:调 replace_in_file 改代码 → 回文本收尾
+    let mock = MockProvider::cloud("mock-k")
+        .with_tool_call("replace_in_file", r#"{"path":"main.rs","old":"a - b","new":"a + b"}"#)
+        .with_text("已把减法改为加法。");
+    let router = Router::new(
+        vec![Arc::new(mock) as Arc<dyn ModelProvider>],
+        OrgPolicy::new(Sensitivity::Internal).unwrap(),
+    );
+    let audit = Arc::new(Mutex::new(AuditStore::open_in_memory().unwrap()));
+
+    let mut sp = spec("RUN-W1", base.path(), vec![]);
+    sp.workspace_root = Some(root.path().to_path_buf());
+    sp.prompt = "把 add 的减法改成加法".into();
+
+    let mut events = Vec::new();
+    let summary =
+        run_task(&router, &audit, &RunnerConfig::default(), sp, |e| events.push(e)).await.unwrap();
+
+    // 1) 隔离工作区就绪事件,分支名带 run_id
+    let ready = events.iter().find_map(|e| match e {
+        RunnerEvent::WorkspaceReady { branch, writable, .. } => Some((branch.clone(), *writable)),
+        _ => None,
+    });
+    let (branch, writable) = ready.expect("必须发出 WorkspaceReady");
+    assert!(branch.contains("RUN-W1") && writable, "{branch}");
+
+    // 2) diff 是真的:1 个文件、含加法、行数统计正确
+    let diff = summary.diff.expect("worktree 模式必须产出 diff");
+    assert_eq!(diff.files_changed, 1, "{:?}", diff.files);
+    assert_eq!(diff.files[0].path, "main.rs");
+    assert!(diff.patch.contains("+fn add(a: i32, b: i32) -> i32 { a + b }"), "{}", diff.patch);
+    assert_eq!((diff.insertions, diff.deletions), (1, 1));
+    assert_eq!(summary.branch.as_deref(), Some(branch.as_str()));
+    assert!(events.iter().any(|e| matches!(e, RunnerEvent::Diff { .. })), "UI 需要 Diff 事件");
+
+    // 3) **主仓一个字节都没变**——这是允许写的前提
+    let base_src = std::fs::read_to_string(base.path().join("main.rs")).unwrap();
+    assert!(base_src.contains("a - b"), "主仓被污染:{base_src}");
+
+    // 4) 审计:run.finish 的 output_hash 指向 diff 正文(证据指向代码变更)
+    let store = audit.lock().unwrap();
+    let chain = run_chain(store.conn(), "RUN-W1").unwrap();
+    let finish = chain.last().unwrap();
+    assert_eq!(finish.payload["event_type"], "run.finish");
+    let want = format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(diff.patch.as_bytes()));
+    assert_eq!(finish.payload["output_hash"].as_str(), Some(want.as_str()));
+    assert!(store.verify_chain().unwrap().is_ok());
+}
+
+/// 非 git 目录不假装隔离:如实降级只读,且写工具确实不可用。
+#[tokio::test]
+async fn non_git_workspace_degrades_to_readonly_with_notice() {
+    let ws = workspace(); // 普通目录,非 git 仓
+    let root = tempfile::tempdir().unwrap();
+    let mock = MockProvider::cloud("mock-k")
+        .with_tool_call("write_file", r#"{"path":"evil.txt","content":"x"}"#)
+        .with_text("写不了。");
+    let router = Router::new(
+        vec![Arc::new(mock) as Arc<dyn ModelProvider>],
+        OrgPolicy::new(Sensitivity::Internal).unwrap(),
+    );
+    let audit = Arc::new(Mutex::new(AuditStore::open_in_memory().unwrap()));
+
+    let mut sp = spec("RUN-W2", ws.path(), vec![]);
+    sp.workspace_root = Some(root.path().to_path_buf());
+
+    let mut events = Vec::new();
+    let summary =
+        run_task(&router, &audit, &RunnerConfig::default(), sp, |e| events.push(e)).await.unwrap();
+
+    assert!(summary.diff.is_none() && summary.branch.is_none());
+    assert!(
+        events.iter().any(|e| matches!(e, RunnerEvent::Notice { text } if text.contains("只读"))),
+        "必须如实告知降级"
+    );
+    // 写工具在只读模式下被拒,且不留副作用
+    let refused = events.iter().any(
+        |e| matches!(e, RunnerEvent::ToolResult { summary, .. } if summary.contains("拒绝")),
+    );
+    assert!(refused, "只读模式必须拒绝写操作");
+    assert!(!ws.path().join("evil.txt").exists(), "拒绝后不得留下文件");
 }
 
 #[tokio::test]

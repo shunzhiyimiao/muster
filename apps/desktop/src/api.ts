@@ -135,6 +135,21 @@ export interface AgentStats {
   total_egress_bytes: number;
   heat: DayBar[];
 }
+export interface FileChange {
+  path: string;
+  status: string;
+  added: number;
+  removed: number;
+}
+export interface DiffPayload {
+  run_id: string;
+  branch: string;
+  files_changed: number;
+  insertions: number;
+  deletions: number;
+  files: FileChange[];
+  patch: string;
+}
 export interface StoredMsg {
   channel_id: string;
   role: string;

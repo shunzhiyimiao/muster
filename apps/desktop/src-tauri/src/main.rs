@@ -255,6 +255,17 @@ struct DeltaPayload {
 }
 
 #[derive(Serialize, Clone)]
+struct DiffPayload {
+    run_id: String,
+    branch: String,
+    files_changed: usize,
+    insertions: u32,
+    deletions: u32,
+    files: Vec<muster_runner::FileChange>,
+    patch: String,
+}
+
+#[derive(Serialize, Clone)]
 struct DonePayload {
     run_id: String,
     latency_ms: u64,
@@ -735,6 +746,10 @@ async fn run_workspace_task(
     // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
     let transcript = Arc::new(Mutex::new(String::new()));
 
+    // P1-04:每 run 一个隔离 worktree(WORKSPACE_ROOT 可配),写工具因此可用;
+    // 非 git 仓时 runner 会如实降级只读并发 Notice。
+    let workspace_root = std::env::var("MUSTER_WORKSPACE_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
     let spec = TaskSpec {
         run_id: run_id.clone(),
         session_id: Some(format!("session:{}", channel.id)),
@@ -745,6 +760,7 @@ async fn run_workspace_task(
         default_provider: Some("kimi".into()),
         prompt: text,
         workspace: workspace.into(),
+        workspace_root: Some(workspace_root.into()),
     };
     let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
 
@@ -789,6 +805,36 @@ async fn run_workspace_task(
             let line = format!("\n⚠️ {text}\n");
             tr.lock().unwrap().push_str(&line);
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
+        }
+        RunnerEvent::WorkspaceReady { branch, .. } => {
+            let line = format!("🌿 隔离工作区就绪 · 分支 {branch}\n");
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
+        }
+        RunnerEvent::Diff { diff, branch } => {
+            let line = if diff.is_empty() {
+                "\n📄 本次运行没有产生代码改动\n".to_string()
+            } else {
+                format!(
+                    "\n📄 代码变更:{} 个文件 +{} −{}(分支 {branch})\n",
+                    diff.files_changed, diff.insertions, diff.deletions
+                )
+            };
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
+            a.emit(
+                "task-diff",
+                DiffPayload {
+                    run_id: rid.clone(),
+                    branch,
+                    files_changed: diff.files_changed,
+                    insertions: diff.insertions,
+                    deletions: diff.deletions,
+                    files: diff.files,
+                    patch: diff.patch,
+                },
+            )
+            .ok();
         }
         RunnerEvent::Finished { outcome, latency_ms, turns, prompt_tokens, completion_tokens } => {
             if outcome == "success" {

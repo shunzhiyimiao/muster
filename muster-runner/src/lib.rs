@@ -10,10 +10,15 @@
 //!    约定一致):`Router::resolve()` 只做一次;中流失败由 Runner 决定
 //!    ——v0 策略是"同一 provider 整回合重试一次,再败即 run.finish(Failed)"。
 //!    绝不重新升级落点,链的合法性在 resolve 时已被类型保证。
-//! 2. **工具是真实的、只读的、工作区圈禁的**:`list_dir` / `read_file` /
-//!    `grep`,路径一律经 canonicalize 并强制落在工作区内;越界不是 panic
-//!    而是把拒绝文本作为工具结果回给模型(模型应当看见边界)。
-//!    写操作 v0 不提供——写入必须先过 A9 审批事件(P5),不做无审批的写。
+//! 2. **写权限由隔离换取,而不是由审批换取**(P1-04):
+//!    - 直连用户工作区 ⇒ 只读工具(`list_dir`/`read_file`/`grep`);
+//!    - 每 run 独立 git worktree(见 [`worktree`])⇒ 额外启用
+//!      `write_file`/`replace_in_file`。写发生在隔离分支的独立目录里,
+//!      主仓一个字节都不动,产出 diff 供人复核。
+//!
+//!    需要审批的是**合入与 push**,不是在沙盒里写字——所以 Runner 连
+//!    push/PR 的接口都不提供。路径一律经 canonicalize 圈禁(新文件对父目录
+//!    取证),越界不是 panic 而是把拒绝文本回给模型(模型应当看见边界)。
 //! 3. **run.start 的 ReplayRefs 全部取真值**:git HEAD(或目录清单)哈希、
 //!    依赖锁文件哈希、模型参数哈希、工具环境哈希。拿不到就用可复算的
 //!    降级来源并如实标注前缀(`dir:` vs `git-head:`),**不伪造**。
@@ -32,6 +37,8 @@
 
 pub mod runner;
 pub mod tools;
+pub mod worktree;
 
 pub use runner::{run_task, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 pub use tools::ToolSet;
+pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};

@@ -9,6 +9,7 @@ import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
 import { AuditRow, Channel, DOWNGRADE_ZH, ORIGIN_ZH, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
+import { DiffPanel } from "./Diff";
 
 /* ==================== 频道视图 ==================== */
 
@@ -141,8 +142,9 @@ export function ChannelView({
         </Card>
       </div>
 
-      {/* 频道资产 + 真实路由/审计栏 */}
+      {/* 频道资产 + 真实路由/Diff/审计栏 */}
       <div className="w-72 shrink-0 flex flex-col gap-3 overflow-y-auto">
+        <DiffPanel diff={chat.lastDiff} />
         {isPlatform && (
           <Card className="p-4">
             <div className="text-[10px] font-semibold tracking-widest mb-2.5" style={{ color: T.faint }}>本频道 · 置顶能力</div>

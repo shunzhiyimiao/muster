@@ -16,6 +16,7 @@ import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } fr
 import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
+import { DiffPanel } from "./views/Diff";
 import { TEAM_META } from "./data";
 
 const RAIL = [
@@ -339,10 +340,13 @@ export default function App() {
             )}
             {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat} />}
             {view === "pchat" && personalChannel && (
-              <div className="px-7 pt-1 pb-6" style={{ height: "calc(100% - 8px)" }}>
-                <Card className="h-full flex flex-col overflow-hidden">
+              <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
+                <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
                   <ChatPane channel={personalChannel} chat={chat} />
                 </Card>
+                <div className="w-72 shrink-0 overflow-y-auto">
+                  <DiffPanel diff={chat.lastDiff} />
+                </div>
               </div>
             )}
             {view === "channel" && activeChannel && (
