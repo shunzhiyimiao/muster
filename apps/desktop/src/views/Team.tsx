@@ -572,6 +572,7 @@ export function CapsView({
   onRun: (capsuleId: string) => void;
   canRun: boolean;
 }) {
+  const [showConcept, setShowConcept] = useState(false);
   return (
     <div className="px-7 pb-8 pt-2">
       <div className="flex items-center mb-4">
@@ -585,14 +586,15 @@ export function CapsView({
 
       <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} onAdopt={onAdopt} onRun={onRun} canRun={canRun} />
 
-      <div className="flex items-center gap-2 mb-2.5 mt-6">
+      <button onClick={() => setShowConcept((v) => !v)}
+        className="flex items-center gap-2 mb-2.5 mt-6 w-full text-left">
         <b className="text-[13px]">概念能力</b>
-        <Tag>演示叙事 · 非真实数据</Tag>
+        <Tag>演示叙事 · 不可运行</Tag>
         <span className="text-[10.5px]" style={{ color: T.faint }}>
-          验真率、影子重放次数等为示例值;真实 Capsule 见上方
+          {showConcept ? "点击收起" : "点击展开(仅供了解形态,验真率等均为示例值)"}
         </span>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
+      </button>
+      <div className="grid grid-cols-2 gap-4" style={{ display: showConcept ? "grid" : "none" }}>
         {CAPS.map((c) => (
           <Card key={c.name} className="p-5">
             <div className="flex items-center gap-2">
@@ -709,10 +711,28 @@ function ForgeSection({
       </div>
 
       {live.length === 0 ? (
-        <Card className="p-5 text-xs leading-relaxed mb-4" style={{ color: T.sub }}>
-          还没有锻造过能力。一次<b>成功完成且经审批</b>的任务运行就可以被固化成 Capsule——
-          它复制的不是提示词,而是那次运行的完整重放引用(仓库快照 / 依赖锁 / 模型 / 工具环境),
-          所以"照着它再跑一次"的条件天然齐备。
+        <Card className="p-5 mb-4" style={{ background: T.indigoSoft, border: `1px solid ${T.indigo}` }}>
+          <div className="text-[13px] font-bold" style={{ color: T.indigoDeep }}>还没有可用的能力——三步就能造第一个</div>
+          <div className="mt-3 space-y-2">
+            {[
+              ["1", "去频道点「▶ 任务」", "让 Agent 在隔离分支上真改一次代码,主仓不受影响"],
+              ["2", "在右栏批准合入", "只有成功且经审批的运行才够格被锻造"],
+              ["3", "回到这里点「锻造」", "把那次运行固化成可复用、可验真、可跨团队引入的能力"],
+            ].map(([n, t, d]) => (
+              <div key={n} className="flex gap-2.5 items-start">
+                <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0"
+                  style={{ background: T.indigo, color: "#fff" }}>{n}</span>
+                <div>
+                  <div className="text-[12.5px] font-semibold">{t}</div>
+                  <div className="text-[10.5px] mt-0.5" style={{ color: T.sub }}>{d}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 text-[10.5px] leading-relaxed" style={{ color: T.sub }}>
+            Capsule 复制的不是提示词,而是那次运行的完整重放引用(仓库快照 / 依赖锁 / 模型 / 工具环境)——
+            所以"照着它再跑一次"的条件天然齐备。
+          </div>
         </Card>
       ) : (
         <div className="grid grid-cols-2 gap-4 mb-4">
