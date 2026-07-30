@@ -47,6 +47,7 @@ pub mod mock;
 pub mod openai_compat;
 pub mod provider;
 pub mod registry;
+pub mod speech;
 pub mod sse;
 pub mod types;
 
@@ -55,6 +56,9 @@ pub use mock::MockProvider;
 pub use openai_compat::{OpenAiCompatConfig, OpenAiCompatProvider};
 pub use provider::{collect_stream, Locality, ModelProvider, ProviderMetadata};
 pub use registry::{ProviderRegistry, RegistryConfig};
+pub use speech::{
+    SpeechCompatProvider, SpeechConfig, SpeechProvider, TranscribeRequest, TranscribeResponse,
+};
 pub use types::{
     ChatMessage, ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, TokenUsage, ToolCall,
     ToolCallAccumulator, ToolChoice, ToolSpec,

@@ -1007,6 +1007,7 @@ dependencies = [
 name = "muster-route"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "muster-provider",
  "serde",
  "serde_json",

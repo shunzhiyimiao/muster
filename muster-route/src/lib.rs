@@ -25,6 +25,7 @@ pub mod decision;
 pub mod label;
 pub mod policy;
 pub mod router;
+pub mod speech;
 pub mod session;
 
 pub use decision::{decide, Downgrade, DowngradeReason, RoutePlan, RouteRefusal, RouteRequest};
@@ -32,3 +33,4 @@ pub use label::{effective_sensitivity, LabelOrigin, LabelSource, Sensitivity, DE
 pub use policy::{OrgPolicy, PolicyError};
 pub use router::{Attempt, Resolution, RouteError, Router};
 pub use session::{LockState, Raise, SessionRatchet};
+pub use speech::{SpeechRouteError, SpeechResolution, SpeechRouter};

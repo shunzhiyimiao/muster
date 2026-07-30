@@ -10,6 +10,7 @@ muster-provider = { path = "../muster-provider" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
