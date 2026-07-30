@@ -270,6 +270,115 @@ pub fn recent_events_of(
     Ok(out)
 }
 
+/// P4 能力库的一行。**验真率由事件算出,不另存**——两处存储必然有一处会失真。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapsuleRow {
+    pub capsule_id: String,
+    pub name: String,
+    pub version: String,
+    pub scope: String,
+    /// 锻造它的那次运行(出处;没有出处的能力不该存在)。
+    pub source_run_id: String,
+    pub forged_ms: u64,
+    pub forged_by: String,
+    /// 影子重放:通过次数 / 总次数。
+    pub verify_passed: u64,
+    pub verify_total: u64,
+    /// 被跨团队引入的次数。
+    pub adopted: u64,
+}
+
+impl CapsuleRow {
+    /// 验真率。**没跑过验真就是 None,不是 0% 也不是 100%**——
+    /// "未验证"与"验证失败"是两回事,UI 必须能区分。
+    pub fn verified_rate(&self) -> Option<f64> {
+        (self.verify_total > 0).then(|| self.verify_passed as f64 / self.verify_total as f64)
+    }
+}
+
+/// 能力库:每个 capsule 取其最近一次锻造事件,并聚合验真与引入次数。
+pub const SQL_CAPSULES: &str = r#"
+WITH forge AS (
+  SELECT json_extract(payload,'$.capsule_id') AS cid,
+         json_extract(payload,'$.name')       AS name,
+         json_extract(payload,'$.version')    AS ver,
+         json_extract(payload,'$.scope')      AS scope,
+         json_extract(payload,'$.source_run_id') AS src,
+         ts_ms, actor_id, event_id,
+         ROW_NUMBER() OVER (PARTITION BY json_extract(payload,'$.capsule_id')
+                            ORDER BY event_id DESC) AS rn
+  FROM audit_event WHERE event_type = 'capsule.forge'
+)
+SELECT f.cid, f.name, f.ver, f.scope, f.src, f.ts_ms, f.actor_id,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(v.payload,'$.passed') THEN 1 ELSE 0 END)
+            FROM audit_event v WHERE v.event_type='capsule.verify'
+              AND json_extract(v.payload,'$.capsule_id') = f.cid), 0),
+  COALESCE((SELECT COUNT(*) FROM audit_event v WHERE v.event_type='capsule.verify'
+              AND json_extract(v.payload,'$.capsule_id') = f.cid), 0),
+  COALESCE((SELECT COUNT(*) FROM audit_event a WHERE a.event_type='capsule.adopt'
+              AND json_extract(a.payload,'$.capsule_id') = f.cid), 0)
+FROM forge f WHERE f.rn = 1
+ORDER BY f.event_id DESC
+"#;
+
+pub fn capsules(conn: &Connection) -> Result<Vec<CapsuleRow>, StoreError> {
+    let mut stmt = conn.prepare(SQL_CAPSULES)?;
+    let rows = stmt.query_map([], |r| {
+        Ok(CapsuleRow {
+            capsule_id: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            version: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            scope: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            source_run_id: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            forged_ms: r.get::<_, i64>(5)? as u64,
+            forged_by: r.get(6)?,
+            verify_passed: r.get::<_, i64>(7)? as u64,
+            verify_total: r.get::<_, i64>(8)? as u64,
+            adopted: r.get::<_, i64>(9)? as u64,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// 一次运行是否**够格被锻造**:必须成功结束,且留下了 run.start(有 ReplayRefs)。
+/// 没有出处、或半途而废的运行不该变成可复用能力。
+pub const SQL_FORGEABLE: &str = r#"
+SELECT
+  (SELECT COUNT(*) FROM audit_event WHERE run_id = ?1 AND event_type = 'run.start'),
+  (SELECT COUNT(*) FROM audit_event WHERE run_id = ?1 AND event_type = 'run.finish'
+     AND json_extract(payload,'$.outcome') = 'success'),
+  (SELECT COUNT(*) FROM audit_event WHERE event_type = 'capsule.forge'
+     AND json_extract(payload,'$.source_run_id') = ?1)
+"#;
+
+/// 返回 `(可锻造, 原因)`。
+pub fn forgeable(conn: &Connection, run_id: &str) -> Result<(bool, String), StoreError> {
+    let (starts, oks, forged): (i64, i64, i64) =
+        conn.query_row(SQL_FORGEABLE, params![run_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(match (starts > 0, oks > 0, forged > 0) {
+        (false, _, _) => (false, "该运行没有 run.start,缺少重放引用,无法锻造".into()),
+        (_, false, _) => (false, "该运行未成功结束,不锻造半途而废的过程".into()),
+        (_, _, true) => (false, "该运行已锻造过 Capsule".into()),
+        _ => (true, "可锻造".into()),
+    })
+}
+
+/// 取某次运行的 `run.start` payload(锻造时复制其 ReplayRefs)。
+pub fn run_start_of(conn: &Connection, run_id: &str) -> Result<Option<AuditEvent>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT event_id, ts_ms, actor_kind, actor_id, run_id, session_id, team, channel,
+                label, locality, policy_version, schema_version, payload, prev_hash, hash
+         FROM audit_event WHERE run_id = ?1 AND event_type = 'run.start'
+         ORDER BY event_id ASC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![run_id], row_to_event)?;
+    Ok(rows.next().transpose()?)
+}
+
 /// D6 编制页的一行:**编制 = 审计链里真实干过活的 actor**。
 /// 花名册不是配置出来的,是干出来的——谁执行过任务,谁就在编制里。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,7 +506,10 @@ pub fn day_throughput(conn: &Connection, days: u32) -> Result<Vec<DayThroughput>
 #[cfg(test)]
 mod home_query_tests {
     use super::*;
-    use crate::event::{Actor, ContentHash, EgressBytes, EventBody, NewEvent, Scope};
+    use crate::event::{
+        Actor, ContentHash, EgressBytes, EventBody, ModelRef, NewEvent, ReplayRefs, RunOutcome,
+        Scope,
+    };
     use crate::store::AuditStore;
     use muster_provider::Locality;
     use muster_route::Sensitivity;
@@ -445,6 +557,148 @@ mod home_query_tests {
                 reason: "申请合入".into(),
             },
         }
+    }
+
+    fn replay_refs() -> ReplayRefs {
+        ReplayRefs {
+            repo_snapshot: ContentHash::sha256(b"git-head:abc"),
+            deps_lock: ContentHash::sha256(b"lock"),
+            model: ModelRef {
+                provider_id: "kimi".into(),
+                model: "kimi-k3".into(),
+                params_hash: ContentHash::sha256(b"params"),
+            },
+            tool_env: ContentHash::sha256(b"tools"),
+        }
+    }
+
+    fn ev(run: &str, body: EventBody) -> NewEvent {
+        NewEvent {
+            ts_ms: None,
+            actor: Actor::agent("A-007"),
+            scope: Scope::default(),
+            run_id: Some(run.into()),
+            session_id: None,
+            policy_version: Some("policy-v1".into()),
+            label: None,
+            locality: None,
+            body,
+        }
+    }
+
+    /// P4:能力必须有出处——只有"成功结束且有 run.start"的运行够格锻造,
+    /// 且同一次运行不能锻造两遍。
+    #[test]
+    fn only_successful_runs_with_replay_refs_are_forgeable() {
+        let mut store = AuditStore::open_in_memory().unwrap();
+
+        // RUN-OK:有 start,成功结束 ⇒ 可锻造
+        store
+            .append(ev("RUN-OK", EventBody::RunStart {
+                task_kind: "chat.tools.v0".into(),
+                replay: replay_refs(),
+                label: Sensitivity::Open,
+                locality_planned: Locality::Cloud,
+            }))
+            .unwrap();
+        store
+            .append(ev("RUN-OK", EventBody::RunFinish {
+                outcome: RunOutcome::Success,
+                duration_ms: 100,
+                output_hash: None,
+            }))
+            .unwrap();
+        assert!(forgeable(store.conn(), "RUN-OK").unwrap().0);
+
+        // RUN-FAIL:失败结束 ⇒ 不锻造半途而废的过程
+        store
+            .append(ev("RUN-FAIL", EventBody::RunStart {
+                task_kind: "chat.tools.v0".into(),
+                replay: replay_refs(),
+                label: Sensitivity::Open,
+                locality_planned: Locality::Cloud,
+            }))
+            .unwrap();
+        store
+            .append(ev("RUN-FAIL", EventBody::RunFinish {
+                outcome: RunOutcome::Failed { class: "stream".into() },
+                duration_ms: 1,
+                output_hash: None,
+            }))
+            .unwrap();
+        let (ok, why) = forgeable(store.conn(), "RUN-FAIL").unwrap();
+        assert!(!ok && why.contains("未成功"), "{why}");
+
+        // 无 run.start ⇒ 缺重放引用
+        let (ok, why) = forgeable(store.conn(), "RUN-GHOST").unwrap();
+        assert!(!ok && why.contains("重放引用"), "{why}");
+
+        // 锻造后不可再锻造
+        store
+            .append(ev("RUN-OK", EventBody::CapsuleForge {
+                capsule_id: "CAP-1".into(),
+                name: "修复减法 bug".into(),
+                version: "1.0.0".into(),
+                source_run_id: "RUN-OK".into(),
+                replay: replay_refs(),
+                content_hash: ContentHash::sha256(b"def"),
+                scope: "team".into(),
+            }))
+            .unwrap();
+        let (ok, why) = forgeable(store.conn(), "RUN-OK").unwrap();
+        assert!(!ok && why.contains("已锻造过"), "{why}");
+    }
+
+    /// 能力库的数字全部由事件算出:验真率不另存,未验真 ≠ 0%。
+    #[test]
+    fn capsule_library_numbers_come_from_events() {
+        let mut store = AuditStore::open_in_memory().unwrap();
+        store
+            .append(ev("RUN-1", EventBody::CapsuleForge {
+                capsule_id: "CAP-1".into(),
+                name: "Release Checklist".into(),
+                version: "1.0.0".into(),
+                source_run_id: "RUN-1".into(),
+                replay: replay_refs(),
+                content_hash: ContentHash::sha256(b"c1"),
+                scope: "team".into(),
+            }))
+            .unwrap();
+
+        // 刚锻造:未验真 —— 必须是 None,不能显示成 0%(否则看着像"验证失败")
+        let rows = capsules(store.conn()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_run_id, "RUN-1");
+        assert_eq!(rows[0].verified_rate(), None, "未验真必须与验真失败可区分");
+        assert_eq!(rows[0].adopted, 0);
+
+        // 三次影子重放,过两次
+        for (i, passed) in [true, false, true].into_iter().enumerate() {
+            store
+                .append(ev(&format!("RUN-V{i}"), EventBody::CapsuleVerify {
+                    capsule_id: "CAP-1".into(),
+                    version: "1.0.0".into(),
+                    run_id: format!("RUN-V{i}"),
+                    passed,
+                    evidence_hash: ContentHash::sha256(b"ev"),
+                }))
+                .unwrap();
+        }
+        // 跨团队引入一次
+        store
+            .append(ev("RUN-1", EventBody::CapsuleAdopt {
+                capsule_id: "CAP-1".into(),
+                version: "1.0.0".into(),
+                from_team: "支付组".into(),
+                to_team: "平台组".into(),
+                label: Sensitivity::Internal,
+            }))
+            .unwrap();
+
+        let rows = capsules(store.conn()).unwrap();
+        assert_eq!((rows[0].verify_passed, rows[0].verify_total), (2, 3));
+        assert!((rows[0].verified_rate().unwrap() - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(rows[0].adopted, 1);
     }
 
     /// P5:未决 = 有请求且无裁决;裁决后立即出列,且裁决结果可查(防重复裁决)。

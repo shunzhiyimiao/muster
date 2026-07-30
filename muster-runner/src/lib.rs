@@ -43,11 +43,13 @@
 //! - 字节记账是载荷近似(与桌面壳同口径);wire 级计量属 A2 后续。
 
 pub mod approval;
+pub mod capsule;
 pub mod runner;
 pub mod tools;
 pub mod worktree;
 
 pub use approval::{decide, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
+pub use capsule::{draft_spec, forge, CapsuleError, CapsuleSpec, ForgeOutcome};
 pub use runner::{run_task, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 pub use tools::ToolSet;
 pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};

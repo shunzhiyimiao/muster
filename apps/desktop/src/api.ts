@@ -135,6 +135,26 @@ export interface AgentStats {
   total_egress_bytes: number;
   heat: DayBar[];
 }
+export interface CapsuleOut {
+  capsule_id: string;
+  name: string;
+  version: string;
+  scope: string;
+  source_run_id: string;
+  forged_ms: number;
+  forged_by: string;
+  verify_passed: number;
+  verify_total: number;
+  /** null = 尚未验真(与"验真失败"必须区分) */
+  verified_rate: number | null;
+  adopted: number;
+}
+export interface ForgeableRun {
+  run_id: string;
+  ts_ms: number;
+  output_hash: string;
+  duration_ms: number;
+}
 export interface PendingApprovalOut {
   approval_id: string;
   ts_ms: number;
@@ -202,6 +222,10 @@ export const api = {
   approvalsPending: () => invoke<PendingApprovalOut[]>("approvals_pending"),
   approvalsDecide: (runId: string, granted: boolean, note?: string) =>
     invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),
+  capsulesList: () => invoke<CapsuleOut[]>("capsules_list"),
+  forgeableRuns: () => invoke<ForgeableRun[]>("forgeable_runs"),
+  capsuleForge: (runId: string, goal: string, visibility: string) =>
+    invoke<string>("capsule_forge", { runId, goal, visibility }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {

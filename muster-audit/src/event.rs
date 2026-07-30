@@ -219,6 +219,53 @@ pub enum EventBody {
         policy_version: String,
     },
 
+    /// **从一次成功运行锻造出可复用能力**(P4)。
+    ///
+    /// Capsule 的价值不在"存了段提示词",而在**它带着自己的出处与验真记录**:
+    /// `source_run_id` 指向锻造它的那次运行,`replay` 是那次运行的完整重放引用
+    /// (与 `run.start` 同一份,故重放条件天然齐备),`content_hash` 是能力定义
+    /// 本身的哈希——定义正文留 Capsule 存储侧,审计只存哈希(铁律 3)。
+    #[serde(rename = "capsule.forge")]
+    CapsuleForge {
+        capsule_id: String,
+        name: String,
+        /// 语义版本;fork 出的新 capsule 从 0.x 起。
+        version: String,
+        /// 锻造取料的那次运行——**没有它就不许锻造**,能力必须有出处。
+        source_run_id: String,
+        /// 与 source run 同一份重放引用,保证"照着它再跑一次"条件齐备。
+        replay: ReplayRefs,
+        /// 能力定义(procedure/工具/验证条件…)的内容哈希。
+        content_hash: ContentHash,
+        /// 可见范围:private / team / org。
+        scope: String,
+    },
+
+    /// 影子重放验真:拿 capsule 重跑一次并比对结果。
+    /// `passed`/`total` 是累计口径,`verified_rate` 由此算出而非另存,避免两处失真。
+    #[serde(rename = "capsule.verify")]
+    CapsuleVerify {
+        capsule_id: String,
+        version: String,
+        /// 本次验真所依据的运行。
+        run_id: String,
+        passed: bool,
+        /// 判定依据的摘要哈希(比对了什么、差异在哪,正文留存储侧)。
+        evidence_hash: ContentHash,
+    },
+
+    /// 跨团队引入:密级与验真记录随包迁移(不是复制一份新的)。
+    #[serde(rename = "capsule.adopt")]
+    CapsuleAdopt {
+        capsule_id: String,
+        version: String,
+        /// 来源团队 → 目标团队。
+        from_team: String,
+        to_team: String,
+        /// 引入时该 capsule 的密级(随包迁移,不允许在引入时降密)。
+        label: Sensitivity,
+    },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -245,6 +292,9 @@ impl EventBody {
             EventBody::PolicyUpdate { .. } => "policy.update",
             EventBody::SessionLockRaise { .. } => "session.lock.raise",
             EventBody::RouteRefuse { .. } => "route.refuse",
+            EventBody::CapsuleForge { .. } => "capsule.forge",
+            EventBody::CapsuleVerify { .. } => "capsule.verify",
+            EventBody::CapsuleAdopt { .. } => "capsule.adopt",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }

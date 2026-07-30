@@ -33,7 +33,8 @@
 //!
 //! ## v1.x 预留事件类型(零成本占位,勿删)
 //!
-//! `capsule.forge` / `capsule.verify` / `capsule.adopt`(跨团队引入)、
+//! (`capsule.forge` / `capsule.verify` / `capsule.adopt` 已随 P4 落地,
+//! 不再是预留;锻造前置条件见 [`queries::forgeable`])、
 //! `session.stream.start` / `stream.viewer.join` / `session.stream.stop`、
 //! (`session.lock.raise` 已随 E3 于 v1 落地,不再是预留)、
 //! `share.block`(密级拦截)、`convo.share`、`meeting.transcribe`。
@@ -50,8 +51,9 @@ pub use event::{
     Parsed, ReplayRefs, RunOutcome, Scope,
 };
 pub use queries::{
-    actor_first_seen, day_throughput, decision_of, distinct_runs, downgrades_zh, drill_report,
-    pending_approval_list, pending_approvals, recent_events, recent_events_of, roster, run_chain,
-    session_lock, DayThroughput, DrillReport, PendingApproval, RosterRow,
+    actor_first_seen, capsules, day_throughput, decision_of, distinct_runs, downgrades_zh,
+    drill_report, forgeable, pending_approval_list, pending_approvals, recent_events,
+    recent_events_of, roster, run_chain, run_start_of, session_lock, CapsuleRow, DayThroughput,
+    DrillReport, PendingApproval, RosterRow,
 };
 pub use store::{AuditStore, ChainError, StoreError};

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AuditRow, Channel, DOWNGRADE_ZH, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, fmtDate, fmtTime } from "../api";
+import { AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
@@ -556,15 +556,35 @@ const Note = ({ k, who, ai, fresh, children }: { k: string; who?: string; ai?: b
 
 /* ==================== 能力库(P4 概念) ==================== */
 
-export function CapsView({ trace, setTrace, introduced }: { trace: boolean; setTrace: (fn: (t: boolean) => boolean) => void; introduced: boolean }) {
+export function CapsView({
+  trace, setTrace, introduced, live, forgeable, onForge,
+}: {
+  trace: boolean;
+  setTrace: (fn: (t: boolean) => boolean) => void;
+  introduced: boolean;
+  live: CapsuleOut[];
+  forgeable: ForgeableRun[];
+  onForge: (runId: string, goal: string) => void;
+}) {
   return (
     <div className="px-7 pb-8 pt-2">
       <div className="flex items-center mb-4">
         <div className="flex items-center gap-2 flex-1 px-3.5 py-2 rounded-xl text-[13px]" style={{ background: T.soft, color: T.faint, maxWidth: 360 }}>
           <Search size={14} /> 搜索能力…
         </div>
-        <Tag style={{ marginLeft: 10 }}>P4 概念 · A9 已留 capsule.* 事件位</Tag>
-        <span className="ml-auto"><IBtn><Plus size={13} /> 从运行锻造</IBtn></span>
+        <span className="ml-3 text-[11px]" style={{ color: T.sub }}>
+          已锻造 {live.length} · 可锻造运行 {forgeable.length}
+        </span>
+      </div>
+
+      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} />
+
+      <div className="flex items-center gap-2 mb-2.5 mt-6">
+        <b className="text-[13px]">概念能力</b>
+        <Tag>演示叙事 · 非真实数据</Tag>
+        <span className="text-[10.5px]" style={{ color: T.faint }}>
+          验真率、影子重放次数等为示例值;真实 Capsule 见上方
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-4">
         {CAPS.map((c) => (
@@ -645,3 +665,128 @@ export const ConceptMsg = ({ who, tone, time, children }: { who: string; tone: s
     </div>
   </div>
 );
+
+/* ==================== P4 真实 Capsule(锻造区) ==================== */
+
+function ForgeSection({
+  live,
+  forgeable,
+  onForge,
+}: {
+  live: CapsuleOut[];
+  forgeable: ForgeableRun[];
+  onForge: (runId: string, goal: string) => void;
+}) {
+  const [picking, setPicking] = useState<string | null>(null);
+  const [goal, setGoal] = useState("");
+
+  return (
+    <>
+      <div className="flex items-center gap-2 mb-2.5">
+        <b className="text-[13px]">已锻造能力</b>
+        <span className="text-[10.5px]" style={{ color: T.sub }}>
+          锻造自成功运行,带着出处与重放引用;验真率由 capsule.verify 事件算出
+        </span>
+      </div>
+
+      {live.length === 0 ? (
+        <Card className="p-5 text-xs mb-4" style={{ color: T.sub }}>
+          还没有锻造过能力。一次**成功完成且经审批**的任务运行就可以被固化成 Capsule——
+          它复制的不是提示词,而是那次运行的完整重放引用(仓库快照 / 依赖锁 / 模型 / 工具环境)。
+        </Card>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          {live.map((c) => (
+            <Card key={c.capsule_id} className="p-5">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-extrabold tracking-widest" style={{ color: T.indigo }}>CAPSULE</span>
+                <Tag tone="grn">真实锻造</Tag>
+                <span className="ml-auto"><Tag>{c.scope}</Tag></span>
+              </div>
+              <div className="mt-2.5 text-[15px]">
+                <b>{c.name}</b> <span className="text-[11.5px]" style={{ color: T.sub }}>v{c.version}</span>
+              </div>
+              <div className="flex items-center gap-2 mt-2 text-[10.5px] flex-wrap" style={{ color: T.faint }}>
+                <GitBranch size={11} /> 源运行 {c.source_run_id} · 锻造于 {fmtDate(c.forged_ms)} · {c.forged_by}
+              </div>
+              <div className="flex items-center gap-3 mt-3 text-[11.5px]">
+                {c.verified_rate === null ? (
+                  <span className="flex items-center gap-1.5" style={{ color: T.sub }}>
+                    <Tag tone="amb">尚未验真</Tag>
+                    <span style={{ color: T.faint }}>影子重放后才有验真率</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 font-semibold" style={{ color: c.verified_rate >= 0.9 ? T.green : T.amber }}>
+                    <BadgeCheck size={13} /> 验真 {(c.verified_rate * 100).toFixed(0)}% · {c.verify_passed}/{c.verify_total} 次重放
+                  </span>
+                )}
+                {c.adopted > 0 && <Tag tone="ind">已被引入 {c.adopted} 次</Tag>}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 mb-2.5">
+        <b className="text-[13px]">可锻造的运行</b>
+        <span className="text-[10.5px]" style={{ color: T.sub }}>
+          仅限成功结束、留有重放引用、且尚未锻造过的运行
+        </span>
+      </div>
+      {forgeable.length === 0 ? (
+        <Card className="p-5 text-xs" style={{ color: T.sub }}>
+          暂无可锻造的运行。用「▶ 任务」跑一个成功的任务后,它会出现在这里。
+        </Card>
+      ) : (
+        <Card className="p-4">
+          {forgeable.map((r) => (
+            <div key={r.run_id} className="py-2.5" style={{ borderTop: `1px solid ${T.line}` }}>
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold">{r.run_id}</div>
+                  <div className="text-[10.5px] mt-0.5" style={{ color: T.sub }}>
+                    {fmtDate(r.ts_ms)} · 耗时 {(r.duration_ms / 1000).toFixed(1)}s
+                    {r.output_hash && ` · 产出 ${r.output_hash.slice(7, 19)}`}
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setPicking(picking === r.run_id ? null : r.run_id); setGoal(""); }}
+                  className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ background: T.indigoSoft, color: T.indigo }}
+                >
+                  <Plus size={11} className="inline" /> 锻造
+                </button>
+              </div>
+              {picking === r.run_id && (
+                <div className="mt-2.5 rounded-xl p-3 fade" style={{ background: T.panel }}>
+                  <div className="text-[10.5px] mb-1.5" style={{ color: T.sub }}>
+                    这个能力解决什么问题?(会写进 Capsule 定义,可日后改写)
+                  </div>
+                  <input
+                    value={goal}
+                    onChange={(e) => setGoal(e.target.value)}
+                    placeholder="例:修复算术运算符写反的 bug"
+                    className="w-full px-3 py-2 rounded-lg text-[12.5px] outline-none"
+                    style={{ background: "#fff", border: `1px solid ${T.line}` }}
+                  />
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      onClick={() => { onForge(r.run_id, goal.trim() || `运行 ${r.run_id} 的能力`); setPicking(null); }}
+                      className="text-[11.5px] font-semibold px-3.5 py-1.5 rounded-lg"
+                      style={{ background: T.indigo, color: "#fff" }}
+                    >
+                      确认锻造
+                    </button>
+                    <button onClick={() => setPicking(null)} className="text-[11.5px] px-3 py-1.5 rounded-lg" style={{ background: T.soft, color: T.sub }}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </Card>
+      )}
+    </>
+  );
+}

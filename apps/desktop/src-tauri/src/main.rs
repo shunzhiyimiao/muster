@@ -17,9 +17,9 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 
 use muster_audit::{
-    actor_first_seen, day_throughput, distinct_runs, downgrades_zh, drill_report,
-    pending_approval_list, pending_approvals, recent_events, recent_events_of, roster, Actor,
-    AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
+    actor_first_seen, capsules, day_throughput, distinct_runs, downgrades_zh, drill_report,
+    forgeable, pending_approval_list, pending_approvals, recent_events, recent_events_of, roster,
+    Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
 use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
@@ -1028,6 +1028,117 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
     }
 }
 
+// ---------------------------------------------------------------- P4 能力库
+
+#[derive(Serialize)]
+struct CapsuleOut {
+    capsule_id: String,
+    name: String,
+    version: String,
+    scope: String,
+    source_run_id: String,
+    forged_ms: u64,
+    forged_by: String,
+    verify_passed: u64,
+    verify_total: u64,
+    /// **未验真是 None,不是 0%**——"没验过"与"验证失败"必须能区分。
+    verified_rate: Option<f64>,
+    adopted: u64,
+}
+
+#[tauri::command]
+fn capsules_list(state: State<'_, AppState>) -> Result<Vec<CapsuleOut>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    Ok(capsules(store.conn())
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|c| CapsuleOut {
+            verified_rate: c.verified_rate(),
+            capsule_id: c.capsule_id,
+            name: c.name,
+            version: c.version,
+            scope: c.scope,
+            source_run_id: c.source_run_id,
+            forged_ms: c.forged_ms,
+            forged_by: c.forged_by,
+            verify_passed: c.verify_passed,
+            verify_total: c.verify_total,
+            adopted: c.adopted,
+        })
+        .collect())
+}
+
+/// 可锻造的运行(成功结束、有 run.start、尚未锻造过)。
+#[derive(Serialize)]
+struct ForgeableRun {
+    run_id: String,
+    ts_ms: u64,
+    /// 该运行的产出摘要(取 run.finish 的 output_hash 前缀,仅作标识)。
+    output_hash: String,
+    duration_ms: u64,
+}
+
+#[tauri::command]
+fn forgeable_runs(state: State<'_, AppState>) -> Result<Vec<ForgeableRun>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    let conn = store.conn();
+    let mut out = Vec::new();
+    for e in recent_events_of(conn, "run.finish", 40).map_err(|e| e.to_string())? {
+        let Some(run_id) = e.run_id.clone() else { continue };
+        if e.payload["outcome"] != "success" {
+            continue;
+        }
+        if !forgeable(conn, &run_id).map_err(|e| e.to_string())?.0 {
+            continue;
+        }
+        out.push(ForgeableRun {
+            run_id,
+            ts_ms: e.ts_ms,
+            output_hash: e.payload["output_hash"].as_str().unwrap_or("").to_string(),
+            duration_ms: e.payload["duration_ms"].as_u64().unwrap_or(0),
+        });
+    }
+    Ok(out)
+}
+
+/// 锻造:先取草稿(把散在事件里的事实聚拢),再落 capsule.forge。
+/// 草稿是建议不是结论——`goal` 由调用方给定,允许人改写。
+#[tauri::command]
+fn capsule_forge(
+    state: State<'_, AppState>,
+    run_id: String,
+    goal: String,
+    visibility: String,
+) -> Result<String, String> {
+    let audit = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.audit.clone()
+    };
+    let tools = vec![
+        "list_dir".to_string(),
+        "read_file".to_string(),
+        "grep".to_string(),
+        "write_file".to_string(),
+        "replace_in_file".to_string(),
+    ];
+    let spec = muster_runner::draft_spec(&audit, &run_id, &goal, tools).map_err(|e| e.to_string())?;
+    let out = muster_runner::forge(
+        &audit,
+        AGENT_BADGE,
+        POLICY_VERSION,
+        &run_id,
+        spec,
+        &visibility,
+        Scope::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(format!("已锻造 {} · {}(源运行 {run_id})", out.spec.name, out.capsule_id))
+}
+
 // ---------------------------------------------------------------- P5 审批
 
 /// 未决审批(等人裁决的合入申请)。
@@ -1241,7 +1352,10 @@ fn main() {
             history_bulk,
             roster_stats,
             approvals_pending,
-            approvals_decide
+            approvals_decide,
+            capsules_list,
+            forgeable_runs,
+            capsule_forge
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

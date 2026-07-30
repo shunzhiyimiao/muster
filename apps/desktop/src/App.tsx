@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  PendingApprovalOut, RosterEntryOut, fmtBytes,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RosterEntryOut, fmtBytes,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -62,6 +62,8 @@ export default function App() {
   const [agent, setAgent] = useState<AgentStats | null>(null);
   const [rosterLive, setRosterLive] = useState<RosterEntryOut[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
+  const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
+  const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
   const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
@@ -73,6 +75,8 @@ export default function App() {
     api.agentStats().then(setAgent).catch(() => {});
     api.rosterStats().then(setRosterLive).catch(() => {});
     api.approvalsPending().then(setApprovals).catch(() => {});
+    api.capsulesList().then(setCapsules).catch(() => {});
+    api.forgeableRuns().then(setForgeable).catch(() => {});
   };
   const chat = useChat(refreshAll);
 
@@ -316,7 +320,7 @@ export default function App() {
                 );
               })}
               <CollapseSec label="AGENT" open={agentOpen} onToggle={() => setAgentOpen((o) => !o)}>
-                <SideItem icon={<Library size={16} />} label="能力库" active={view === "caps"} onClick={() => { setView("caps"); setNotice(""); }}
+                <SideItem icon={<Library size={16} />} label="能力库" active={view === "caps"} onClick={() => { setView("caps"); setNotice(""); refreshAll(); }}
                   extra={<span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md" style={{ background: view === "caps" ? "rgba(255,255,255,.22)" : T.indigoSoft, color: view === "caps" ? "#fff" : T.indigo }}>P4</span>} />
                 <SideItem icon={<Shield size={16} />} label="审计中心" onClick={() => { setModule("console"); setView("audit"); setNotice(""); refreshAll(); }} />
               </CollapseSec>
@@ -366,7 +370,15 @@ export default function App() {
               <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
             )}
             {view === "meeting" && <MeetingView />}
-            {view === "caps" && <CapsView trace={trace} setTrace={setTrace} introduced={introduced} />}
+            {view === "caps" && (
+              <CapsView trace={trace} setTrace={setTrace} introduced={introduced}
+                live={capsules} forgeable={forgeable}
+                onForge={(runId, goal) => {
+                  api.capsuleForge(runId, goal, "team")
+                    .then((msg) => { setNotice(msg); refreshAll(); })
+                    .catch((e) => setNotice(`锻造失败:${e}`));
+                }} />
+            )}
           </div>
         </main>
       </div>
