@@ -1126,8 +1126,11 @@ fn capsule_forge(
         "replace_in_file".to_string(),
     ];
     let spec = muster_runner::draft_spec(&audit, &run_id, &goal, tools).map_err(|e| e.to_string())?;
-    let out = muster_runner::forge(
+    let store = capsule_store()?;
+    // 审计存哈希、存储存正文,两者由 CapsuleStore::load 的哈希校验绑定
+    let out = muster_runner::forge_and_store(
         &audit,
+        &store,
         AGENT_BADGE,
         POLICY_VERSION,
         &run_id,
@@ -1137,6 +1140,58 @@ fn capsule_forge(
     )
     .map_err(|e| e.to_string())?;
     Ok(format!("已锻造 {} · {}(源运行 {run_id})", out.spec.name, out.capsule_id))
+}
+
+fn capsule_store() -> Result<muster_runner::CapsuleStore, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    muster_runner::CapsuleStore::open(format!("{home}/.muster/capsules"))
+        .map_err(|e| format!("Capsule 存储打开失败:{e}"))
+}
+
+/// 影子重放验真。**三种结局**:通过 / 不通过 / 没法验真(后者不落库,
+/// 否则验真率的分母被"我们没条件验"污染)。
+#[tauri::command]
+async fn capsule_verify(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    capsule_id: String,
+) -> Result<String, String> {
+    let (router, audit) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.router.clone(), b.audit.clone())
+    };
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    let root = std::env::var("MUSTER_WORKSPACE_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+    let store = capsule_store()?;
+    let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
+
+    let a = app.clone();
+    let out = muster_runner::verify(
+        &router,
+        &audit,
+        &store,
+        &cfg,
+        &capsule_id,
+        std::path::Path::new(&workspace),
+        std::path::Path::new(&root),
+        move |ev| {
+            if let RunnerEvent::Notice { text } = ev {
+                a.emit("capsule-verify-progress", text).ok();
+            }
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    app.emit("approvals-changed", ()).ok();
+    Ok(format!(
+        "{} · {}",
+        if out.passed { "✓ 验真通过" } else { "✗ 产出不一致" },
+        out.detail
+    ))
 }
 
 // ---------------------------------------------------------------- P5 审批
@@ -1355,7 +1410,8 @@ fn main() {
             approvals_decide,
             capsules_list,
             forgeable_runs,
-            capsule_forge
+            capsule_forge,
+            capsule_verify
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

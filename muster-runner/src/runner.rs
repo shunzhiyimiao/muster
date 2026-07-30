@@ -131,6 +131,13 @@ pub enum RunnerError {
 
 /// git HEAD 优先(`git-head:` 前缀);非 git 目录降级为顶层清单(`dir:` 前缀)。
 /// 前缀进哈希原文——重放校验时能看出快照口径,不伪造精度。
+///
+/// 对外公开(`repo_snapshot_of`)供 Capsule 验真做环境漂移检测:
+/// **必须与锻造时用同一个函数**,否则比的是两把尺子。
+pub fn repo_snapshot_of(ws: &std::path::Path) -> ContentHash {
+    repo_snapshot(ws)
+}
+
 fn repo_snapshot(ws: &std::path::Path) -> ContentHash {
     let head = std::process::Command::new("git")
         .arg("-C")

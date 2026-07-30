@@ -557,7 +557,7 @@ const Note = ({ k, who, ai, fresh, children }: { k: string; who?: string; ai?: b
 /* ==================== 能力库(P4 概念) ==================== */
 
 export function CapsView({
-  trace, setTrace, introduced, live, forgeable, onForge,
+  trace, setTrace, introduced, live, forgeable, onForge, onVerify,
 }: {
   trace: boolean;
   setTrace: (fn: (t: boolean) => boolean) => void;
@@ -565,6 +565,7 @@ export function CapsView({
   live: CapsuleOut[];
   forgeable: ForgeableRun[];
   onForge: (runId: string, goal: string) => void;
+  onVerify: (capsuleId: string) => void;
 }) {
   return (
     <div className="px-7 pb-8 pt-2">
@@ -577,7 +578,7 @@ export function CapsView({
         </span>
       </div>
 
-      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} />
+      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} />
 
       <div className="flex items-center gap-2 mb-2.5 mt-6">
         <b className="text-[13px]">概念能力</b>
@@ -672,13 +673,16 @@ function ForgeSection({
   live,
   forgeable,
   onForge,
+  onVerify,
 }: {
   live: CapsuleOut[];
   forgeable: ForgeableRun[];
   onForge: (runId: string, goal: string) => void;
+  onVerify: (capsuleId: string) => void;
 }) {
   const [picking, setPicking] = useState<string | null>(null);
   const [goal, setGoal] = useState("");
+  const [verifying, setVerifying] = useState<string | null>(null);
 
   return (
     <>
@@ -721,6 +725,19 @@ function ForgeSection({
                   </span>
                 )}
                 {c.adopted > 0 && <Tag tone="ind">已被引入 {c.adopted} 次</Tag>}
+              </div>
+              <div className="flex items-center gap-2 mt-3.5">
+                <button
+                  onClick={() => { setVerifying(c.capsule_id); onVerify(c.capsule_id); }}
+                  disabled={verifying === c.capsule_id}
+                  className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ background: T.indigoSoft, color: T.indigo, opacity: verifying === c.capsule_id ? 0.5 : 1 }}
+                >
+                  <Play size={11} /> {verifying === c.capsule_id ? "重放中…" : "影子重放验真"}
+                </button>
+                <span className="text-[9.5px]" style={{ color: T.faint }}>
+                  在隔离分支上重跑并比对产出;环境漂移时报"无法验真"而不计入验真率
+                </span>
               </div>
             </Card>
           ))}

@@ -377,6 +377,12 @@ export default function App() {
                   api.capsuleForge(runId, goal, "team")
                     .then((msg) => { setNotice(msg); refreshAll(); })
                     .catch((e) => setNotice(`锻造失败:${e}`));
+                }}
+                onVerify={(capsuleId) => {
+                  setNotice(`正在影子重放 ${capsuleId}…`);
+                  api.capsuleVerify(capsuleId)
+                    .then((msg) => { setNotice(msg); refreshAll(); })
+                    .catch((e) => { setNotice(`${e}`); refreshAll(); });
                 }} />
             )}
           </div>

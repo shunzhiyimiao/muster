@@ -127,8 +127,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vec!["read_file".into(), "replace_in_file".into()],
             )?;
             println!("草稿:{} · 模型 {} · 判据 {} 条", spec.name, spec.model, spec.verification.len());
-            let out = muster_runner::forge(
+            let cap_dir = std::env::temp_dir().join("muster-live-capsules");
+            let cstore = muster_runner::CapsuleStore::open(&cap_dir)?;
+            let out = muster_runner::forge_and_store(
                 &audit,
+                &cstore,
                 "A-007",
                 "policy-v1",
                 &run_id,
@@ -137,6 +140,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Scope { team: Some("平台组".into()), channel: Some("live".into()) },
             )?;
             println!("🧪 已锻造 {} v{} · 定义哈希 {}", out.capsule_id, out.version, &out.content_hash[..20]);
+
+            // 篡改检测:改一下存储侧正文,加载必须被拒(审计哈希是它的校验和)
+            let mut evil = out.spec.clone();
+            evil.goal.push_str("(被人偷偷改过)");
+            cstore.save(&out.capsule_id, &evil)?;
+            match cstore.load(&out.capsule_id, &muster_audit::ContentHash(out.content_hash.clone())) {
+                Err(e) => println!("🛡️  篡改检测生效:{e}"),
+                Ok(_) => println!("❌ 篡改未被发现——这是缺陷"),
+            }
+            cstore.save(&out.capsule_id, &out.spec)?; // 复原
+
+            // 影子重放验真:此刻主仓已被合入改动,快照必然漂移 ⇒ 应报"无法验真"
+            let vres = muster_runner::verify(
+                &router, &audit, &cstore, &RunnerConfig::default(), &out.capsule_id,
+                Path::new(repo), &root, |_| {},
+            )
+            .await;
+            match vres {
+                Ok(v) => println!("🧪 验真:{} · {}", if v.passed { "通过" } else { "不一致" }, v.detail),
+                Err(e) => println!("🧪 验真:{e}"),
+            }
+            {
+                let s = audit.lock().unwrap();
+                for c in muster_audit::capsules(s.conn())? {
+                    println!(
+                        "   验真计数:{}/{} ⇒ {}",
+                        c.verify_passed,
+                        c.verify_total,
+                        match c.verified_rate() {
+                            None => "尚未验真(分母未被污染)".to_string(),
+                            Some(r) => format!("{:.0}%", r * 100.0),
+                        }
+                    );
+                }
+            }
 
             let store = audit.lock().unwrap();
             for c in muster_audit::capsules(store.conn())? {

@@ -49,7 +49,10 @@ pub mod tools;
 pub mod worktree;
 
 pub use approval::{decide, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
-pub use capsule::{draft_spec, forge, CapsuleError, CapsuleSpec, ForgeOutcome};
+pub use capsule::{
+    draft_spec, forge, forge_and_store, verify, CapsuleError, CapsuleSpec, CapsuleStore,
+    ForgeOutcome, VerifyOutcome,
+};
 pub use runner::{run_task, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 pub use tools::ToolSet;
 pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};

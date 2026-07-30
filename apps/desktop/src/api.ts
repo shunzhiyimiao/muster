@@ -226,6 +226,7 @@ export const api = {
   forgeableRuns: () => invoke<ForgeableRun[]>("forgeable_runs"),
   capsuleForge: (runId: string, goal: string, visibility: string) =>
     invoke<string>("capsule_forge", { runId, goal, visibility }),
+  capsuleVerify: (capsuleId: string) => invoke<string>("capsule_verify", { capsuleId }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {
