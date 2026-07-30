@@ -68,7 +68,7 @@ export function ChannelView({
             </div>
           </div>
           <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderTop: "1px solid rgba(91,91,245,.25)" }}>
-            <button className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: T.indigo, color: "#fff" }}>
+            <button disabled title="串流通道为 v1.x 演示,尚未实现" className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: T.indigo, color: "#fff" , opacity: 0.45, cursor: "not-allowed"}}>
               <Eye size={12} /> 加入围观
             </button>
             <span className="text-[10.5px]" style={{ color: T.sub }}>12 人围观中 · 只读投屏,接手需 Alice 授权</span>
@@ -120,7 +120,7 @@ export function ChannelView({
               <Plus size={12} /> 引入到平台组能力库
             </IBtn>
           )}
-          <button className="ml-auto flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg" style={{ background: "#fff", border: `1px solid ${T.line}`, color: T.sub }}>
+          <button disabled title="概念示例没有真实定义;真实能力见「能力库 → 已锻造能力」" className="ml-auto flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg" style={{ background: "#fff", border: `1px solid ${T.line}`, color: T.sub }}>
             <Play size={11} /> 直接运行
           </button>
         </div>
@@ -242,7 +242,7 @@ const PinCap = ({ name, ver, rate, from, fresh }: { name: string; ver: string; r
       <span className="text-[10px] font-semibold flex items-center gap-1" style={{ color: T.green }}>
         <BadgeCheck size={10} />验真 {rate}%
       </span>
-      <button className="ml-auto text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1" style={{ background: T.indigoSoft, color: T.indigo }}>
+      <button disabled title="置顶能力为概念示例;真实能力见「能力库 → 已锻造能力」" className="ml-auto text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1" style={{ background: T.indigoSoft, color: T.indigo , opacity: 0.45, cursor: "not-allowed"}}>
         <Play size={10} /> 运行
       </button>
     </div>
@@ -426,7 +426,7 @@ function PersonCard({ p, approved }: { p: RosterEntry; approved: boolean }) {
       </div>
       <div className="flex items-center mt-3.5 text-[10.5px]" style={{ color: feat ? "#BDBDF9" : T.faint }}>
         {p.foot}
-        <button className="ml-auto text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+        <button disabled title="编制详情页尚未实现" className="ml-auto text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
           style={feat ? { background: "#fff", color: T.indigo } : { background: T.indigoSoft, color: T.indigo }}>
           详情
         </button>
@@ -498,10 +498,10 @@ export function MeetingView() {
           <Ctl on={mic} onClick={() => setMic((m) => !m)}>{mic ? <Mic size={16} /> : <MicOff size={16} />}</Ctl>
           <Ctl on><Video size={16} /></Ctl>
           <Ctl on><Monitor size={16} /></Ctl>
-          <button className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2.5 rounded-full" style={{ background: T.indigoSoft, color: T.indigo }}>
+          <button disabled title="会议系统为 v1.x 概念,尚未实现" className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2.5 rounded-full" style={{ background: T.indigoSoft, color: T.indigo , opacity: 0.45, cursor: "not-allowed"}}>
             <Bot size={14} /> 007 参会中
           </button>
-          <button className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2.5 rounded-full" style={{ background: T.red, color: "#fff" }}>
+          <button disabled title="会议系统为 v1.x 概念,尚未实现" className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2.5 rounded-full" style={{ background: T.red, color: "#fff" , opacity: 0.45, cursor: "not-allowed"}}>
             <Phone size={14} /> 结束会议
           </button>
         </div>

@@ -177,7 +177,7 @@ export function ConsoleHome({
               </button>
             )} />
           <ApRow bg="#8A8DF0" nm="Agent-012" sb="Release v1.3 · 跨团队发布"
-            right={<button className="text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.indigoSoft, color: T.indigo }}>审批</button>} />
+            right={<button disabled title="此为概念示例;真实审批在频道右栏「待我审批」" className="text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.indigoSoft, color: T.indigo, opacity: 0.45, cursor: "not-allowed" }}>审批</button>} />
           <ApRow bg="#9DA1B5" icon={<Shield size={15} />} nm="路由中心"
             sb={home.downgrades[0]?.text ?? "sec-ops → restricted · 仅本地可落"}
             right={<Tag tone="ind">通知</Tag>} />

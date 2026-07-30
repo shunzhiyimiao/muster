@@ -285,7 +285,7 @@ export function AgentProfile({
           <div className="flex items-center gap-2.5">
             <span className="text-2xl font-extrabold">小七</span>
             <Tag tone="ind">编制 A-007 · 代码评审员</Tag>
-            <button className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>
+            <button disabled title="Agent 档案编辑尚未实现" className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg" style={{ background: T.soft, color: T.sub , opacity: 0.45, cursor: "not-allowed"}}>
               <Pencil size={11} /> 编辑
             </button>
           </div>

@@ -550,7 +550,7 @@ export default function App() {
               </div>
             )}
             <div className="px-4 py-3 flex gap-2 items-center" style={{ borderTop: `1px solid ${T.line}` }}>
-              <button className="text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: T.indigoSoft, color: T.indigo }}>引用到 #platform</button>
+              <button disabled title="对话引用为概念示例,尚未实现" className="text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: T.indigoSoft, color: T.indigo , opacity: 0.45, cursor: "not-allowed"}}>引用到 #platform</button>
               <button onClick={() => setConvo("blocked")} className="text-xs px-3 py-1.5 rounded-lg" style={{ background: T.soft, color: T.sub }}>
                 分享到 #general(open)
               </button>
@@ -617,8 +617,10 @@ function TopBar({
             <span className="w-1.5 h-1.5 rounded-full lv" style={{ background: T.red }} />串流中 → #platform
           </span>
         )}
-        <button className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1px solid ${T.line}`, color: "#5A5E70" }}><Search size={15} /></button>
-        <button className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1px solid ${T.line}`, color: "#5A5E70" }}><Bell size={15} /></button>
+        <button disabled title="全局搜索尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
+          style={{ border: `1px solid ${T.line}`, color: "#5A5E70", opacity: 0.4, cursor: "not-allowed" }}><Search size={15} /></button>
+        <button disabled title="通知中心尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
+          style={{ border: `1px solid ${T.line}`, color: "#5A5E70", opacity: 0.4, cursor: "not-allowed" }}><Bell size={15} /></button>
         <div className="flex items-center gap-2 ml-1" title={me ? `身份来自 MUSTER_ROLE/MUSTER_USER;接 OIDC 后改由 iss+sub 解析` : ""}>
           <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>
             {(me?.display_name ?? "?").slice(0, 1).toUpperCase()}
