@@ -188,6 +188,120 @@ impl StateStore {
         out.reverse(); // 倒查取最近 N 条,再转回时间正序
         Ok(out)
     }
+
+    fn stats(&self) -> rusqlite::Result<(u64, u64, Option<u64>)> {
+        self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(text)),0), MIN(ts_ms) FROM messages",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, i64>(1)? as u64,
+                    r.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+                ))
+            },
+        )
+    }
+
+    /// 按条件取出正文。`None` 条件 = 不限。
+    fn select(&self, sel: &Selector) -> rusqlite::Result<Vec<StoredMsg>> {
+        let (where_sql, arg): (&str, Option<String>) = match sel {
+            Selector::All => ("1=1", None),
+            Selector::Channel(c) => ("channel_id = ?1", Some(c.clone())),
+            Selector::Run(r) => ("run_id = ?1", Some(r.clone())),
+            Selector::OlderThan(ms) => ("ts_ms < ?1", Some(ms.to_string())),
+        };
+        let sql = format!(
+            "SELECT channel_id, role, text, run_id, status, ts_ms FROM messages
+             WHERE {where_sql} ORDER BY id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let map = |r: &rusqlite::Row<'_>| {
+            Ok(StoredMsg {
+                channel_id: r.get(0)?,
+                role: r.get(1)?,
+                text: r.get(2)?,
+                run_id: r.get(3)?,
+                status: r.get(4)?,
+                ts_ms: r.get(5)?,
+            })
+        };
+        let rows: Vec<StoredMsg> = match (&arg, sel) {
+            (None, _) => stmt.query_map([], map)?.collect::<Result<_, _>>()?,
+            (Some(_), Selector::OlderThan(ms)) => {
+                stmt.query_map(rusqlite::params![*ms as i64], map)?.collect::<Result<_, _>>()?
+            }
+            (Some(a), _) => stmt.query_map(rusqlite::params![a], map)?.collect::<Result<_, _>>()?,
+        };
+        Ok(rows)
+    }
+
+    /// 删除并 VACUUM。**不 VACUUM 等于没删**:SQLite 只是把页标记为空闲,
+    /// 正文仍留在文件里,`strings` 一读就出来——对一个以"删得掉"为卖点的
+    /// 功能来说,那是假删。
+    fn purge(&self, sel: &Selector) -> rusqlite::Result<u64> {
+        let n = match sel {
+            Selector::All => self.conn.execute("DELETE FROM messages", [])?,
+            Selector::Channel(c) => {
+                self.conn.execute("DELETE FROM messages WHERE channel_id = ?1", rusqlite::params![c])?
+            }
+            Selector::Run(r) => {
+                self.conn.execute("DELETE FROM messages WHERE run_id = ?1", rusqlite::params![r])?
+            }
+            Selector::OlderThan(ms) => self
+                .conn
+                .execute("DELETE FROM messages WHERE ts_ms < ?1", rusqlite::params![*ms as i64])?,
+        };
+        if n > 0 {
+            self.conn.execute_batch("VACUUM;")?;
+        }
+        Ok(n as u64)
+    }
+}
+
+/// 正文的选取口径。同一套口径同时服务导出与删除——**能导出什么就能删什么**,
+/// 免得出现"看得见却删不掉"的角落。
+#[derive(Debug, Clone)]
+enum Selector {
+    All,
+    Channel(String),
+    Run(String),
+    OlderThan(u64),
+}
+
+impl Selector {
+    /// 进审计的口径串(不含正文)。
+    fn tag(&self, keep_days: Option<u32>) -> String {
+        match self {
+            Selector::All => "all".into(),
+            Selector::Channel(c) => format!("channel:{c}"),
+            Selector::Run(r) => format!("run:{r}"),
+            Selector::OlderThan(_) => match keep_days {
+                Some(d) => format!("retention:{d}d"),
+                None => "older_than".into(),
+            },
+        }
+    }
+
+    fn parse(kind: &str, value: Option<String>) -> Result<Self, String> {
+        match kind {
+            "all" => Ok(Selector::All),
+            "channel" => value.map(Selector::Channel).ok_or("缺少频道 id".into()),
+            "run" => value.map(Selector::Run).ok_or("缺少 run id".into()),
+            "older_than_days" => {
+                let d: u64 = value.ok_or("缺少天数")?.parse().map_err(|_| "天数不是数字")?;
+                Ok(Selector::OlderThan(now_ms().saturating_sub(d * 86_400_000)))
+            }
+            other => Err(format!("未知口径 {other}")),
+        }
+    }
+}
+
+/// 正文保留期(天)。**默认不开**:静默销毁用户既有的对话历史是不可接受的,
+/// 尤其在升级之后——保留期必须是明确选择的结果,不是升级的副作用。
+/// 一旦设了,每次启动自动执行一次,并写 `transcript.purge` 留痕。
+fn retention_days() -> Option<u32> {
+    std::env::var("MUSTER_TRANSCRIPT_KEEP_DAYS").ok()?.parse().ok().filter(|d| *d > 0)
 }
 
 // ---------------------------------------------------------------- P2 当前身份
@@ -580,6 +694,19 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
             run_seq: Arc::new(AtomicU64::new(0)),
             drill: Arc::new(Mutex::new(None)),
         });
+
+        // 保留期到点即清(仅在明确设了 MUSTER_TRANSCRIPT_KEEP_DAYS 时)。
+        // 清理失败不阻断启动:正文治理是运维事项,不该让人开不了应用;
+        // 但**审计写失败会让本次清理整体失败**,不会出现"删了没记"。
+        if let Some(days) = retention_days() {
+            let b = guard.as_ref().unwrap();
+            let cutoff = now_ms().saturating_sub(days as u64 * 86_400_000);
+            match purge_and_record(b, &Selector::OlderThan(cutoff), Some(days)) {
+                Ok(n) if n > 0 => eprintln!("正文保留期 {days} 天:已清理 {n} 条"),
+                Ok(_) => {}
+                Err(e) => eprintln!("正文保留期清理失败(已跳过,不阻断启动):{e}"),
+            }
+        }
     }
     let backend = guard.as_ref().unwrap();
     let providers = backend
@@ -1669,6 +1796,120 @@ fn audit_archive_broken(state: State<'_, AppState>) -> Result<String, String> {
     Ok(archived)
 }
 
+// ---------------------------------------------------------------- 正文存储治理
+
+#[derive(Serialize)]
+struct TranscriptStats {
+    messages: u64,
+    text_bytes: u64,
+    oldest_ts_ms: Option<u64>,
+    /// 保留期(天);None = 未开启,正文永久保留
+    keep_days: Option<u32>,
+    /// 导出落地目录(固定位置,免得到处散落)
+    export_dir: String,
+}
+
+#[tauri::command]
+fn transcript_stats(state: State<'_, AppState>) -> Result<TranscriptStats, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let (messages, text_bytes, oldest_ts_ms) =
+        b.state.lock().unwrap().stats().map_err(|e| e.to_string())?;
+    let home = std::env::var("HOME").unwrap_or_default();
+    Ok(TranscriptStats {
+        messages,
+        text_bytes,
+        oldest_ts_ms,
+        keep_days: retention_days(),
+        export_dir: format!("{home}/.muster/exports"),
+    })
+}
+
+/// 记一笔正文治理事件。**审计写失败即操作失败**——正文治理必须留痕,
+/// 否则"删得掉"就成了"删得掉且没人知道",那是另一回事。
+fn append_transcript_event(b: &Backend, body: EventBody) -> Result<(), String> {
+    let me = current_principal();
+    b.audit
+        .lock()
+        .unwrap()
+        .append(NewEvent {
+            ts_ms: None,
+            actor: Actor::human(&me.id),
+            scope: Scope::default(),
+            run_id: None,
+            session_id: None,
+            policy_version: Some("policy-v1".into()),
+            label: None,
+            locality: None,
+            body,
+        })
+        .map(|_| ())
+        .map_err(|e| format!("审计写入失败,操作已取消:{e}"))
+}
+
+#[tauri::command]
+fn transcript_export(
+    state: State<'_, AppState>,
+    kind: String,
+    value: Option<String>,
+) -> Result<String, String> {
+    let sel = Selector::parse(&kind, value)?;
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let rows = b.state.lock().unwrap().select(&sel).map_err(|e| e.to_string())?;
+
+    let mut jsonl = String::new();
+    for m in &rows {
+        jsonl.push_str(&serde_json::to_string(m).map_err(|e| e.to_string())?);
+        jsonl.push('\n');
+    }
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let dir = format!("{home}/.muster/exports");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {dir} 失败:{e}"))?;
+    let path = format!("{dir}/transcript-{}.jsonl", now_ms());
+    std::fs::write(&path, jsonl.as_bytes()).map_err(|e| format!("写入 {path} 失败:{e}"))?;
+
+    append_transcript_event(b, EventBody::TranscriptExport {
+        selector: sel.tag(None),
+        exported: rows.len() as u64,
+        content_hash: ContentHash::sha256(jsonl.as_bytes()),
+    })?;
+    Ok(path)
+}
+
+#[tauri::command]
+fn transcript_purge(
+    state: State<'_, AppState>,
+    kind: String,
+    value: Option<String>,
+) -> Result<u64, String> {
+    let sel = Selector::parse(&kind, value)?;
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    purge_and_record(b, &sel, None)
+}
+
+/// 删除 + 留痕。**先取区间再删**:删完就问不出"删掉的是哪一段"了。
+fn purge_and_record(b: &Backend, sel: &Selector, keep_days: Option<u32>) -> Result<u64, String> {
+    let store = b.state.lock().unwrap();
+    let doomed = store.select(sel).map_err(|e| e.to_string())?;
+    if doomed.is_empty() {
+        return Ok(0);
+    }
+    let oldest = doomed.iter().map(|m| m.ts_ms as u64).min();
+    let newest = doomed.iter().map(|m| m.ts_ms as u64).max();
+    let n = store.purge(sel).map_err(|e| e.to_string())?;
+    drop(store);
+
+    append_transcript_event(b, EventBody::TranscriptPurge {
+        selector: sel.tag(keep_days),
+        deleted: n,
+        oldest_ts_ms: oldest,
+        newest_ts_ms: newest,
+    })?;
+    Ok(n)
+}
+
 #[tauri::command]
 fn roster_counts_cmd(state: State<'_, AppState>) -> Result<Vec<TeamCountOut>, String> {
     let guard = state.0.lock().unwrap();
@@ -1783,6 +2024,9 @@ fn main() {
             roster_stats,
             roster_counts_cmd,
             audit_archive_broken,
+            transcript_stats,
+            transcript_export,
+            transcript_purge,
             approvals_pending,
             approvals_decide,
             capsules_list,
@@ -1795,4 +2039,92 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");
+}
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::*;
+
+    fn store_with(msgs: &[(&str, &str, Option<&str>)]) -> (tempfile::TempDir, StateStore) {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state.db");
+        let s = StateStore::open(path.to_str().unwrap()).unwrap();
+        for (chan, text, run) in msgs {
+            s.insert(chan, "user", text, *run, "done");
+        }
+        (d, s)
+    }
+
+    /// 能导出什么就能删什么:两边共用同一套 Selector,不留"看得见却删不掉"的角落。
+    #[test]
+    fn select_and_purge_agree_on_every_selector() {
+        for (kind, value, expect) in [
+            ("all", None, 3),
+            ("channel", Some("platform".to_string()), 2),
+            ("run", Some("RUN-1".to_string()), 1),
+        ] {
+            let (_d, s) = store_with(&[
+                ("platform", "甲", Some("RUN-1")),
+                ("platform", "乙", None),
+                ("pay", "丙", None),
+            ]);
+            let sel = Selector::parse(kind, value).unwrap();
+            assert_eq!(s.select(&sel).unwrap().len(), expect, "{kind} 选取数");
+            assert_eq!(s.purge(&sel).unwrap(), expect as u64, "{kind} 删除数");
+            assert_eq!(s.select(&sel).unwrap().len(), 0, "{kind} 删完应为空");
+        }
+    }
+
+    /// 保留期只删过期的,不碰新的。
+    #[test]
+    fn retention_only_removes_what_is_past_the_cutoff() {
+        let (_d, s) = store_with(&[("platform", "旧", None), ("platform", "新", None)]);
+        // 把第一条改成 100 天前
+        let old_ts = now_ms() as i64 - 100 * 86_400_000;
+        s.conn
+            .execute("UPDATE messages SET ts_ms = ?1 WHERE id = 1", rusqlite::params![old_ts])
+            .unwrap();
+
+        let cutoff = now_ms().saturating_sub(90 * 86_400_000);
+        assert_eq!(s.purge(&Selector::OlderThan(cutoff)).unwrap(), 1);
+        let left = s.select(&Selector::All).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].text, "新", "只该删过期的那条");
+    }
+
+    /// **删了就要真的从文件里消失。** 只 DELETE 不 VACUUM 的话,SQLite 只把页
+    /// 标记为空闲,正文仍躺在文件里,`strings` 一读就出来——对一个以"删得掉"
+    /// 为卖点的功能来说那是假删。
+    #[test]
+    fn purged_text_is_gone_from_the_file_not_just_from_queries() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state.db");
+        let secret = "sk-live-绝密令牌-9f2c1a";
+        {
+            let s = StateStore::open(path.to_str().unwrap()).unwrap();
+            for _ in 0..50 {
+                s.insert("platform", "user", secret, None, "done");
+            }
+            let raw = std::fs::read(&path).unwrap();
+            assert!(
+                String::from_utf8_lossy(&raw).contains(secret),
+                "前提检查:删之前正文确实在文件里"
+            );
+            assert_eq!(s.purge(&Selector::All).unwrap(), 50);
+        }
+        let raw = std::fs::read(&path).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&raw).contains(secret),
+            "删除后正文仍能在文件里被找到——这是假删"
+        );
+    }
+
+    /// 正文治理的口径串进审计,且**不含正文**。
+    #[test]
+    fn selector_tags_carry_scope_but_never_content() {
+        assert_eq!(Selector::All.tag(None), "all");
+        assert_eq!(Selector::Channel("platform".into()).tag(None), "channel:platform");
+        assert_eq!(Selector::Run("RUN-9".into()).tag(None), "run:RUN-9");
+        assert_eq!(Selector::OlderThan(0).tag(Some(90)), "retention:90d");
+    }
 }

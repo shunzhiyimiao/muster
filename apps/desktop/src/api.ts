@@ -174,6 +174,15 @@ export interface TeamCount {
   people: number;
   agents: number;
 }
+/** 正文存储(desktop-state.db)的体量与保留期 */
+export interface TranscriptStats {
+  messages: number;
+  text_bytes: number;
+  oldest_ts_ms: number | null;
+  /** null = 未开启保留期,正文永久保留 */
+  keep_days: number | null;
+  export_dir: string;
+}
 export interface PendingApprovalOut {
   approval_id: string;
   ts_ms: number;
@@ -241,6 +250,12 @@ export const api = {
   rosterCounts: () => invoke<TeamCount[]>("roster_counts_cmd"),
   /** 封存断裂的审计链并重开一条;返回封存后的路径 */
   auditArchiveBroken: () => invoke<string>("audit_archive_broken"),
+  transcriptStats: () => invoke<TranscriptStats>("transcript_stats"),
+  /** kind: all | channel | run | older_than_days */
+  transcriptExport: (kind: string, value?: string) =>
+    invoke<string>("transcript_export", { kind, value: value ?? null }),
+  transcriptPurge: (kind: string, value?: string) =>
+    invoke<number>("transcript_purge", { kind, value: value ?? null }),
   approvalsPending: () => invoke<PendingApprovalOut[]>("approvals_pending"),
   approvalsDecide: (runId: string, granted: boolean, note?: string) =>
     invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),

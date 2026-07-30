@@ -386,7 +386,7 @@ export default function App() {
               <ConsoleHome home={home} pending={approvals}
                 onGoApprovals={() => { setModule("team"); setView("channel"); }} />
             )}
-            {view === "audit" && <AuditCenter rows={audit} chain={chain} onRefresh={refreshAll} />}
+            {view === "audit" && <AuditCenter rows={audit} chain={chain} onRefresh={refreshAll} channels={channels} />}
             {view === "phome" && (
               <PersonalHome me={me} personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
                 allMsgs={chat.msgs} channels={channels}

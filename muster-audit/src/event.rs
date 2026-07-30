@@ -298,6 +298,36 @@ pub enum EventBody {
         output_bytes: u64,
     },
 
+    /// 正文存储侧被清理(保留期到期 / 按频道或按 run 删除)。
+    ///
+    /// **删正文本身也是要留档的事**。链里只有哈希,所以删掉正文不会动摇证据
+    /// (见 store.rs 的 `deleting_the_plaintext_store_does_not_break_the_chain`);
+    /// 但如果删得悄无声息,后来的人翻到一段有 `model.call` 却读不到对话的历史,
+    /// 就分不清是**被删了**还是**从来没有过**——那是两件完全不同的事。
+    ///
+    /// 本事件只记范围与条数,不记被删的内容(记了就等于没删)。
+    #[serde(rename = "transcript.purge")]
+    TranscriptPurge {
+        /// 清理口径:`retention:<天数>` / `channel:<id>` / `run:<id>` / `all`。
+        selector: String,
+        deleted: u64,
+        /// 被删区间(便于回答"哪段历史不在了");无删除时为 `None`。
+        oldest_ts_ms: Option<u64>,
+        newest_ts_ms: Option<u64>,
+    },
+
+    /// 正文存储侧被导出。
+    ///
+    /// 导出即**正文离开了本机的管辖范围**,和外发一样值得记一笔:
+    /// 记条数与落地路径的哈希,不记路径原文(路径本身可能带用户名等信息)。
+    #[serde(rename = "transcript.export")]
+    TranscriptExport {
+        selector: String,
+        exported: u64,
+        /// 导出文件内容的哈希——事后可验"那份导出有没有被改过"。
+        content_hash: ContentHash,
+    },
+
     /// 上一条审计链验证失败,已被封存,本链自此重开。
     ///
     /// **断链本身就是要留档的事**。封存而不是删除:坏掉的那份留在盘上供取证,
@@ -343,6 +373,8 @@ impl EventBody {
             EventBody::CapsuleVerify { .. } => "capsule.verify",
             EventBody::CapsuleAdopt { .. } => "capsule.adopt",
             EventBody::CommandRun { .. } => "command.run",
+            EventBody::TranscriptPurge { .. } => "transcript.purge",
+            EventBody::TranscriptExport { .. } => "transcript.export",
             EventBody::AuditArchived { .. } => "audit.archived",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",

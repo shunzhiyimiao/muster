@@ -24,3 +24,6 @@ muster-runner = { path = "../../../muster-runner" }
 muster-identity = { path = "../../../muster-identity" }
 # C1 会话持久化:桌面本地状态库(与审计库分离——审计只存哈希,正文在这)
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

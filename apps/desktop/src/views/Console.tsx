@@ -1,11 +1,11 @@
 /* 控制台:中控台(真实数据版 HomeView)+ 审计中心(真实哈希链) */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle, BadgeCheck, Cloud, HardDrive, RefreshCw, Shield, ShieldCheck, Zap,
 } from "lucide-react";
 import { T } from "../theme";
 import { ApRow, Card, ChipDd, Kpi, LegRow, Pct, Tag, TodoRow } from "../ui";
-import { AuditRow, ChainStatus, HomeStats, PendingApprovalOut, fmtBytes, fmtDate, fmtTime } from "../api";
+import { api, AuditRow, ChainStatus, HomeStats, PendingApprovalOut, TranscriptStats, fmtBytes, fmtDate, fmtTime } from "../api";
 
 const WEEKDAY_ZH = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -223,13 +223,16 @@ export function AuditCenter({
   rows,
   chain,
   onRefresh,
+  channels,
 }: {
   rows: AuditRow[];
   chain: ChainStatus | null;
   onRefresh: () => void;
+  channels: { id: string; name: string }[];
 }) {
   return (
     <div className="px-7 pb-8 pt-2 flex flex-col gap-4">
+      <TranscriptCard channels={channels} onChanged={onRefresh} />
       <div className="flex items-center gap-2.5">
         {chain && (
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl"
@@ -264,5 +267,110 @@ export function AuditCenter({
         </div>
       </Card>
     </div>
+  );
+}
+
+/// 正文存储治理:导出与删除。
+///
+/// 为什么放在审计中心而不是设置页:这两件事只有跟"链只存哈希"摆在一起看
+/// 才讲得通——**删的是正文,证据一条不动**,上面那行「哈希链完整 · N 行」
+/// 在删完之后仍然是绿的。分开放就变成一个孤零零的删除按钮了。
+function TranscriptCard({
+  channels,
+  onChanged,
+}: {
+  channels: { id: string; name: string }[];
+  onChanged: () => void;
+}) {
+  const [st, setSt] = useState<TranscriptStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [target, setTarget] = useState("all");
+
+  const load = () => {
+    api.transcriptStats().then(setSt).catch(() => {});
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, []);
+
+  const sel = (): [string, string | undefined] =>
+    target === "all" ? ["all", undefined] : ["channel", target];
+
+  const run = (fn: () => Promise<string>) => {
+    setBusy(true);
+    fn()
+      .then((m) => { setMsg(m); load(); onChanged(); })
+      .catch((e) => setMsg(`失败:${e}`))
+      .finally(() => setBusy(false));
+  };
+
+  const label = target === "all" ? "全部" : `#${channels.find((c) => c.id === target)?.name ?? target}`;
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-center gap-2">
+        <b className="text-[15px]">正文存储</b>
+        <span className="text-[11px]" style={{ color: T.sub }}>
+          对话原文与工具转录落在这里;审计链里只有它们的哈希
+        </span>
+        <span className="ml-auto text-[11px]" style={{ color: T.faint }}>~/.muster/desktop-state.db</span>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3 mt-3.5">
+        {[
+          [st ? String(st.messages) : "—", "消息条数"],
+          [st ? fmtBytes(st.text_bytes) : "—", "正文体量"],
+          [st?.oldest_ts_ms ? fmtDate(st.oldest_ts_ms) : "—", "最早一条"],
+          [st?.keep_days ? `${st.keep_days} 天` : "永久保留", "保留期"],
+        ].map(([v, l]) => (
+          <div key={l} className="rounded-xl p-3" style={{ background: T.panel }}>
+            <div className="text-[15px] font-extrabold">{v}</div>
+            <div className="text-[10.5px] mt-0.5" style={{ color: T.sub }}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2 mt-3.5 flex-wrap">
+        <select value={target} onChange={(e) => setTarget(e.target.value)}
+          className="text-xs px-3 py-2 rounded-xl" style={{ background: T.soft, color: T.sub }}>
+          <option value="all">全部对话</option>
+          {channels.map((c) => <option key={c.id} value={c.id}>#{c.name}</option>)}
+        </select>
+
+        <button disabled={busy} onClick={() => run(() => {
+          const [k, v] = sel();
+          return api.transcriptExport(k, v).then((p) => `已导出 ${label} → ${p}`);
+        })} className="text-xs font-semibold px-3.5 py-2 rounded-xl"
+          style={{ background: T.indigoSoft, color: T.indigo, opacity: busy ? 0.5 : 1 }}>
+          导出 JSONL
+        </button>
+
+        <button disabled={busy || !st?.messages} onClick={() => run(() => {
+          const [k, v] = sel();
+          return api.transcriptPurge(k, v).then((n) => `已删除 ${label} 的 ${n} 条正文;哈希链不受影响`);
+        })} className="text-xs font-semibold px-3.5 py-2 rounded-xl"
+          title="删除正文不会动审计链——链里只有哈希"
+          style={{ background: T.redSoft, color: T.red, opacity: busy || !st?.messages ? 0.45 : 1 }}>
+          删除正文
+        </button>
+
+        <span className="text-[10.5px] ml-auto" style={{ color: T.faint }}>
+          {st?.keep_days
+            ? `保留期已开启,每次启动自动清理超期正文`
+            : `保留期未开启:设 MUSTER_TRANSCRIPT_KEEP_DAYS=90 后重启即生效`}
+        </span>
+      </div>
+
+      {msg && (
+        <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.soft, color: T.sub }}>
+          {msg}
+        </div>
+      )}
+      <div className="mt-2 text-[10.5px] leading-relaxed" style={{ color: T.faint }}>
+        删除会连同 VACUUM 一起做——只 DELETE 的话 SQLite 仅把页标记为空闲,正文仍在文件里。
+        删除与导出各自写一条审计事件(transcript.purge / transcript.export),
+        只记条数与范围,不记内容。
+      </div>
+    </Card>
   );
 }
