@@ -378,6 +378,12 @@ export default function App() {
                     .then((msg) => { setNotice(msg); refreshAll(); })
                     .catch((e) => setNotice(`锻造失败:${e}`));
                 }}
+                onAdopt={(capsuleId) => {
+                  const toTeam = teams.find((t) => t.id === team)?.name ?? "平台组";
+                  api.capsuleAdopt(capsuleId, toTeam)
+                    .then((msg) => { setNotice(msg); refreshAll(); })
+                    .catch((e) => setNotice(`${e}`));
+                }}
                 onVerify={(capsuleId) => {
                   setNotice(`正在影子重放 ${capsuleId}…`);
                   api.capsuleVerify(capsuleId)

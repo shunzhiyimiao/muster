@@ -1036,6 +1036,10 @@ struct CapsuleOut {
     name: String,
     version: String,
     scope: String,
+    /// 密级(继承自源运行;跨团队引入时随包迁移,不可降密)。
+    label: Option<String>,
+    /// 所属团队(锻造事件的 scope.team)。
+    owner_team: Option<String>,
     source_run_id: String,
     forged_ms: u64,
     forged_by: String,
@@ -1063,6 +1067,8 @@ fn capsules_list(state: State<'_, AppState>) -> Result<Vec<CapsuleOut>, String> 
             source_run_id: c.source_run_id,
             forged_ms: c.forged_ms,
             forged_by: c.forged_by,
+            label: c.label,
+            owner_team: c.owner_team,
             verify_passed: c.verify_passed,
             verify_total: c.verify_total,
             adopted: c.adopted,
@@ -1140,6 +1146,22 @@ fn capsule_forge(
     )
     .map_err(|e| e.to_string())?;
     Ok(format!("已锻造 {} · {}(源运行 {run_id})", out.spec.name, out.capsule_id))
+}
+
+/// 跨团队引入。**不接受目标密级参数**——密级只能随包迁移,引入不得降密。
+#[tauri::command]
+fn capsule_adopt(
+    state: State<'_, AppState>,
+    capsule_id: String,
+    to_team: String,
+) -> Result<String, String> {
+    let audit = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.audit.clone()
+    };
+    muster_runner::adopt(&audit, "owner", POLICY_VERSION, &capsule_id, &to_team)
+        .map(|o| o.detail)
+        .map_err(|e| e.to_string())
 }
 
 fn capsule_store() -> Result<muster_runner::CapsuleStore, String> {
@@ -1411,7 +1433,8 @@ fn main() {
             capsules_list,
             forgeable_runs,
             capsule_forge,
-            capsule_verify
+            capsule_verify,
+            capsule_adopt
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

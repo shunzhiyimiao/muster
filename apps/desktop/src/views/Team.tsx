@@ -557,7 +557,7 @@ const Note = ({ k, who, ai, fresh, children }: { k: string; who?: string; ai?: b
 /* ==================== 能力库(P4 概念) ==================== */
 
 export function CapsView({
-  trace, setTrace, introduced, live, forgeable, onForge, onVerify,
+  trace, setTrace, introduced, live, forgeable, onForge, onVerify, onAdopt,
 }: {
   trace: boolean;
   setTrace: (fn: (t: boolean) => boolean) => void;
@@ -566,6 +566,7 @@ export function CapsView({
   forgeable: ForgeableRun[];
   onForge: (runId: string, goal: string) => void;
   onVerify: (capsuleId: string) => void;
+  onAdopt: (capsuleId: string) => void;
 }) {
   return (
     <div className="px-7 pb-8 pt-2">
@@ -578,7 +579,7 @@ export function CapsView({
         </span>
       </div>
 
-      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} />
+      <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} onAdopt={onAdopt} />
 
       <div className="flex items-center gap-2 mb-2.5 mt-6">
         <b className="text-[13px]">概念能力</b>
@@ -674,11 +675,13 @@ function ForgeSection({
   forgeable,
   onForge,
   onVerify,
+  onAdopt,
 }: {
   live: CapsuleOut[];
   forgeable: ForgeableRun[];
   onForge: (runId: string, goal: string) => void;
   onVerify: (capsuleId: string) => void;
+  onAdopt: (capsuleId: string) => void;
 }) {
   const [picking, setPicking] = useState<string | null>(null);
   const [goal, setGoal] = useState("");
@@ -705,13 +708,14 @@ function ForgeSection({
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-extrabold tracking-widest" style={{ color: T.indigo }}>CAPSULE</span>
                 <Tag tone="grn">真实锻造</Tag>
+                {c.label && <LvTag level={c.label} />}
                 <span className="ml-auto"><Tag>{c.scope}</Tag></span>
               </div>
               <div className="mt-2.5 text-[15px]">
                 <b>{c.name}</b> <span className="text-[11.5px]" style={{ color: T.sub }}>v{c.version}</span>
               </div>
               <div className="flex items-center gap-2 mt-2 text-[10.5px] flex-wrap" style={{ color: T.faint }}>
-                <GitBranch size={11} /> 源运行 {c.source_run_id} · 锻造于 {fmtDate(c.forged_ms)} · {c.forged_by}
+                <GitBranch size={11} /> 源运行 {c.source_run_id} · {c.owner_team ?? "未署名团队"} · {fmtDate(c.forged_ms)}
               </div>
               <div className="flex items-center gap-3 mt-3 text-[11.5px]">
                 {c.verified_rate === null ? (
@@ -735,9 +739,19 @@ function ForgeSection({
                 >
                   <Play size={11} /> {verifying === c.capsule_id ? "重放中…" : "影子重放验真"}
                 </button>
-                <span className="text-[9.5px]" style={{ color: T.faint }}>
-                  在隔离分支上重跑并比对产出;环境漂移时报"无法验真"而不计入验真率
-                </span>
+                {c.scope !== "private" && (
+                  <button
+                    onClick={() => onAdopt(c.capsule_id)}
+                    className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                    style={{ background: T.soft, color: T.sub }}
+                  >
+                    <Plus size={11} /> 引入本团队
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 text-[9.5px] leading-relaxed" style={{ color: T.faint }}>
+                验真在隔离分支上重跑并比对产出,环境漂移时报"无法验真"而不计入验真率;
+                引入时<b>密级随包迁移、不可降密</b>。
               </div>
             </Card>
           ))}

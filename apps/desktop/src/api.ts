@@ -143,6 +143,9 @@ export interface CapsuleOut {
   source_run_id: string;
   forged_ms: number;
   forged_by: string;
+  /** 密级:跨团队引入时随包迁移,不可降密 */
+  label: string | null;
+  owner_team: string | null;
   verify_passed: number;
   verify_total: number;
   /** null = 尚未验真(与"验真失败"必须区分) */
@@ -227,6 +230,8 @@ export const api = {
   capsuleForge: (runId: string, goal: string, visibility: string) =>
     invoke<string>("capsule_forge", { runId, goal, visibility }),
   capsuleVerify: (capsuleId: string) => invoke<string>("capsule_verify", { capsuleId }),
+  capsuleAdopt: (capsuleId: string, toTeam: string) =>
+    invoke<string>("capsule_adopt", { capsuleId, toTeam }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {

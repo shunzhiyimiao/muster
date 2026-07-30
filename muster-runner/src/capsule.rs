@@ -160,13 +160,23 @@ pub fn forge(
 
     // 重放引用**原样取自源运行**,不重新计算——重算会得到"锻造时刻"的环境,
     // 而我们要的是"那次成功发生时"的环境。
-    let replay: ReplayRefs = {
+    //
+    // 密级同理:**能力的密级继承自源运行**。能力是从那次运行提炼出来的,
+    // 那次运行处理的是什么密级的数据,提炼出的能力就带着什么密级——
+    // 这是"密级跟数据走"在能力资产上的延伸,也是跨团队引入时"密级随包迁移"
+    // 得以成立的前提(没有密级就无所谓迁移)。
+    let (replay, label): (ReplayRefs, Option<muster_route::Sensitivity>) = {
         let store = audit.lock().unwrap();
         let ev = run_start_of(store.conn(), source_run_id)
             .map_err(|e| CapsuleError::Audit(e.to_string()))?
             .ok_or_else(|| CapsuleError::NotForgeable("找不到 run.start".into()))?;
-        serde_json::from_value(ev.payload["replay"].clone())
-            .map_err(|e| CapsuleError::BadReplay(e.to_string()))?
+        let r = serde_json::from_value(ev.payload["replay"].clone())
+            .map_err(|e| CapsuleError::BadReplay(e.to_string()))?;
+        // 优先取事件信封的 label(权威),回退到 payload 里的 label
+        let l = ev.label.or_else(|| {
+            serde_json::from_value(ev.payload["label"].clone()).ok()
+        });
+        (r, l)
     };
 
     let capsule_id = format!("CAP-{source_run_id}");
@@ -183,7 +193,7 @@ pub fn forge(
             run_id: Some(source_run_id.to_owned()),
             session_id: None,
             policy_version: Some(policy_version.to_owned()),
-            label: None,
+            label, // 继承自源运行——没有密级就谈不上"密级随包迁移"
             locality: None,
             body: EventBody::CapsuleForge {
                 capsule_id: capsule_id.clone(),
@@ -424,12 +434,135 @@ pub async fn verify(
     })
 }
 
+// ---------------------------------------------------------------- 跨团队引入
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdoptOutcome {
+    pub capsule_id: String,
+    pub version: String,
+    pub from_team: String,
+    pub to_team: String,
+    /// 随包迁移的密级(**与源侧一致,引入不改密级**)。
+    pub label: String,
+    pub detail: String,
+}
+
+/// 跨团队引入一个 Capsule。
+///
+/// ## 一条不可协商的规则:密级随包迁移,引入不得降密
+///
+/// 引入方常有动机把密级调低("我们团队用不着那么严")。但能力是从
+/// **某次处理特定密级数据的运行**里提炼的,它承载的方法与假设都属于那个密级
+/// 的语境。允许引入时降密,等于给"密级只升不降"开了一个后门:
+/// 把 restricted 的东西复制一份改成 internal 就绕过了。
+///
+/// 所以本函数**不接受目标密级参数**——密级只能来自源侧的 `capsule.forge`。
+///
+/// ## 其余规则
+///
+/// - `scope = private` 不可引入(私有能力就是不打算给别人用的);
+/// - 同一 Capsule 到同一团队只引入一次;
+/// - 引入是**事件**不是复制:能力仍是同一个 capsule_id,验真记录共享,
+///   不会因为换了团队就重新从零验真。
+pub fn adopt(
+    audit: &Arc<Mutex<AuditStore>>,
+    actor_badge: &str,
+    policy_version: &str,
+    capsule_id: &str,
+    to_team: &str,
+) -> Result<AdoptOutcome, CapsuleError> {
+    let (forge_ev, label, visibility, version, from_team) = {
+        let store = audit.lock().unwrap();
+        let evs = muster_audit::recent_events_of(store.conn(), "capsule.forge", 200)
+            .map_err(|e| CapsuleError::Audit(e.to_string()))?;
+        let ev = evs
+            .into_iter()
+            .find(|e| e.payload["capsule_id"].as_str() == Some(capsule_id))
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_owned()))?;
+        let label = ev.label.ok_or_else(|| {
+            CapsuleError::NotForgeable(
+                "该 Capsule 没有密级(锻造于旧版本),无法安全引入——密级随包迁移是硬规则".into(),
+            )
+        })?;
+        let visibility = ev.payload["scope"].as_str().unwrap_or("private").to_owned();
+        let version = ev.payload["version"].as_str().unwrap_or("1.0.0").to_owned();
+        let from = ev.scope.team.clone().unwrap_or_else(|| "未署名团队".into());
+        (ev.event_id.clone(), label, visibility, version, from)
+    };
+    let _ = forge_ev;
+
+    if visibility == "private" {
+        return Err(CapsuleError::NotForgeable(
+            "该 Capsule 的可见范围是 private,不可跨团队引入;需先由所有者改为 team/org".into(),
+        ));
+    }
+    if from_team == to_team {
+        return Err(CapsuleError::NotForgeable(format!("{to_team} 就是该 Capsule 的所属团队,无需引入")));
+    }
+
+    // 重复引入检查(append-only,不靠删行去重)
+    {
+        let store = audit.lock().unwrap();
+        let adopted = muster_audit::recent_events_of(store.conn(), "capsule.adopt", 500)
+            .map_err(|e| CapsuleError::Audit(e.to_string()))?;
+        if adopted.iter().any(|e| {
+            e.payload["capsule_id"].as_str() == Some(capsule_id)
+                && e.payload["to_team"].as_str() == Some(to_team)
+        }) {
+            return Err(CapsuleError::NotForgeable(format!("{to_team} 已引入过该 Capsule")));
+        }
+    }
+
+    audit
+        .lock()
+        .unwrap()
+        .append(NewEvent {
+            ts_ms: None,
+            actor: Actor::human(actor_badge),
+            scope: Scope { team: Some(to_team.to_owned()), channel: None },
+            run_id: None,
+            session_id: None,
+            policy_version: Some(policy_version.to_owned()),
+            // 引入事件带着**同一个密级**——这就是"随包迁移"的字面实现
+            label: Some(label),
+            locality: None,
+            body: EventBody::CapsuleAdopt {
+                capsule_id: capsule_id.to_owned(),
+                version: version.clone(),
+                from_team: from_team.clone(),
+                to_team: to_team.to_owned(),
+                label,
+            },
+        })
+        .map_err(|e| CapsuleError::Audit(e.to_string()))?;
+
+    let label_s = format!("{label:?}").to_lowercase();
+    Ok(AdoptOutcome {
+        capsule_id: capsule_id.to_owned(),
+        version,
+        from_team: from_team.clone(),
+        to_team: to_team.to_owned(),
+        detail: format!(
+            "{to_team} 已引入 {capsule_id}(来自 {from_team});密级 {label_s} 随包迁移,验真记录共享"
+        ),
+        label: label_s,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use muster_audit::{capsules, ModelRef, RunOutcome};
 
     fn store_with_run(run_id: &str, success: bool) -> Arc<Mutex<AuditStore>> {
+        store_with_run_labeled(run_id, success, muster_route::Sensitivity::Open)
+    }
+
+    fn store_with_run_labeled(
+        run_id: &str,
+        success: bool,
+        label: muster_route::Sensitivity,
+    ) -> Arc<Mutex<AuditStore>> {
         let mut s = AuditStore::open_in_memory().unwrap();
         let replay = ReplayRefs {
             repo_snapshot: ContentHash::sha256(b"git-head:deadbeef"),
@@ -449,14 +582,14 @@ mod tests {
             run_id: Some(run_id.to_owned()),
             session_id: None,
             policy_version: Some("policy-v1".into()),
-            label: None,
+            label: Some(label),
             locality: None,
             body,
         };
         s.append(mk(EventBody::RunStart {
             task_kind: "chat.tools.v0".into(),
             replay,
-            label: muster_route::Sensitivity::Open,
+            label,
             locality_planned: muster_provider::Locality::Cloud,
         }))
         .unwrap();
@@ -593,6 +726,62 @@ mod tests {
         let rows = capsules(s.conn()).unwrap();
         assert_eq!(rows[0].verify_total, 0, "没法验真时不得记账");
         assert_eq!(rows[0].verified_rate(), None);
+    }
+
+    /// 能力的密级继承自源运行——没有密级就谈不上"随包迁移"。
+    #[test]
+    fn capsule_inherits_label_from_source_run() {
+        let audit = store_with_run_labeled("RUN-L", true, muster_route::Sensitivity::Internal);
+        forge(&audit, "A-007", "policy-v1", "RUN-L", spec(), "team", Scope::default()).unwrap();
+        let s = audit.lock().unwrap();
+        let chain = muster_audit::run_chain(s.conn(), "RUN-L").unwrap();
+        let forge_ev = chain.iter().find(|e| e.payload["event_type"] == "capsule.forge").unwrap();
+        assert_eq!(forge_ev.label, Some(muster_route::Sensitivity::Internal), "密级必须继承");
+    }
+
+    /// **引入不得降密**:函数根本不收目标密级参数,密级只能来自源侧。
+    /// 允许降密等于给"密级只升不降"开后门——复制一份改低就绕过了。
+    #[test]
+    fn adopt_carries_label_and_offers_no_way_to_lower_it() {
+        let audit = store_with_run_labeled("RUN-A", true, muster_route::Sensitivity::Restricted);
+        forge(&audit, "A-007", "policy-v1", "RUN-A", spec(), "org", Scope { team: Some("支付组".into()), channel: None })
+            .unwrap();
+
+        let out = adopt(&audit, "owner", "policy-v1", "CAP-RUN-A", "平台组").unwrap();
+        assert_eq!(out.label, "restricted", "密级原样迁移,不因换团队而变");
+        assert_eq!((out.from_team.as_str(), out.to_team.as_str()), ("支付组", "平台组"));
+
+        let s = audit.lock().unwrap();
+        let rows = capsules(s.conn()).unwrap();
+        assert_eq!(rows[0].adopted, 1);
+        // 引入事件本身也带着同一密级
+        let ev = muster_audit::recent_events_of(s.conn(), "capsule.adopt", 10).unwrap();
+        assert_eq!(ev[0].label, Some(muster_route::Sensitivity::Restricted));
+        assert_eq!(ev[0].payload["label"], "restricted");
+    }
+
+    #[test]
+    fn adopt_refuses_private_same_team_and_duplicates() {
+        // private 不可引入
+        let a1 = store_with_run_labeled("RUN-P", true, muster_route::Sensitivity::Open);
+        forge(&a1, "A-007", "policy-v1", "RUN-P", spec(), "private", Scope { team: Some("支付组".into()), channel: None })
+            .unwrap();
+        let e = adopt(&a1, "owner", "policy-v1", "CAP-RUN-P", "平台组").unwrap_err();
+        assert!(e.to_string().contains("private"), "{e}");
+
+        // 同团队无需引入
+        let a2 = store_with_run_labeled("RUN-S", true, muster_route::Sensitivity::Open);
+        forge(&a2, "A-007", "policy-v1", "RUN-S", spec(), "org", Scope { team: Some("支付组".into()), channel: None })
+            .unwrap();
+        let e = adopt(&a2, "owner", "policy-v1", "CAP-RUN-S", "支付组").unwrap_err();
+        assert!(e.to_string().contains("无需引入"), "{e}");
+
+        // 重复引入被拒(append-only,不靠删行去重)
+        adopt(&a2, "owner", "policy-v1", "CAP-RUN-S", "平台组").unwrap();
+        let e = adopt(&a2, "owner", "policy-v1", "CAP-RUN-S", "平台组").unwrap_err();
+        assert!(e.to_string().contains("已引入过"), "{e}");
+        let s = a2.lock().unwrap();
+        assert_eq!(capsules(s.conn()).unwrap()[0].adopted, 1, "被拒的那次不得计数");
     }
 
     #[test]

@@ -50,8 +50,8 @@ pub mod worktree;
 
 pub use approval::{decide, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
 pub use capsule::{
-    draft_spec, forge, forge_and_store, verify, CapsuleError, CapsuleSpec, CapsuleStore,
-    ForgeOutcome, VerifyOutcome,
+    adopt, draft_spec, forge, forge_and_store, verify, AdoptOutcome, CapsuleError, CapsuleSpec,
+    CapsuleStore, ForgeOutcome, VerifyOutcome,
 };
 pub use runner::{
     run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec,

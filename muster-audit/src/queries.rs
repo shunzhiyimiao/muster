@@ -281,6 +281,10 @@ pub struct CapsuleRow {
     pub source_run_id: String,
     pub forged_ms: u64,
     pub forged_by: String,
+    /// 密级(继承自源运行;跨团队引入时随包迁移,不可降密)。
+    pub label: Option<String>,
+    /// 所属团队(锻造事件的 scope.team)。
+    pub owner_team: Option<String>,
     /// 影子重放:通过次数 / 总次数。
     pub verify_passed: u64,
     pub verify_total: u64,
@@ -304,12 +308,12 @@ WITH forge AS (
          json_extract(payload,'$.version')    AS ver,
          json_extract(payload,'$.scope')      AS scope,
          json_extract(payload,'$.source_run_id') AS src,
-         ts_ms, actor_id, event_id,
+         ts_ms, actor_id, event_id, label, team,
          ROW_NUMBER() OVER (PARTITION BY json_extract(payload,'$.capsule_id')
                             ORDER BY event_id DESC) AS rn
   FROM audit_event WHERE event_type = 'capsule.forge'
 )
-SELECT f.cid, f.name, f.ver, f.scope, f.src, f.ts_ms, f.actor_id,
+SELECT f.cid, f.name, f.ver, f.scope, f.src, f.ts_ms, f.actor_id, f.label, f.team,
   COALESCE((SELECT SUM(CASE WHEN json_extract(v.payload,'$.passed') THEN 1 ELSE 0 END)
             FROM audit_event v WHERE v.event_type='capsule.verify'
               AND json_extract(v.payload,'$.capsule_id') = f.cid), 0),
@@ -332,9 +336,11 @@ pub fn capsules(conn: &Connection) -> Result<Vec<CapsuleRow>, StoreError> {
             source_run_id: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
             forged_ms: r.get::<_, i64>(5)? as u64,
             forged_by: r.get(6)?,
-            verify_passed: r.get::<_, i64>(7)? as u64,
-            verify_total: r.get::<_, i64>(8)? as u64,
-            adopted: r.get::<_, i64>(9)? as u64,
+            label: r.get(7)?,
+            owner_team: r.get(8)?,
+            verify_passed: r.get::<_, i64>(9)? as u64,
+            verify_total: r.get::<_, i64>(10)? as u64,
+            adopted: r.get::<_, i64>(11)? as u64,
         })
     })?;
     let mut out = Vec::new();
