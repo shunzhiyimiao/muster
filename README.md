@@ -39,6 +39,14 @@ cargo run -p muster-eval -- --list
 | `muster-prompt` | A1 | Agent 系统提示词的唯一出处(执行器与评测同源) |
 | `apps/desktop` | P1-07~09 | 点将台桌面壳(Tauri 2 + React;独立工作区) |
 
+## 许可与第三方组件
+
+第三方依赖清单与许可证记录见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)
+(`cargo metadata` 生成,依赖变更后需重新生成)。Codex fork 遵循 Apache-2.0,
+义务落实见 `../muster-codex/NOTICE` 与 `FORK.md`。
+
+**Muster 自身的许可证尚未选定**——对外分发前必须先确定,详见上述文件。
+
 设计决策写在各 crate 的 `lib.rs` 文档注释与 README 里,**改代码前先读**。
 总体规划(16 周 P0–P6,任务号 P0-01…P6-08)与概念稿见 `docs/`;
 Codex 受控 fork 在同级目录 `../muster-codex`(分仓,保持最小 diff 以便 rebase 上游)。
