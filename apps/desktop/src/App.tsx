@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  CapsuleOut, ForgeableRun, PendingApprovalOut, RosterEntryOut, fmtBytes,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RosterEntryOut, WhoAmI, fmtBytes,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -64,6 +64,7 @@ export default function App() {
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
+  const [me, setMe] = useState<WhoAmI | null>(null);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
   const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
@@ -77,6 +78,7 @@ export default function App() {
     api.approvalsPending().then(setApprovals).catch(() => {});
     api.capsulesList().then(setCapsules).catch(() => {});
     api.forgeableRuns().then(setForgeable).catch(() => {});
+    api.whoami().then(setMe).catch(() => {});
   };
   const chat = useChat(refreshAll);
 
@@ -209,7 +211,10 @@ export default function App() {
                 <p className="text-[11px] mt-1 leading-relaxed" style={{ color: drillOn ? "#FFB3B5" : "#9FA3B5" }}>
                   {drillOn ? `全组织外联已切断,任务强制本地执行\n${drillId ?? ""}` : "季度合规窗口:切断外联,验证全组织本地执行能力"}
                 </p>
-                <button onClick={toggleDrill} className="mt-3 w-full py-2 rounded-xl text-xs font-semibold" style={{ background: drillOn ? T.red : T.indigo }}>
+                <button onClick={toggleDrill} disabled={!(me?.can.toggle_drill ?? true)}
+                  title={me?.can.toggle_drill ? "" : "需组织所有者/管理员角色"}
+                  className="mt-3 w-full py-2 rounded-xl text-xs font-semibold"
+                  style={{ background: drillOn ? T.red : T.indigo, opacity: (me?.can.toggle_drill ?? true) ? 1 : 0.45 }}>
                   {drillOn ? "结束演习并出报告" : "启动演习 →"}
                 </button>
                 {drillReport && !drillOn && (
@@ -330,7 +335,7 @@ export default function App() {
 
         {/* ===== 主区 ===== */}
         <main className="flex-1 min-w-0 overflow-y-auto flex flex-col">
-          <TopBar module={module} view={view} channelName={activeChannel?.name ?? channelId} teamName={activeChannel?.team ?? ""} streamed={streamed} drillOn={drillOn} />
+          <TopBar module={module} view={view} channelName={activeChannel?.name ?? channelId} teamName={activeChannel?.team ?? ""} streamed={streamed} drillOn={drillOn} me={me} />
           {notice && (
             <div className="mx-7 mt-2 px-3.5 py-2 rounded-xl text-xs flex items-center gap-2 fade" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
               <Sparkles size={13} /> {notice}
@@ -355,7 +360,7 @@ export default function App() {
                   <ChatPane channel={personalChannel} chat={chat} />
                 </Card>
                 <div className="w-72 shrink-0 overflow-y-auto flex flex-col gap-3">
-                  <ApprovalsPanel pending={approvals} onDecided={refreshAll} />
+                  <ApprovalsPanel pending={approvals} onDecided={refreshAll} canApprove={me?.can.approve_merge ?? true} />
                   <DiffPanel diff={chat.lastDiff} />
                 </div>
               </div>
@@ -364,7 +369,7 @@ export default function App() {
               <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed}
                 introduced={introduced} setIntroduced={setIntroduced}
                 openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")}
-                approvals={approvals} onApprovalsChanged={refreshAll} />
+                approvals={approvals} onApprovalsChanged={refreshAll} canApprove={me?.can.approve_merge ?? true} />
             )}
             {view === "roster" && (
               <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
@@ -560,6 +565,7 @@ function TopBar({
   teamName,
   streamed,
   drillOn,
+  me,
 }: {
   module: string;
   view: string;
@@ -567,6 +573,7 @@ function TopBar({
   teamName: string;
   streamed: boolean;
   drillOn: boolean;
+  me: WhoAmI | null;
 }) {
   const titles: Record<string, [string, string]> = {
     home: ["中控台", "全组织实时态势 · 每个数字 = 审计表一条 SQL"],
@@ -605,11 +612,15 @@ function TopBar({
         )}
         <button className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1px solid ${T.line}`, color: "#5A5E70" }}><Search size={15} /></button>
         <button className="w-9 h-9 rounded-full flex items-center justify-center" style={{ border: `1px solid ${T.line}`, color: "#5A5E70" }}><Bell size={15} /></button>
-        <div className="flex items-center gap-2 ml-1">
-          <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>A</div>
+        <div className="flex items-center gap-2 ml-1" title={me ? `身份来自 MUSTER_ROLE/MUSTER_USER;接 OIDC 后改由 iss+sub 解析` : ""}>
+          <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>
+            {(me?.display_name ?? "?").slice(0, 1).toUpperCase()}
+          </div>
           <div>
-            <div className="text-[13px] font-semibold">Alice</div>
-            <div className="text-[10px]" style={{ color: T.sub }}>平台组 · 组长</div>
+            <div className="text-[13px] font-semibold">{me?.display_name ?? "…"}</div>
+            <div className="text-[10px]" style={{ color: T.sub }}>
+              {me ? `${me.scope} · ${me.role_zh}` : "身份加载中"}
+            </div>
           </div>
         </div>
       </div>

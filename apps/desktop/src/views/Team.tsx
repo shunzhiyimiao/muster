@@ -25,6 +25,7 @@ export function ChannelView({
   goMeeting,
   approvals,
   onApprovalsChanged,
+  canApprove,
 }: {
   channel: Channel;
   chat: ChatState;
@@ -36,6 +37,7 @@ export function ChannelView({
   goMeeting: () => void;
   approvals: PendingApprovalOut[];
   onApprovalsChanged: () => void;
+  canApprove?: boolean;
 }) {
   const isPlatform = channel.id === "platform";
   const start = chat.lastStart?.channel_id === channel.id ? chat.lastStart : null;
@@ -149,7 +151,7 @@ export function ChannelView({
 
       {/* 频道资产 + 真实审批/路由/Diff/审计栏 */}
       <div className="w-72 shrink-0 flex flex-col gap-3 overflow-y-auto">
-        <ApprovalsPanel pending={approvals} onDecided={onApprovalsChanged} />
+        <ApprovalsPanel pending={approvals} onDecided={onApprovalsChanged} canApprove={canApprove} />
         <DiffPanel diff={chat.lastDiff} />
         {isPlatform && (
           <Card className="p-4">

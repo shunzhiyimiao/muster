@@ -9,10 +9,13 @@ export function ApprovalsPanel({
   pending,
   onDecided,
   compact,
+  canApprove = true,
 }: {
   pending: PendingApprovalOut[];
   onDecided: () => void;
   compact?: boolean;
+  /** P2:当前身份是否有裁决权;无权时不让人白点,直接说明原因 */
+  canApprove?: boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -77,24 +80,29 @@ export function ApprovalsPanel({
               </div>
             )}
 
+            {!canApprove && (
+              <div className="mt-2 rounded-lg px-2 py-1.5 text-[10px]" style={{ background: T.soft, color: T.sub }}>
+                当前身份无裁决权——裁决需覆盖本频道的审批人或管理员角色,且必须是人类。
+              </div>
+            )}
             <div className="flex gap-2 mt-2.5">
               <button
                 onClick={() => act(p.run_id ?? "", true)}
-                disabled={busy !== null || !p.worktree_exists}
+                disabled={busy !== null || !p.worktree_exists || !canApprove}
                 className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-[11px] font-semibold"
                 style={{
                   background: T.indigo,
                   color: "#fff",
-                  opacity: busy !== null || !p.worktree_exists ? 0.45 : 1,
+                  opacity: busy !== null || !p.worktree_exists || !canApprove ? 0.45 : 1,
                 }}
               >
                 <GitMerge size={11} /> {busy === p.run_id ? "处理中…" : "批准合入"}
               </button>
               <button
                 onClick={() => act(p.run_id ?? "", false)}
-                disabled={busy !== null}
+                disabled={busy !== null || !canApprove}
                 className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-semibold"
-                style={{ background: T.soft, color: T.sub, opacity: busy !== null ? 0.45 : 1 }}
+                style={{ background: T.soft, color: T.sub, opacity: busy !== null || !canApprove ? 0.45 : 1 }}
               >
                 <X size={11} /> 拒绝
               </button>

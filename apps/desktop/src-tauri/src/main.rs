@@ -181,6 +181,116 @@ impl StateStore {
     }
 }
 
+// ---------------------------------------------------------------- P2 当前身份
+
+/// 构建当前会话的主体。
+///
+/// **单机模式下部署者即组织所有者**——这是产品语义,不是偷懒:一台机器上的
+/// 个人本地版没有第二个人来授权,把自己降权毫无意义。
+///
+/// 但角色可用 `MUSTER_ROLE` 覆盖(owner/admin/group_admin/publisher/approver/
+/// member/guest),`MUSTER_ROLE_SCOPE` 指定作用域(缺省全组织)。这不是玩具开关:
+/// 权限层若永远返回 allow 就等于没接,**必须能被真实验证**——切成 guest 试一次
+/// 就知道拦不拦。演示时也用它展示"不同角色看到的不同结果"。
+///
+/// 接 OIDC 后此函数改为从 id_token 的 iss+sub 解析(§4.1:不能只用邮箱做主键),
+/// 判定逻辑与调用点一行不改。
+fn current_principal() -> muster_identity::Principal {
+    use muster_identity::{Principal, Role, RoleBinding, Scope};
+    let role = match std::env::var("MUSTER_ROLE").unwrap_or_default().as_str() {
+        "admin" => Role::OrgAdmin,
+        "group_admin" => Role::GroupAdmin,
+        "publisher" => Role::Publisher,
+        "approver" => Role::Approver,
+        "member" => Role::Member,
+        "guest" => Role::Guest,
+        _ => Role::OrgOwner,
+    };
+    let scope = match std::env::var("MUSTER_ROLE_SCOPE").ok().filter(|s| !s.is_empty()) {
+        Some(g) => Scope::Group(g),
+        None => Scope::Org,
+    };
+    let id = std::env::var("MUSTER_USER").unwrap_or_else(|_| "owner".into());
+    Principal::human(id.clone(), id, vec![RoleBinding { role, scope }])
+}
+
+/// UI 顶栏的真实身份(替代此前写死的 "Alice · 平台组 · 组长")。
+#[derive(Serialize)]
+struct WhoAmI {
+    id: String,
+    display_name: String,
+    kind: String,
+    role: String,
+    role_zh: String,
+    scope: String,
+    /// 当前身份能做哪些事(UI 据此禁用按钮,而不是点了才报错)。
+    can: std::collections::BTreeMap<String, bool>,
+}
+
+#[tauri::command]
+fn whoami() -> WhoAmI {
+    use muster_identity::{Action, Scope};
+    let p = current_principal();
+    let b = &p.bindings[0];
+    let (dir, proh) = (directory(), prohibitions());
+    let mut can = std::collections::BTreeMap::new();
+    for (key, action, target) in [
+        ("create_task", Action::CreateTask, Scope::Org),
+        ("approve_merge", Action::ApproveMerge, Scope::Org),
+        ("forge_capsule", Action::ForgeCapsule, Scope::Org),
+        ("adopt_capsule", Action::AdoptCapsule, Scope::Org),
+        ("toggle_drill", Action::ToggleDrill, Scope::Org),
+        ("change_policy", Action::ChangePolicy, Scope::Org),
+        ("view_audit", Action::ViewAudit, Scope::Org),
+    ] {
+        can.insert(
+            key.to_string(),
+            muster_identity::can(&p, &action, &target, &proh, &dir).allowed(),
+        );
+    }
+    WhoAmI {
+        id: p.id.clone(),
+        display_name: p.display_name.clone(),
+        kind: format!("{:?}", p.kind).to_lowercase(),
+        role: format!("{:?}", b.role).to_lowercase(),
+        role_zh: b.role.zh().to_string(),
+        scope: match &b.scope {
+            Scope::Org => "全组织".into(),
+            Scope::Group(g) => g.clone(),
+            Scope::Channel(c) => format!("#{c}"),
+        },
+        can,
+    }
+}
+
+/// 频道归属目录:组级授权能否覆盖组内频道,取决于这份事实。
+fn directory() -> muster_identity::Directory {
+    demo_channels().iter().filter(|c| !c.personal).fold(
+        muster_identity::Directory::default(),
+        |d, c| d.with_channel(c.id.clone(), c.team.clone()),
+    )
+}
+
+/// 组织级禁止策略(§4.4 最高优先级)。单机版暂无来源,留空但保留位置——
+/// 有了它,"冻结全组织写操作"这类应急开关才有地方落。
+fn prohibitions() -> muster_identity::OrgProhibitions {
+    muster_identity::OrgProhibitions::default()
+}
+
+/// 统一的权限闸门:拒绝时返回**分层理由**,直接可作为 UI 文案。
+fn require(
+    action: muster_identity::Action,
+    target: muster_identity::Scope,
+) -> Result<muster_identity::Principal, String> {
+    let p = current_principal();
+    let d = muster_identity::can(&p, &action, &target, &prohibitions(), &directory());
+    if d.allowed() {
+        Ok(p)
+    } else {
+        Err(d.reason_zh())
+    }
+}
+
 /// 进行中的演习(E6):id + 起始时刻,结束时用 drill_report 聚合窗口。
 struct DrillState {
     id: String,
@@ -739,6 +849,11 @@ async fn run_workspace_task(
         .into_iter()
         .find(|c| c.id == channel_id)
         .ok_or_else(|| format!("未知频道 {channel_id}"))?;
+    // P2:发起任务需权限(访客不得调用敏感 Runner;禁任务频道对谁都禁)
+    require(
+        muster_identity::Action::CreateTask,
+        muster_identity::Scope::Channel(channel.id.clone()),
+    )?;
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
@@ -958,6 +1073,8 @@ fn audit_tail(state: State<'_, AppState>, limit: u64) -> Result<Vec<AuditRow>, S
 /// fail-closed 路由路径;结束时以 SQL 聚合窗口出第 8 幕报告。
 #[tauri::command]
 fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, String> {
+    // 演习切断全组织外联,只有组织级角色能开(§4.3)
+    let who = require(muster_identity::Action::ToggleDrill, muster_identity::Scope::Org)?;
     let (router, audit, drill) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化")?;
@@ -976,7 +1093,7 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
             .unwrap()
             .append(NewEvent {
                 ts_ms: None,
-                actor: Actor::human("owner"),
+                actor: Actor::human(&who.id),
                 scope: Scope::default(),
                 run_id: None,
                 session_id: None,
@@ -999,7 +1116,7 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
         store
             .append(NewEvent {
                 ts_ms: None,
-                actor: Actor::human("owner"),
+                actor: Actor::human(&who.id),
                 scope: Scope::default(),
                 run_id: None,
                 session_id: None,
@@ -1120,6 +1237,7 @@ fn capsule_forge(
     goal: String,
     visibility: String,
 ) -> Result<String, String> {
+    require(muster_identity::Action::ForgeCapsule, muster_identity::Scope::Org)?;
     let audit = {
         let guard = state.0.lock().unwrap();
         guard.as_ref().ok_or("后端未初始化")?.audit.clone()
@@ -1155,11 +1273,15 @@ fn capsule_adopt(
     capsule_id: String,
     to_team: String,
 ) -> Result<String, String> {
+    let who = require(
+        muster_identity::Action::AdoptCapsule,
+        muster_identity::Scope::Group(to_team.clone()),
+    )?;
     let audit = {
         let guard = state.0.lock().unwrap();
         guard.as_ref().ok_or("后端未初始化")?.audit.clone()
     };
-    muster_runner::adopt(&audit, "owner", POLICY_VERSION, &capsule_id, &to_team)
+    muster_runner::adopt(&audit, &who.id, POLICY_VERSION, &capsule_id, &to_team)
         .map(|o| o.detail)
         .map_err(|e| e.to_string())
 }
@@ -1293,9 +1415,11 @@ fn approvals_decide(
         run_id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let wt_path = std::path::PathBuf::from(format!("{root}/run-{slug}"));
 
-    muster_runner::decide(
+    let p = current_principal();
+    muster_runner::decide_as(
         &audit,
-        "owner",
+        Some((&p, &directory(), &prohibitions())),
+        &p.id,
         POLICY_VERSION,
         &run_id,
         channel_scope,
@@ -1434,7 +1558,8 @@ fn main() {
             forgeable_runs,
             capsule_forge,
             capsule_verify,
-            capsule_adopt
+            capsule_adopt,
+            whoami
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

@@ -135,6 +135,16 @@ export interface AgentStats {
   total_egress_bytes: number;
   heat: DayBar[];
 }
+export interface WhoAmI {
+  id: string;
+  display_name: string;
+  kind: string;
+  role: string;
+  role_zh: string;
+  scope: string;
+  /** 当前身份能做什么——UI 据此禁用按钮,而不是点了才报错 */
+  can: Record<string, boolean>;
+}
 export interface CapsuleOut {
   capsule_id: string;
   name: string;
@@ -232,6 +242,7 @@ export const api = {
   capsuleVerify: (capsuleId: string) => invoke<string>("capsule_verify", { capsuleId }),
   capsuleAdopt: (capsuleId: string, toTeam: string) =>
     invoke<string>("capsule_adopt", { capsuleId, toTeam }),
+  whoami: () => invoke<WhoAmI>("whoami"),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {
