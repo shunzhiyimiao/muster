@@ -18,8 +18,8 @@ use tauri::{Emitter, State};
 
 use muster_audit::{
     actor_first_seen, day_throughput, distinct_runs, downgrades_zh, drill_report,
-    pending_approvals, recent_events, recent_events_of, roster, Actor, AuditStore, ContentHash,
-    EgressBytes, EventBody, NewEvent, Scope,
+    pending_approval_list, pending_approvals, recent_events, recent_events_of, roster, Actor,
+    AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
 use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
@@ -806,6 +806,14 @@ async fn run_workspace_task(
             tr.lock().unwrap().push_str(&line);
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
+        RunnerEvent::ApprovalRequested { approval_id, branch, .. } => {
+            let line = format!(
+                "\n⏳ 已申请合入(审批号 {approval_id},分支 {branch})——需人工裁决,Agent 不自行合入\n"
+            );
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
+            a.emit("approvals-changed", ()).ok();
+        }
         RunnerEvent::WorkspaceReady { branch, .. } => {
             let line = format!("🌿 隔离工作区就绪 · 分支 {branch}\n");
             tr.lock().unwrap().push_str(&line);
@@ -1020,6 +1028,98 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
     }
 }
 
+// ---------------------------------------------------------------- P5 审批
+
+/// 未决审批(等人裁决的合入申请)。
+#[derive(Serialize)]
+struct PendingApprovalOut {
+    approval_id: String,
+    ts_ms: u64,
+    actor_id: String,
+    run_id: Option<String>,
+    channel: Option<String>,
+    requested_capability: String,
+    reason: String,
+    command_hash: String,
+    /// 该 run 的隔离分支与 worktree 路径(裁决时用)。
+    branch: String,
+    worktree_path: String,
+    /// worktree 是否仍在(被保留策略回收过就没了,此时只能拒绝)。
+    worktree_exists: bool,
+}
+
+#[tauri::command]
+fn approvals_pending(state: State<'_, AppState>) -> Result<Vec<PendingApprovalOut>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let root = std::env::var("MUSTER_WORKSPACE_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+
+    Ok(pending_approval_list(store.conn(), None)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|p| {
+            let run_id = p.run_id.clone().unwrap_or_default();
+            let slug: String = run_id
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let wt = format!("{root}/run-{slug}");
+            PendingApprovalOut {
+                worktree_exists: std::path::Path::new(&wt).exists(),
+                branch: muster_runner::approval::branch_for(&run_id),
+                worktree_path: wt,
+                approval_id: p.approval_id,
+                ts_ms: p.ts_ms,
+                actor_id: p.actor_id,
+                run_id: p.run_id,
+                channel: p.channel,
+                requested_capability: p.requested_capability,
+                reason: p.reason,
+                command_hash: p.command_hash,
+            }
+        })
+        .collect())
+}
+
+/// 人的裁决:批准则合入主仓,拒绝则丢弃;两者都写审计,处置后回收 worktree。
+#[tauri::command]
+fn approvals_decide(
+    state: State<'_, AppState>,
+    run_id: String,
+    granted: bool,
+    note: Option<String>,
+) -> Result<String, String> {
+    let (audit, channel_scope) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.audit.clone(), Scope::default())
+    };
+    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let base = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    let root = std::env::var("MUSTER_WORKSPACE_ROOT")
+        .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+    let slug: String =
+        run_id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let wt_path = std::path::PathBuf::from(format!("{root}/run-{slug}"));
+
+    muster_runner::decide(
+        &audit,
+        "owner",
+        POLICY_VERSION,
+        &run_id,
+        channel_scope,
+        std::path::Path::new(&base),
+        wt_path.exists().then_some(wt_path.as_path()),
+        granted,
+        note.as_deref(),
+    )
+    .map(|o| o.detail)
+    .map_err(|e| e.to_string())
+}
+
 /// D6 编制页:一行 = 审计链里真实干过活的 actor。
 #[derive(Serialize)]
 struct RosterEntryOut {
@@ -1139,7 +1239,9 @@ fn main() {
             home_stats,
             agent_stats,
             history_bulk,
-            roster_stats
+            roster_stats,
+            approvals_pending,
+            approvals_decide
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");

@@ -108,6 +108,83 @@ pub fn pending_approvals(conn: &Connection, badge: &str) -> Result<u64, StoreErr
     Ok(n as u64)
 }
 
+/// 待裁决的一条审批(P5 审批页直接消费)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingApproval {
+    pub approval_id: String,
+    pub ts_ms: u64,
+    /// 申请者(Agent 工牌)。
+    pub actor_id: String,
+    pub run_id: Option<String>,
+    pub team: Option<String>,
+    pub channel: Option<String>,
+    /// 申请的能力(如 `merge_to_main`)。
+    pub requested_capability: String,
+    pub reason: String,
+    /// 申请内容的哈希(diff 正文的 ContentHash;正文在 run 存储侧)。
+    pub command_hash: String,
+}
+
+/// 全部未决审批,新的在前。`badge` 为 `None` 时不限申请者。
+pub const SQL_PENDING_LIST: &str = r#"
+SELECT json_extract(req.payload, '$.approval_id'), req.ts_ms, req.actor_id, req.run_id,
+       req.team, req.channel,
+       json_extract(req.payload, '$.requested_capability'),
+       json_extract(req.payload, '$.reason'),
+       json_extract(req.payload, '$.command_hash')
+FROM audit_event req
+WHERE req.event_type = 'approval.request'
+  AND (?1 IS NULL OR req.actor_id = ?1)
+  AND NOT EXISTS (
+    SELECT 1 FROM audit_event dec
+    WHERE dec.event_type = 'approval.decision'
+      AND json_extract(dec.payload, '$.approval_id')
+        = json_extract(req.payload, '$.approval_id')
+  )
+ORDER BY req.event_id DESC
+"#;
+
+pub fn pending_approval_list(
+    conn: &Connection,
+    badge: Option<&str>,
+) -> Result<Vec<PendingApproval>, StoreError> {
+    let mut stmt = conn.prepare(SQL_PENDING_LIST)?;
+    let rows = stmt.query_map(params![badge], |r| {
+        Ok(PendingApproval {
+            approval_id: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            ts_ms: r.get::<_, i64>(1)? as u64,
+            actor_id: r.get(2)?,
+            run_id: r.get(3)?,
+            team: r.get(4)?,
+            channel: r.get(5)?,
+            requested_capability: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            reason: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            command_hash: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// 某审批是否已有裁决(防重复裁决;审批是 append-only 事件流,不能靠删行去重)。
+pub const SQL_DECISION_OF: &str =
+    "SELECT json_extract(payload,'$.granted') FROM audit_event
+     WHERE event_type='approval.decision' AND json_extract(payload,'$.approval_id') = ?1
+     ORDER BY event_id ASC LIMIT 1";
+
+pub fn decision_of(conn: &Connection, approval_id: &str) -> Result<Option<bool>, StoreError> {
+    let mut stmt = conn.prepare(SQL_DECISION_OF)?;
+    let mut rows = stmt.query(params![approval_id])?;
+    match rows.next()? {
+        // json_extract 对 bool 返回 0/1
+        Some(row) => Ok(Some(row.get::<_, i64>(0)? != 0)),
+        None => Ok(None),
+    }
+}
+
 /// E3 第 3 幕:会话当前锁定状态 = 该 session 最近一次 lock.raise。
 /// 返回 (锁定级, 肇因来源, ts_ms);None = 会话从未被抬升。
 pub const SQL_SESSION_LOCK: &str = r#"
@@ -348,6 +425,68 @@ mod home_query_tests {
                 request_hash: ContentHash::sha256(b"req"),
             },
         }
+    }
+
+    fn approval_req(approval_id: &str, run: &str) -> NewEvent {
+        NewEvent {
+            ts_ms: None,
+            actor: Actor::agent("A-007"),
+            scope: Scope::default(),
+            run_id: Some(run.into()),
+            session_id: None,
+            policy_version: Some("policy-v1".into()),
+            label: None,
+            locality: None,
+            body: EventBody::ApprovalRequest {
+                approval_id: approval_id.into(),
+                requested_capability: "merge_to_main".into(),
+                badge_capabilities_hash: ContentHash::sha256(b"caps"),
+                command_hash: ContentHash::sha256(b"patch"),
+                reason: "申请合入".into(),
+            },
+        }
+    }
+
+    /// P5:未决 = 有请求且无裁决;裁决后立即出列,且裁决结果可查(防重复裁决)。
+    #[test]
+    fn approvals_move_out_of_pending_once_decided() {
+        let mut store = AuditStore::open_in_memory().unwrap();
+        store.append(approval_req("APR-1", "RUN-1")).unwrap();
+        store.append(approval_req("APR-2", "RUN-2")).unwrap();
+
+        let pending = pending_approval_list(store.conn(), None).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].approval_id, "APR-2", "新的在前");
+        assert_eq!(pending[0].run_id.as_deref(), Some("RUN-2"));
+        assert_eq!(pending[0].requested_capability, "merge_to_main");
+        assert_eq!(pending_approvals(store.conn(), "A-007").unwrap(), 2);
+        assert_eq!(decision_of(store.conn(), "APR-1").unwrap(), None, "尚无裁决");
+
+        // 裁决 APR-1(批准)
+        store
+            .append(NewEvent {
+                ts_ms: None,
+                actor: Actor::human("owner"),
+                scope: Scope::default(),
+                run_id: Some("RUN-1".into()),
+                session_id: None,
+                policy_version: Some("policy-v1".into()),
+                label: None,
+                locality: None,
+                body: EventBody::ApprovalDecision {
+                    approval_id: "APR-1".into(),
+                    granted: true,
+                    note_hash: None,
+                },
+            })
+            .unwrap();
+
+        let pending = pending_approval_list(store.conn(), None).unwrap();
+        assert_eq!(pending.len(), 1, "已裁决的必须出列");
+        assert_eq!(pending[0].approval_id, "APR-2");
+        assert_eq!(pending_approvals(store.conn(), "A-007").unwrap(), 1);
+        assert_eq!(decision_of(store.conn(), "APR-1").unwrap(), Some(true), "裁决结果可查");
+        assert_eq!(decision_of(store.conn(), "APR-2").unwrap(), None);
     }
 
     /// D6:编制由审计链生成——没干过活的不在册,干过的统计必须准。

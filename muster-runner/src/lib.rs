@@ -16,9 +16,10 @@
 //!      `write_file`/`replace_in_file`。写发生在隔离分支的独立目录里,
 //!      主仓一个字节都不动,产出 diff 供人复核。
 //!
-//!    需要审批的是**合入与 push**,不是在沙盒里写字——所以 Runner 连
-//!    push/PR 的接口都不提供。路径一律经 canonicalize 圈禁(新文件对父目录
-//!    取证),越界不是 panic 而是把拒绝文本回给模型(模型应当看见边界)。
+//!    需要审批的是**合入与 push**(见 [`approval`]):Runner 只提申请、
+//!    永不自行合入,裁决与执行都由人触发;push/PR 的接口干脆不提供。
+//!    路径一律经 canonicalize 圈禁(新文件对父目录取证),越界不是 panic
+//!    而是把拒绝文本回给模型(模型应当看见边界)。
 //! 3. **run.start 的 ReplayRefs 全部取真值**:git HEAD(或目录清单)哈希、
 //!    依赖锁文件哈希、模型参数哈希、工具环境哈希。拿不到就用可复算的
 //!    降级来源并如实标注前缀(`dir:` vs `git-head:`),**不伪造**。
@@ -33,18 +34,20 @@
 //!   也回答"为什么没有落点";分类口径由 `EventBody::route_refuse` 单一供给。
 //! - 空闲看门狗未实现:总超时靠 provider 的 `timeout_secs`;流式空闲
 //!   检测排在 v0.x(网关侧已有,见 muster-gateway)。
-//! - **worktree 保留策略只做了一半**:无变更立即回收、超上限回收最旧
-//!   ([`worktree::RetentionPolicy`])都已实现;但"有变更且已处置 ⇒ 回收"
-//!   还缺——因为"处置"的定义在 P5 审批流里(批准合入 / 拒绝丢弃)。
-//!   在那之前,有变更的 worktree 会留到撞上数量上限才被回收。
-//!   **不提前删的理由**:删掉会把「可操作的改动」降级成「一段文本」——
-//!   patch 还在,但没法 `git checkout` 检出来编译、没法 `git merge` 合入。
+//! - worktree 保留策略三条已全部落地([`worktree::RetentionPolicy`] +
+//!   [`approval::decide`]):无变更立即回收 / 超上限回收最旧 /
+//!   **已处置(批准合入或拒绝丢弃)即回收**。有变更且未裁决的会保留——
+//!   删掉会把「可操作的改动」降级成「一段文本」(没法 `git checkout` 编译、
+//!   没法 `git merge` 合入)。
+//! - 审批目前是单人裁决(裁决人固定为部署者):多人角色与授权范围属 P2。
 //! - 字节记账是载荷近似(与桌面壳同口径);wire 级计量属 A2 后续。
 
+pub mod approval;
 pub mod runner;
 pub mod tools;
 pub mod worktree;
 
+pub use approval::{decide, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
 pub use runner::{run_task, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 pub use tools::ToolSet;
 pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};

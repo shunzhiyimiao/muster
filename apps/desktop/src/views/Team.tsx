@@ -6,10 +6,11 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AuditRow, Channel, DOWNGRADE_ZH, ORIGIN_ZH, RosterEntryOut, fmtDate, fmtTime } from "../api";
+import { AuditRow, Channel, DOWNGRADE_ZH, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
+import { ApprovalsPanel } from "./Approvals";
 
 /* ==================== 频道视图 ==================== */
 
@@ -22,6 +23,8 @@ export function ChannelView({
   setIntroduced,
   openConvo,
   goMeeting,
+  approvals,
+  onApprovalsChanged,
 }: {
   channel: Channel;
   chat: ChatState;
@@ -31,6 +34,8 @@ export function ChannelView({
   setIntroduced: (v: boolean) => void;
   openConvo: () => void;
   goMeeting: () => void;
+  approvals: PendingApprovalOut[];
+  onApprovalsChanged: () => void;
 }) {
   const isPlatform = channel.id === "platform";
   const start = chat.lastStart?.channel_id === channel.id ? chat.lastStart : null;
@@ -142,8 +147,9 @@ export function ChannelView({
         </Card>
       </div>
 
-      {/* 频道资产 + 真实路由/Diff/审计栏 */}
+      {/* 频道资产 + 真实审批/路由/Diff/审计栏 */}
       <div className="w-72 shrink-0 flex flex-col gap-3 overflow-y-auto">
+        <ApprovalsPanel pending={approvals} onDecided={onApprovalsChanged} />
         <DiffPanel diff={chat.lastDiff} />
         {isPlatform && (
           <Card className="p-4">

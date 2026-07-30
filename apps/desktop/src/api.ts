@@ -135,6 +135,19 @@ export interface AgentStats {
   total_egress_bytes: number;
   heat: DayBar[];
 }
+export interface PendingApprovalOut {
+  approval_id: string;
+  ts_ms: number;
+  actor_id: string;
+  run_id: string | null;
+  channel: string | null;
+  requested_capability: string;
+  reason: string;
+  command_hash: string;
+  branch: string;
+  worktree_path: string;
+  worktree_exists: boolean;
+}
 export interface RosterEntryOut {
   actor_kind: string;
   actor_id: string;
@@ -186,6 +199,9 @@ export const api = {
   agentStats: () => invoke<AgentStats>("agent_stats"),
   historyBulk: (limit: number) => invoke<StoredMsg[]>("history_bulk", { limit }),
   rosterStats: (team?: string) => invoke<RosterEntryOut[]>("roster_stats", { team: team ?? null }),
+  approvalsPending: () => invoke<PendingApprovalOut[]>("approvals_pending"),
+  approvalsDecide: (runId: string, granted: boolean, note?: string) =>
+    invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),
 };
 
 export const DOWNGRADE_ZH: Record<string, string> = {

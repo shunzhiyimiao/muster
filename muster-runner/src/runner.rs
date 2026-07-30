@@ -95,6 +95,8 @@ pub enum RunnerEvent {
     WorkspaceReady { path: String, branch: String, writable: bool },
     /// 本次运行的真实代码变更(worktree 模式,`Finished` 之前发出)。
     Diff { diff: RunDiff, branch: String },
+    /// 已提出合入申请,等待人工裁决(P5)。Runner 自己永不合入。
+    ApprovalRequested { approval_id: String, branch: String, worktree_path: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +174,8 @@ fn deps_lock_hash(ws: &std::path::Path) -> ContentHash {
 fn take_diff(
     worktree: &mut Option<Worktree>,
     policy: RetentionPolicy,
+    badge: &str,
+    commit_subject: &str,
     on_event: &mut impl FnMut(RunnerEvent),
 ) -> (Option<RunDiff>, Option<String>) {
     let Some(wt) = worktree.as_ref() else { return (None, None) };
@@ -190,7 +194,16 @@ fn take_diff(
     };
 
     if keep {
-        // 有变更:留待处置。仅做数量兜底,防止审批流失灵时无限堆积。
+        // 有变更:先提交到隔离分支——不提交则分支等于没动过,合入会是一场空。
+        if let Some(wt) = worktree.as_ref() {
+            if diff.as_ref().is_some_and(|d| !d.is_empty()) {
+                if let Err(e) = wt.commit(badge, &format!("{}(Agent 产出,待审批)", commit_subject))
+                {
+                    on_event(RunnerEvent::Notice { text: format!("提交到隔离分支失败:{e}") });
+                }
+            }
+        }
+        // 留待处置。仅做数量兜底,防止审批流失灵时无限堆积。
         if let Some(wt) = worktree.as_ref() {
             match enforce_retention(&wt.base, wt.path.parent().unwrap_or(&wt.base), policy) {
                 Ok(removed) if !removed.is_empty() => on_event(RunnerEvent::Notice {
@@ -221,6 +234,13 @@ pub async fn run_task(
     spec: TaskSpec,
     mut on_event: impl FnMut(RunnerEvent) + Send,
 ) -> Result<RunSummary, RunnerError> {
+    // commit 主题取任务提示词首行(截断),让主仓历史一眼能看出这次改动为何而来
+    let subject: String = {
+        let line = spec.prompt.lines().next().unwrap_or("Agent 任务").trim();
+        let s: String = line.chars().take(50).collect();
+        if s.is_empty() { "Agent 任务".into() } else { s }
+    };
+
     // ---- 工作区:worktree 隔离(可写)或直连(只读)
     // 非 git 仓不假装隔离——如实降级为只读并告知,绝不在用户工作区上开写权限。
     let mut worktree: Option<Worktree> = None;
@@ -485,7 +505,7 @@ pub async fn run_task(
                 }
                 Some(msg) => {
                     // 失败也要保住已发生的改动:半成品同样是证据(可复核、可丢弃)
-                    take_diff(&mut worktree, cfg.retention, &mut on_event);
+                    take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
                     finish_failed(audit, "stream", &started, &append)?;
                     on_event(RunnerEvent::Finished {
                         outcome: "failed:stream".into(),
@@ -502,7 +522,28 @@ pub async fn run_task(
         if tool_calls.is_empty() {
             final_text = text;
             // §7.4:先保存 Diff 与证据,再谈清理。取 diff 失败不吞——如实回报。
-            let (diff, branch) = take_diff(&mut worktree, cfg.retention, &mut on_event);
+            let (diff, branch) = take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
+
+            // P5:有变更就提合入申请。Runner 只申请,绝不自行合入。
+            if let (Some(d), Some(wt)) = (&diff, worktree.as_ref()) {
+                if !d.is_empty() {
+                    match crate::approval::request_merge(
+                        audit,
+                        &cfg.badge,
+                        &cfg.policy_version,
+                        &spec.run_id,
+                        scope.clone(),
+                        d,
+                    ) {
+                        Ok(approval_id) => on_event(RunnerEvent::ApprovalRequested {
+                            approval_id,
+                            branch: wt.branch.clone(),
+                            worktree_path: wt.path.display().to_string(),
+                        }),
+                        Err(e) => return Err(RunnerError::Audit(e.to_string())),
+                    }
+                }
+            }
             append(
                 audit,
                 EventBody::RunFinish {
@@ -564,7 +605,7 @@ pub async fn run_task(
         }
     }
 
-    let (diff, branch) = take_diff(&mut worktree, cfg.retention, &mut on_event);
+    let (diff, branch) = take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
     finish_failed(audit, "max_turns", &started, &append)?;
     let latency_ms = started.elapsed().as_millis() as u64;
     on_event(RunnerEvent::Finished {

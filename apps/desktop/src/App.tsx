@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  RosterEntryOut, fmtBytes,
+  PendingApprovalOut, RosterEntryOut, fmtBytes,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, IBtn, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -17,6 +17,7 @@ import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
 import { DiffPanel } from "./views/Diff";
+import { ApprovalsPanel } from "./views/Approvals";
 import { TEAM_META } from "./data";
 
 const RAIL = [
@@ -60,6 +61,7 @@ export default function App() {
   const [home, setHome] = useState<HomeStats | null>(null);
   const [agent, setAgent] = useState<AgentStats | null>(null);
   const [rosterLive, setRosterLive] = useState<RosterEntryOut[]>([]);
+  const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
   const [drillReport, setDrillReport] = useState<DrillReportOut | null>(null);
@@ -70,6 +72,7 @@ export default function App() {
     api.homeStats().then(setHome).catch(() => {});
     api.agentStats().then(setAgent).catch(() => {});
     api.rosterStats().then(setRosterLive).catch(() => {});
+    api.approvalsPending().then(setApprovals).catch(() => {});
   };
   const chat = useChat(refreshAll);
 
@@ -347,7 +350,8 @@ export default function App() {
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
                   <ChatPane channel={personalChannel} chat={chat} />
                 </Card>
-                <div className="w-72 shrink-0 overflow-y-auto">
+                <div className="w-72 shrink-0 overflow-y-auto flex flex-col gap-3">
+                  <ApprovalsPanel pending={approvals} onDecided={refreshAll} />
                   <DiffPanel diff={chat.lastDiff} />
                 </div>
               </div>
@@ -355,7 +359,8 @@ export default function App() {
             {view === "channel" && activeChannel && (
               <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed}
                 introduced={introduced} setIntroduced={setIntroduced}
-                openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")} />
+                openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")}
+                approvals={approvals} onApprovalsChanged={refreshAll} />
             )}
             {view === "roster" && (
               <RosterView approved={approved} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />

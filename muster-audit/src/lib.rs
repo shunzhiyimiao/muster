@@ -50,8 +50,8 @@ pub use event::{
     Parsed, ReplayRefs, RunOutcome, Scope,
 };
 pub use queries::{
-    actor_first_seen, day_throughput, distinct_runs, downgrades_zh, drill_report,
-    pending_approvals, recent_events, recent_events_of, roster, run_chain, session_lock,
-    DayThroughput, DrillReport, RosterRow,
+    actor_first_seen, day_throughput, decision_of, distinct_runs, downgrades_zh, drill_report,
+    pending_approval_list, pending_approvals, recent_events, recent_events_of, roster, run_chain,
+    session_lock, DayThroughput, DrillReport, PendingApproval, RosterRow,
 };
 pub use store::{AuditStore, ChainError, StoreError};

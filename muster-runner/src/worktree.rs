@@ -159,6 +159,32 @@ impl Worktree {
         Ok(RunDiff { files_changed: files.len(), files, patch, insertions: ins, deletions: del })
     }
 
+    /// 把已暂存的改动提交到隔离分支。
+    ///
+    /// **不提交则分支等于没动过**:diff 只 `add -A` 进索引,分支 HEAD 仍停在
+    /// 建树时的 commit,合入时 `git merge` 会是一场空(实测踩到)。§7.4 的
+    /// 「保存 Diff、日志、证据**与 Commit**」里,Commit 这一项就是指这里。
+    ///
+    /// 作者署名固定为 Agent 工牌:主仓历史里必须能一眼看出这是机器产出的。
+    pub fn commit(&self, badge: &str, message: &str) -> Result<String, WorktreeError> {
+        git(&self.path, &["add", "-A"])?;
+        // 无改动时 commit 会失败,交由调用方先判空(diff().is_empty())
+        git(
+            &self.path,
+            &[
+                "-c",
+                &format!("user.name=Muster Agent {badge}"),
+                "-c",
+                "user.email=agent@muster.local",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        )?;
+        Ok(git(&self.path, &["rev-parse", "HEAD"])?.trim().to_owned())
+    }
+
     /// 移除 worktree 与其分支。**必须在 [`diff`](Self::diff) 之后调用**。
     pub fn cleanup(self) -> Result<(), WorktreeError> {
         git(&self.base, &["worktree", "remove", "--force", &self.path.display().to_string()])?;
