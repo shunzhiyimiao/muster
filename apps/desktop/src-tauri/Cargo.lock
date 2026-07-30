@@ -1906,6 +1906,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "muster-prompt"
+version = "0.1.0"
+
+[[package]]
 name = "muster-provider"
 version = "0.1.0"
 dependencies = [
@@ -1937,6 +1941,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "muster-audit",
+ "muster-prompt",
  "muster-provider",
  "muster-route",
  "serde",
