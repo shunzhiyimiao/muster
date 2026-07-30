@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "muster-identity",
     "muster-prompt",
     "muster-provider",
     "muster-eval",

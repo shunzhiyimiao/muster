@@ -679,6 +679,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "muster-identity"
+version = "0.1.0"
+dependencies = [
+ "muster-route",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "muster-prompt"
 version = "0.1.0"
 
@@ -715,6 +725,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "muster-audit",
+ "muster-identity",
  "muster-prompt",
  "muster-provider",
  "muster-route",

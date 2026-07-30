@@ -164,6 +164,65 @@ async fn rejected_merge_discards_changes_but_still_leaves_a_trace() {
     assert!(store.verify_chain().unwrap().is_ok());
 }
 
+/// P2:**谁有资格裁决**。无权者被挡在 git 操作与落库之前,系统状态零变化。
+#[tokio::test]
+async fn unauthorized_principal_cannot_decide() {
+    use muster_identity::{Directory, OrgProhibitions, Principal, Role, RoleBinding};
+
+    let base = base_repo();
+    let root = tempfile::tempdir().unwrap();
+    let (audit, wt_path, _) = run_fixing_task(base.path(), root.path(), "RUN-Z1").await;
+    let dir = Directory::default().with_channel("platform", "平台组");
+    let proh = OrgProhibitions::default();
+    let scope = Scope { team: Some("平台组".into()), channel: Some("platform".into()) };
+
+    // ① 普通成员:角色不够
+    let member = Principal::human("bob", "Bob", vec![RoleBinding::org(Role::Member)]);
+    let err = muster_runner::decide_as(
+        &audit, Some((&member, &dir, &proh)), "bob", "policy-v1", "RUN-Z1",
+        scope.clone(), base.path(), Some(Path::new(&wt_path)), true, None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("无权裁决"), "{err}");
+
+    // ② 别的组的审批人:角色够但作用域不覆盖
+    let other = Principal::human("carol", "Carol", vec![RoleBinding::group(Role::Approver, "支付组")]);
+    let err = muster_runner::decide_as(
+        &audit, Some((&other, &dir, &proh)), "carol", "policy-v1", "RUN-Z1",
+        scope.clone(), base.path(), Some(Path::new(&wt_path)), true, None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("作用域"), "{err}");
+
+    // ③ Agent 自批:身份层就挡住(否则 P5 审批形同虚设)
+    let agent = Principal::agent("A-007", "小七", vec![RoleBinding::org(Role::Approver)]);
+    let err = muster_runner::decide_as(
+        &audit, Some((&agent, &dir, &proh)), "A-007", "policy-v1", "RUN-Z1",
+        scope.clone(), base.path(), Some(Path::new(&wt_path)), true, None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("必须由人"), "{err}");
+
+    // **被拒后系统状态零变化**:主仓没合、worktree 还在、审批仍未决
+    assert!(std::fs::read_to_string(base.path().join("main.rs")).unwrap().contains("a - b"));
+    assert!(Path::new(&wt_path).exists());
+    {
+        let s = audit.lock().unwrap();
+        assert_eq!(pending_approval_list(s.conn(), None).unwrap().len(), 1, "仍未决");
+        assert_eq!(decision_of(s.conn(), "APR-RUN-Z1").unwrap(), None, "不得留下裁决事件");
+    }
+
+    // ④ 本组审批人:通过
+    let approver = Principal::human("alice", "Alice", vec![RoleBinding::group(Role::Approver, "平台组")]);
+    let out = muster_runner::decide_as(
+        &audit, Some((&approver, &dir, &proh)), "alice", "policy-v1", "RUN-Z1",
+        scope, base.path(), Some(Path::new(&wt_path)), true, Some("同意"),
+    )
+    .unwrap();
+    assert!(out.granted && out.merged_commit.is_some());
+    assert!(std::fs::read_to_string(base.path().join("main.rs")).unwrap().contains("a + b"));
+}
+
 /// 审批是 append-only 事件流:已裁决的不能再裁决一次(不靠删行去重)。
 #[tokio::test]
 async fn double_decision_is_refused() {

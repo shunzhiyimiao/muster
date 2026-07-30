@@ -8,6 +8,7 @@ description = "Muster B1 — 任务执行器:路由 → 流式工具循环 → �
 [dependencies]
 muster-provider = { path = "../muster-provider" }
 muster-prompt = { path = "../muster-prompt" }
+muster-identity = { path = "../muster-identity" }
 muster-route = { path = "../muster-route" }
 muster-audit = { path = "../muster-audit" }
 serde = { version = "1", features = ["derive"] }
@@ -16,6 +17,7 @@ futures = "0.3"
 thiserror = "1"
 
 [dev-dependencies]
+muster-identity = { path = "../muster-identity" }
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
 sha2 = "0.10"

@@ -48,7 +48,7 @@ pub mod runner;
 pub mod tools;
 pub mod worktree;
 
-pub use approval::{decide, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
+pub use approval::{decide, decide_as, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
 pub use capsule::{
     adopt, draft_spec, forge, forge_and_store, verify, AdoptOutcome, CapsuleError, CapsuleSpec,
     CapsuleStore, ForgeOutcome, VerifyOutcome,

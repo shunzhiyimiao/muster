@@ -1,0 +1,12 @@
+[package]
+name = "muster-identity"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Muster P2 — 身份与权限语义内核:角色、作用域、判定纯函数(§4.3/§4.4)"
+
+[dependencies]
+muster-route = { path = "../muster-route" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"

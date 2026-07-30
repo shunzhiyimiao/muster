@@ -31,6 +31,8 @@ pub const CAP_MERGE: &str = "merge_to_main";
 pub enum ApprovalError {
     #[error("审计写入失败:{0}")]
     Audit(String),
+    #[error("无权裁决:{0}")]
+    Unauthorized(String),
     #[error("该审批已被裁决为 {0},不可重复裁决")]
     AlreadyDecided(&'static str),
     #[error("合入失败:{0}")]
@@ -139,6 +141,43 @@ pub fn decide(
     granted: bool,
     note: Option<&str>,
 ) -> Result<DecisionOutcome, ApprovalError> {
+    decide_as(audit, None, decider, policy_version, run_id, scope, base, worktree_path, granted, note)
+}
+
+/// 带**权限校验**的裁决(P2)。
+///
+/// `principal = Some(..)` 时先过 [`muster_identity::can`]:裁决人必须持有
+/// 覆盖该频道/组的 `Approver`(或管理员)角色,且**必须是人类**——
+/// Agent 自批自的申请会让 P5 审批沦为形式。
+///
+/// `None` 表示单机模式(部署者即所有者),保留旧行为;接入 OIDC 后
+/// 桌面壳会一律传入真实 Principal。
+#[allow(clippy::too_many_arguments)]
+pub fn decide_as(
+    audit: &Arc<Mutex<AuditStore>>,
+    principal: Option<(&muster_identity::Principal, &muster_identity::Directory, &muster_identity::OrgProhibitions)>,
+    decider: &str,
+    policy_version: &str,
+    run_id: &str,
+    scope: Scope,
+    base: &Path,
+    worktree_path: Option<&Path>,
+    granted: bool,
+    note: Option<&str>,
+) -> Result<DecisionOutcome, ApprovalError> {
+    // ---- P2:谁有资格裁决(在做任何 git 操作与落库之前)
+    if let Some((p, dir, proh)) = principal {
+        let target = match (&scope.channel, &scope.team) {
+            (Some(c), _) => muster_identity::Scope::Channel(c.clone()),
+            (None, Some(t)) => muster_identity::Scope::Group(t.clone()),
+            _ => muster_identity::Scope::Org,
+        };
+        let d = muster_identity::can(p, &muster_identity::Action::ApproveMerge, &target, proh, dir);
+        if !d.allowed() {
+            return Err(ApprovalError::Unauthorized(d.reason_zh()));
+        }
+    }
+
     let approval_id = approval_id_for(run_id);
     // append-only:已裁决的不可再裁决
     {
