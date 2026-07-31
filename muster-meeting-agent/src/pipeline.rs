@@ -60,14 +60,18 @@ impl Pipeline {
     }
 
     /// 处理一句。`policy` 必须是**对话路由此刻用的同一份**(见 SpeechRouter 文档)。
-    pub async fn handle(&self, u: Utterance, policy: &OrgPolicy) {
+    ///
+    /// 返回转写出的文本(被拒 / 空转写为 `None`),供调用方判断要不要作答——
+    /// 让它自己再转一次是浪费,而且**两次转写结果可能不同**,
+    /// 那样"纪要里记的"和"Agent 据以回答的"就对不上了。
+    pub async fn handle(&self, u: Utterance, policy: &OrgPolicy) -> Option<String> {
         // 会议密级已经体现在调用方给的 policy / sources 上;这里不自己编密级。
         let req = RouteRequest { sources: &[], requested_provider: None, default_provider: None };
         let res = match self.router.resolve(policy, &req) {
             Ok(r) => r,
             Err(e) => {
                 self.sink.on_refused(&u, &e.to_string()).await;
-                return;
+                return None;
             }
         };
         let is_local = res.plan.primary_locality == Locality::Local;
@@ -89,13 +93,17 @@ impl Pipeline {
                 // 空转写不回传:whisper 对没听清的片段会返回空串,
                 // 把空行灌进纪要只是噪音
                 if text.is_empty() {
-                    return;
+                    return None;
                 }
                 let egress = if is_local { 0 } else { t.request_bytes };
                 self.sink.on_text(&u, text, egress).await;
+                Some(text.to_string())
             }
             // 转写失败同样留痕,不吞——"没能转写"是证据缺口,不是静默
-            Err(e) => self.sink.on_refused(&u, &e.to_string()).await,
+            Err(e) => {
+                self.sink.on_refused(&u, &e.to_string()).await;
+                None
+            }
         }
     }
 }

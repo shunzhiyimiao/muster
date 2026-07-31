@@ -40,6 +40,12 @@ impl HttpSink {
         }
     }
 
+    /// 以指定身份往纪要里写一条。Agent 自己的回答也走这里——
+    /// **它说的话和人说的话进同一份记录**,事后追查不必分两处看。
+    pub async fn say(&self, speaker: &str, text: &str) {
+        self.post(speaker, text).await
+    }
+
     async fn post(&self, speaker: &str, text: &str) {
         let url = format!("{}/meetings/{}/transcript", self.base, self.meeting_id);
         let r = self

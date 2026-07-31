@@ -170,7 +170,7 @@ where
     run(url, token, cfg, gate, move |u| {
         let p = pipeline.clone();
         let pol = policy.clone();
-        async move { p.handle(u, &pol).await }
+        async move { p.handle(u, &pol).await; }
     })
     .await
 }
