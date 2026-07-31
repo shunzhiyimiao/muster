@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS 会议权限。**缺了这两条,开麦时应用会直接被系统杀掉**(不是报错,
+     是崩溃),而且编译期毫无征兆——与 A4 里那个 -ObjC 是同一类坑。
+     文案要说清用途:系统会把它原样显示给用户。 -->
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>用于在团队会议中发言。音频只发往你所连接的自托管会议服务器,转写在本地完成。</string>
+  <key>NSCameraUsageDescription</key>
+  <string>用于在团队会议中开启摄像头。画面只发往你所连接的自托管会议服务器。</string>
+</dict>
+</plist>

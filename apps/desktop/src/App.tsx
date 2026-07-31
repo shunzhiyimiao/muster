@@ -9,13 +9,15 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteStatus, RosterEntryOut, TeamCount, WhoAmI, fmtBytes,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut,
+  TeamCount, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
 import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
+import { MeetingRoom, type TranscriptLine } from "./views/Meeting";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
 
@@ -63,6 +65,9 @@ export default function App() {
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [remoteChans, setRemoteChans] = useState<Channel[]>([]);
   const [loginOpen, setLoginOpen] = useState(false);
+  /* C3:当前所在的会议(null = 不在会里);转写由 SSE 推来 */
+  const [meeting, setMeeting] = useState<RemoteMeeting | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
@@ -133,6 +138,9 @@ export default function App() {
           const ev = JSON.parse(e.data);
           if (ev.type === "message") {
             chat.pushRemote(ev.channel_id, ev.role, ev.body, ev.ts_ms);
+          } else if (ev.type === "transcript") {
+            // 会议纪要行:Agent 转写落库后广播过来
+            setTranscript((t) => [...t, { speaker: ev.speaker_id, text: ev.text, ts: ev.ts_ms }]);
           }
         } catch {
           /* 单条解析失败不该拖垮整条流 */
@@ -462,7 +470,24 @@ export default function App() {
             {view === "roster" && (
               <RosterView filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
             )}
-            {view === "meeting" && <MeetingView />}
+            {view === "meeting" &&
+              (meeting ? (
+                <MeetingRoom
+                  meeting={meeting}
+                  transcript={transcript}
+                  onLeave={() => setMeeting(null)}
+                />
+              ) : remote?.connected ? (
+                <MeetingLobby
+                  channelId={channelId}
+                  onEnter={(m) => {
+                    setTranscript([]);
+                    setMeeting(m);
+                  }}
+                />
+              ) : (
+                <MeetingView />
+              ))}
             {view === "caps" && (
               <CapsView trace={trace} setTrace={setTrace} introduced={introduced}
                 live={capsules} forgeable={forgeable}
@@ -833,6 +858,94 @@ function LoginDialog({
               </button>
             </div>
           </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* C3:会议大厅。**只在连了服务端时出现**——会议本就是多人的事,
+   单机模式下没有"别人"可开会,那时显示的仍是概念稿(并标着"演示叙事")。 */
+function MeetingLobby({
+  channelId,
+  onEnter,
+}: {
+  channelId: string;
+  onEnter: (m: RemoteMeeting) => void;
+}) {
+  const [list, setList] = useState<RemoteMeeting[]>([]);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () => {
+    api.remoteMeetings(channelId).then(setList).catch((e) => setErr(String(e)));
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [channelId]);
+
+  const start = () => {
+    const t = title.trim();
+    if (!t) {
+      setErr("先给会议起个名字");
+      return;
+    }
+    setBusy(true);
+    api
+      .remoteMeetingStart(channelId, t)
+      .then((m) => {
+        setTitle("");
+        onEnter(m);
+      })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const live = list.filter((m) => !m.ended_ms);
+  return (
+    <div className="px-7 pb-8 pt-2 flex flex-col gap-4">
+      <Card className="p-5">
+        <b className="text-[15px]">开会</b>
+        <div className="text-[11.5px] mt-1 leading-relaxed" style={{ color: T.sub }}>
+          会议密级继承本频道——否则"把话题挪进会议"就成了绕过密级的办法。
+          转写由会议 Agent 走<b>本地</b> whisper 完成,音频不出内网。
+        </div>
+        <div className="flex items-center gap-2 mt-3.5">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && start()}
+            placeholder="会议主题,例如「平台组周会」"
+            className="flex-1 px-3.5 py-2 rounded-xl text-xs outline-none"
+            style={{ background: T.panel, border: `1px solid ${T.line}` }}
+          />
+          <button disabled={busy} onClick={start} className="text-xs font-semibold px-4 py-2 rounded-xl"
+            style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
+            {busy ? "创建中…" : "发起会议"}
+          </button>
+        </div>
+        {err && (
+          <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.redSoft, color: T.red }}>{err}</div>
+        )}
+      </Card>
+
+      <Card className="px-5 pt-4 pb-2">
+        <div className="flex items-center">
+          <b className="text-[13px]">进行中</b>
+          <span className="ml-auto text-[10.5px]" style={{ color: T.faint }}>本频道 · 共 {list.length} 场</span>
+        </div>
+        {live.length === 0 ? (
+          <div className="py-5 text-[11.5px]" style={{ color: T.sub }}>当前没有进行中的会议。</div>
+        ) : (
+          live.map((m) => (
+            <button key={m.id} onClick={() => onEnter(m)} className="w-full flex items-center gap-2.5 py-2.5 text-left"
+              style={{ borderTop: `1px solid ${T.line}` }}>
+              <Video size={14} style={{ color: T.indigo }} />
+              <span className="text-[13px] font-semibold">{m.title}</span>
+              <Tag tone={(m.level === "restricted" ? "red" : m.level === "internal" ? "amb" : undefined) as never}>{m.level}</Tag>
+              <span className="ml-auto text-[10.5px]" style={{ color: T.faint }}>{fmtTime(m.started_ms)} 开始</span>
+            </button>
+          ))
         )}
       </Card>
     </div>

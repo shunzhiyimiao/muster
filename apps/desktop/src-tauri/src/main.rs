@@ -2049,6 +2049,43 @@ async fn remote_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>,
         .collect())
 }
 
+// ---- C3:会议
+#[tauri::command]
+async fn remote_meetings(
+    state: State<'_, AppState>,
+    channel_id: String,
+) -> Result<Vec<remote::RemoteMeeting>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.meetings(&channel_id).await
+}
+
+#[tauri::command]
+async fn remote_meeting_start(
+    state: State<'_, AppState>,
+    channel_id: String,
+    title: String,
+) -> Result<remote::RemoteMeeting, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.start_meeting(&channel_id, &title).await
+}
+
+/// 拿入会票。票里的 `can_publish` 是服务端 `can()` 的判定结果——
+/// **前端照着它决定要不要显示开麦按钮,而不是自己判一遍**。
+#[tauri::command]
+async fn remote_meeting_join(
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<remote::JoinInfo, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.join_meeting(&meeting_id).await
+}
+
+#[tauri::command]
+async fn remote_meeting_end(state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.end_meeting(&meeting_id).await
+}
+
 /// 团队频道的消息从服务端拉;**个人频道永不走这条路**(见 remote.rs 模块文档)。
 #[tauri::command]
 async fn remote_history(
@@ -2196,6 +2233,10 @@ fn main() {
             remote_history,
             remote_channels,
             remote_token,
+            remote_meetings,
+            remote_meeting_start,
+            remote_meeting_join,
+            remote_meeting_end,
             approvals_pending,
             approvals_decide,
             capsules_list,

@@ -62,6 +62,30 @@ pub struct RemoteMessage {
     pub ts_ms: i64,
 }
 
+/// 会议(C3)。`level` 决定界面上的密级徽章,`can_publish` 决定要不要显示
+/// 开麦按钮——**由服务端的权限内核给出,前端不自己判**。
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RemoteMeeting {
+    pub id: String,
+    pub channel_id: String,
+    pub title: String,
+    pub level: String,
+    pub room: String,
+    pub started_ms: i64,
+    #[serde(default)]
+    pub ended_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct JoinInfo {
+    pub url: String,
+    pub token: String,
+    pub room: String,
+    pub level: String,
+    pub can_publish: bool,
+    pub can_record: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct PostMessage<'a> {
     body: &'a str,
@@ -120,6 +144,54 @@ impl Remote {
 
     pub async fn channels(&self) -> Result<Vec<RemoteChannel>, String> {
         self.get("/channels").await
+    }
+
+    pub async fn meetings(&self, channel: &str) -> Result<Vec<RemoteMeeting>, String> {
+        self.get(&format!("/channels/{channel}/meetings")).await
+    }
+
+    async fn post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let resp = self
+            .client
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("请求 {path} 失败:{e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(msg);
+        }
+        serde_json::from_str(&text).map_err(|e| format!("{path} 响应无法解析:{e}"))
+    }
+
+    pub async fn start_meeting(&self, channel: &str, title: &str) -> Result<RemoteMeeting, String> {
+        self.post_json(
+            &format!("/channels/{channel}/meetings"),
+            &serde_json::json!({ "title": title }),
+        )
+        .await
+    }
+
+    /// 拿入会票。**能不能开麦由服务端的 can() 决定**,前端只照着显示。
+    pub async fn join_meeting(&self, meeting_id: &str) -> Result<JoinInfo, String> {
+        self.post_json(&format!("/meetings/{meeting_id}/join"), &serde_json::json!({})).await
+    }
+
+    pub async fn end_meeting(&self, meeting_id: &str) -> Result<(), String> {
+        let _: serde_json::Value =
+            self.post_json(&format!("/meetings/{meeting_id}/end"), &serde_json::json!({})).await?;
+        Ok(())
     }
 
     /// 拉某频道的消息。`after_seq` 为 `None` 时从头拉。

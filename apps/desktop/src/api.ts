@@ -190,6 +190,25 @@ export interface RemoteStatus {
   account_id: string | null;
   display_name: string | null;
 }
+/** C3:服务端上的会议 */
+export interface RemoteMeeting {
+  id: string;
+  channel_id: string;
+  title: string;
+  level: string;
+  room: string;
+  started_ms: number;
+  ended_ms: number | null;
+}
+export interface JoinInfo {
+  url: string;
+  token: string;
+  room: string;
+  level: string;
+  /** 由服务端 can() 判定;前端照着显示,不自己判 */
+  can_publish: boolean;
+  can_record: boolean;
+}
 export interface PendingApprovalOut {
   approval_id: string;
   ts_ms: number;
@@ -262,6 +281,11 @@ export const api = {
     invoke<RemoteStatus>("remote_login", { base, id, password }),
   remoteLogout: () => invoke<void>("remote_logout"),
   remoteToken: () => invoke<string | null>("remote_token"),
+  remoteMeetings: (channelId: string) => invoke<RemoteMeeting[]>("remote_meetings", { channelId }),
+  remoteMeetingStart: (channelId: string, title: string) =>
+    invoke<RemoteMeeting>("remote_meeting_start", { channelId, title }),
+  remoteMeetingJoin: (meetingId: string) => invoke<JoinInfo>("remote_meeting_join", { meetingId }),
+  remoteMeetingEnd: (meetingId: string) => invoke<void>("remote_meeting_end", { meetingId }),
   /** 组织的频道(登录后);个人频道不在其中——它不上服务端 */
   remoteChannels: () => invoke<Channel[]>("remote_channels"),
   remoteHistory: (channelId: string) => invoke<StoredMsg[]>("remote_history", { channelId }),
