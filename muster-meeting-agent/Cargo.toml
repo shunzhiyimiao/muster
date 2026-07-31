@@ -34,3 +34,14 @@ livekit = ["dep:livekit", "dep:futures"]
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 这两个 example 依赖 livekit,必须声明 required-features——否则
+# `cargo test --workspace` 会去编它们,当场因为找不到 livekit 而失败,
+# 把"默认构建不碰原生 WebRTC"这条前提废掉。(踩过一次,见 A4 文档。)
+[[example]]
+name = "agent"
+required-features = ["livekit"]
+
+[[example]]
+name = "speak_wav"
+required-features = ["livekit"]
