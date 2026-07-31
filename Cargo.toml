@@ -10,4 +10,5 @@ members = [
     "muster-runner",
     "muster-gateway",
     "muster-server",
+    "muster-meeting-agent",
 ]

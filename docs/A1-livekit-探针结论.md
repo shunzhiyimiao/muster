@@ -73,6 +73,28 @@ https://github.com/livekit/rust-sdks/releases/download/{版本}/{目标平台}.z
 **优先试 `rustvani-vad`**:没有 ONNX 运行时就没有模型下载,内网部署少一个麻烦。
 选型要在 A3 实测,不在这里下结论。
 
+## 四点五、**踩到的坑:发布版本自己对不上**
+
+crates.io 上的 livekit 当前**没有任何一组版本能编过**:
+
+| 版本 | 失败原因 |
+|---|---|
+| `livekit 0.8.1` | `livekit-data-stream 0.1.1` 引用 `livekit-common::{ClientCapability, RemoteParticipantRegistry, CLIENT_PROTOCOL_DATA_STREAM_V2}`,而 `livekit-common` **只发布过 0.1.0,里面没有这三个符号** |
+| `livekit 0.7.53` | `livekit-api` 少填 `ConnectWhatsAppCallRequest.wait_until_answered`——protobuf 类型漂移 |
+
+试过钉 `livekit-protocol` 到旧版:不行,它的下限是 `^0.7.10`,而 0.7.10+ 正是引入漂移的那批。
+
+**出路:依赖 git 仓库的固定 commit**(`https://github.com/livekit/rust-sdks`),
+那里的 workspace 内部版本是一致的。代价:
+
+- 构建期除了 100MB 的 WebRTC,还要 clone 仓库**及其 submodule**
+  (`libyuv` 来自 `chromium.googlesource.com`)——内网隔离环境要多缓存这两样;
+- 必须钉 commit,不能跟 `main`:上游随时可能再次失配。
+
+对**内网部署**的结论不变,只是清单更长了:预先缓存 WebRTC 二进制 + livekit 仓库
++ libyuv submodule,或者干脆在有网机器上构建好 Agent 二进制、内网只部署产物。
+**后者更省事,而且 Agent 只跑在服务器上,不需要每台开发机都能构建。**
+
 ## 五、结论
 
 A1 想验证的四件事,三件已确认、一件待实跑:
@@ -84,5 +106,6 @@ A1 想验证的四件事,三件已确认、一件待实跑:
 | 能否直接要 16k 单声道 | ✅ 构造参数直接指定,SDK 重采样 |
 | 每人一轨 | ✅ 说话人归属白拿,不需要声纹分离 |
 | 真机跑通 | ⏳ 待 LiveKit 起来后跑探针确认 |
+| 依赖可构建 | ⚠️ crates.io 版本互不兼容,必须走 git + 固定 commit(见第四点五) |
 
 **下一步 A2 可以开工**,不必等真机——接口形状已经确定,写出来的代码不是猜的。

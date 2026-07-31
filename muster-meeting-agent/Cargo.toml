@@ -1,0 +1,30 @@
+[package]
+name = "muster-meeting-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+muster-provider = { path = "../muster-provider" }
+muster-route = { path = "../muster-route" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+
+# LiveKit 适配层**默认不编**。它传递依赖原生 WebRTC(构建期从 GitHub 拉
+# 100MB+,target 1GB+,见 docs/A1-livekit-探针结论.md),而本仓的约定是
+# "动手前后都跑 cargo test"——不能让每次跑测试都背上它。
+#
+# 核心链路(缓冲 → 切句 → 转写 → 回传)不依赖 SDK,在默认 feature 下全可测;
+# LiveKit 只是帧的一个来源,测试是另一个。
+livekit = { version = "0.8", default-features = false, features = ["tokio", "__rustls-tls"], optional = true }
+futures = { version = "0.3", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+
+[features]
+default = []
+livekit = ["dep:livekit", "dep:futures", "dep:reqwest"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
