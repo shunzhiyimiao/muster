@@ -70,3 +70,49 @@ fail-closed 直接拒掉。
 见 `muster-server/src/lib.rs` 的「诚实边界」。要点:无 Outbox、无断线补拉、
 无节点链锚定、无速率限制。本版目标是先跑通功能,不是服务质量——
 但那份清单必须在上线前逐条清掉。
+
+---
+
+# 怎么测
+
+```bash
+./deploy/dev-up.sh          # 起环境 + 建账号(幂等,可反复跑)
+./deploy/dev-up.sh --clean  # 连数据一起清掉重来
+```
+
+脚本**建完账号会验一次登录再报口令**——账号可能是上次用别的口令建的,
+那时 `account-add` 静默失败,而脚本照样打印一个登不进去的口令,
+让人对着正确的界面输错误的凭据查半天。
+
+## 排查顺序:从最便宜、最能隔离的一步开始
+
+整条链最容易出问题的是**转写后端接口对不对**,而那与音视频无关。所以别一上来
+就开会——按下面的顺序走,断在哪一步就知道是哪一层。
+
+| # | 验什么 | 怎么验 | 对了应该看到 |
+|---|---|---|---|
+| 1 | 依赖起来了 | `docker compose ps` | 三个容器 Up |
+| 2 | **转写通不通** | `say -o a.aiff "各位好"; afconvert -f WAVE -d LEI16@16000 -c 1 a.aiff a.wav`<br>`cargo run -p muster-meeting-agent --example transcribe_file -- a.wav` | 打印出中文,外发 0 字节 |
+| 3 | 演习真的拦得住 | 同上加 `MUSTER_STT_CLOUD=1 MUSTER_DRILL=1` | ⛔ fail-closed 拒绝 |
+| 4 | 服务端活着 | `curl localhost:8787/health` | `{"ok":true,...}` |
+| 5 | 桌面壳能连 | `pnpm tauri dev` → 侧栏「单机模式」→ 填地址与 alice | 状态变「已连接团队服务器」 |
+| 6 | 消息真到了服务端 | 桌面壳发一条,再 `curl .../channels/platform-main/messages` | 两边看到同一条 |
+| 7 | 会议能建能进 | 团队 → 会议室 → 发起会议 | 进入会议室,显示「已入房间」 |
+| 8 | Agent 在会里 | 拿会议 id 跑 agent | 日志出现「已入房间」 |
+| 9 | **真人说话 → 转写** | 点开麦说一句 | 右侧实时纪要出现你说的话 |
+| 10 | 叫它名字 | 说「小七,刚才说了什么」 | 纪要里出现小七的回答 |
+| 11 | 散会提炼 | Ctrl-C 停掉 agent | 打印行动项,**待人确认** |
+
+第 2 步最值得先做:它不需要 LiveKit、不需要开会、不需要麦克风,却能同时验证
+provider、路由、密级和 whisper 后端。
+
+## 常见的坑(都是真机上撞过的)
+
+| 现象 | 原因 |
+|---|---|
+| `role "muster" does not exist` | 开发机上另有本地 Postgres 占着 5432。compose 已改用 **5433** |
+| 开麦时应用直接崩 | macOS 缺 `NSMicrophoneUsageDescription`(已补);若仍崩,去系统设置放行麦克风 |
+| 会议里两个身份互踢 | 两端用了同一个账号 ⇒ LiveKit `DuplicateIdentity`。**Agent 要用自己的账号** |
+| 转写出繁体、术语错 | 设 `MUSTER_STT_PROMPT` 给一句简体的领域提示 |
+| 第一次转写特别慢 | 在下模型。**别拿冷启动数据下结论**,热态 base 快 7 倍于实时 |
+| 喊了名字它没反应 | 转写可能把逗号吃了或名字转错。用 `MUSTER_AGENT_ALIASES` 把常见错法列进去 |
