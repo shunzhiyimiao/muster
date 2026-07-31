@@ -46,6 +46,22 @@ impl HttpSink {
         self.post(speaker, text).await
     }
 
+    /// 提交一条行动项**提案**。注意是提案——确认归人,见服务端 action.rs。
+    pub async fn propose_action(&self, item: &crate::actions::ActionItem) -> bool {
+        let url = format!("{}/meetings/{}/action-items", self.base, self.meeting_id);
+        match self.client.post(&url).bearer_auth(&self.token).json(item).send().await {
+            Ok(r) if r.status().is_success() => true,
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), "行动项提交被拒");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "行动项提交失败");
+                false
+            }
+        }
+    }
+
     async fn post(&self, speaker: &str, text: &str) {
         let url = format!("{}/meetings/{}/transcript", self.base, self.meeting_id);
         let r = self

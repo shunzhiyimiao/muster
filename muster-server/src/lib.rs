@@ -40,6 +40,7 @@
 //!
 //! 上线前必须逐条清掉——这份清单存在的意义就是别让"先跑通"悄悄变成"就这样了"。
 
+pub mod action;
 pub mod audit;
 pub mod auth;
 pub mod db;

@@ -14,7 +14,8 @@
 use std::sync::Arc;
 
 use muster_meeting_agent::{
-    room, Answer, Answerer, ChunkConfig, Context, EnergyGate, HttpSink, MentionRules, Pipeline,
+    room, Answer, Answerer, ChunkConfig, Context, EnergyGate, ExtractOutcome, Extractor,
+    HttpSink, MentionRules, Pipeline,
 };
 use muster_provider::{ProviderRegistry, SpeechCompatProvider, SpeechConfig, SpeechProvider};
 use muster_route::{OrgPolicy, Router, Sensitivity, SpeechRouter};
@@ -79,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("open") => Sensitivity::Open,
         _ => Sensitivity::Internal,
     };
+    let mut extractor = None;
     let answerer = match std::env::var("MUSTER_PROVIDER_CONFIG") {
         Ok(path) => {
             let reg = ProviderRegistry::from_toml_str(&std::fs::read_to_string(&path)?)?;
@@ -92,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
                 .unwrap_or_else(|_| MentionRules::default().aliases);
             println!("作答已启用 · 别名 {aliases:?}");
+            extractor = Some(Extractor::new(router.clone(), level, &meeting));
             Some(Arc::new(Answerer::new(
                 router,
                 MentionRules { aliases, ..Default::default() },
@@ -109,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("进房间,开始听…\n");
     let pipeline = Arc::new(pipeline);
+    let (ctx2, sink2, agent_name2) = (ctx.clone(), sink.clone(), agent_name.clone());
     room::run(lk_url, lk_token, ChunkConfig::default(), EnergyGate::default(), move |u| {
         let (p, pol, ctx, ans, sink, name) = (
             pipeline.clone(),
@@ -153,6 +157,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })
     .await?;
+
+    // ---- 散会:提炼行动项(B3)。**提出来的是提案,确认归人**——
+    // 转写会出错、会上的话是低保真输入,而且 Runner 在开发者机器上,
+    // 这个进程本来也跑不了任务。
+    if let Some(ex) = extractor {
+        let transcript = ctx2.lock().await.transcript();
+        println!("\n散会,提炼行动项…");
+        match ex.extract(&transcript).await {
+            ExtractOutcome::Items(items) if items.is_empty() => {
+                println!("(没有明确的行动项)");
+            }
+            ExtractOutcome::Items(items) => {
+                for it in &items {
+                    let ok = sink2.propose_action(it).await;
+                    println!(
+                        "{} {}{}",
+                        if ok { "📋" } else { "✗" },
+                        it.text,
+                        it.owner_hint.as_deref().map(|o| format!("(→ {o})")).unwrap_or_default()
+                    );
+                }
+                println!("共 {} 条,**待人确认后才会成为任务**", items.len());
+            }
+            // "这场会没有行动项"和"我们没能提炼"是两回事
+            ExtractOutcome::Unavailable(why) => {
+                println!("⛔ 未能提炼行动项:{why}");
+                sink2.say(&agent_name2, &format!("[散会提炼未能完成:{why}]")).await;
+            }
+        }
+    }
     println!("会议结束");
     Ok(())
 }

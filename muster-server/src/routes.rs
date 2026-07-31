@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 
-use crate::{meeting, message, org, ws, Db};
+use crate::{action, meeting, message, org, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
@@ -34,10 +34,21 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/ws", get(ws::handler))
         .with_state(with_hub);
 
+    // 行动项:提案由 Agent 落,**确认必须由人**——见 action.rs 的模块文档
+    let action_routes = Router::new()
+        .route(
+            "/meetings/:mid/action-items",
+            get(action::list).post(action::propose),
+        )
+        .route("/action-items/:aid/decide", post(action::decide))
+        .route("/action-items/:aid/run", post(action::link_run))
+        .with_state((db.clone(), hub.clone(), audit.clone()));
+
     Router::new()
         .route("/health", get(health))
         .merge(auth_routes)
         .merge(chan_routes)
+        .merge(action_routes)
         // 桌面壳与浏览器都要连,开发期放开;上线前收敛到白名单(已登记)
         .layer(CorsLayer::permissive())
 }

@@ -32,6 +32,7 @@
 //! - 不做重叠说话分离:两人同时说话时各自的轨是独立的,各转各的,
 //!   纪要里会出现两条时间重叠的句子。这是如实反映,不是缺陷。
 
+pub mod actions;
 pub mod answer;
 pub mod chunk;
 pub mod gate;
@@ -43,6 +44,7 @@ pub mod wav;
 #[cfg(feature = "livekit")]
 pub mod room;
 
+pub use actions::{ActionItem, ExtractOutcome, Extractor};
 pub use answer::{Answer, Answerer, Context};
 pub use chunk::{Accumulator, ChunkConfig, Utterance};
 pub use mention::MentionRules;

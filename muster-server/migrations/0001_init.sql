@@ -109,3 +109,29 @@ CREATE TABLE IF NOT EXISTS meeting_transcript (
     ts_ms       BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_meeting ON meeting_transcript(meeting_id, ts_ms);
+
+-- 会议行动项。**这是提案,不是任务。**
+--
+-- 会上一句话不能直接变成在别人机器上跑的代码改动:转写会出错
+-- (实测把"幂等键"转成"蜜等键"),会议发言是低保真输入;而且 Runner 在
+-- 开发者机器上,服务端的 Agent 本来也跑不了任务。
+-- 人确认那一步不是流程负担,是**授权边界**。
+CREATE TABLE IF NOT EXISTS meeting_action_item (
+    id           UUID PRIMARY KEY,
+    meeting_id   UUID NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+    -- 行动项描述(模型从会议记录里提炼)
+    text         TEXT NOT NULL,
+    -- 会上提到的负责人。**可能是转错的名字**,只作提示,不作授权依据
+    owner_hint   TEXT,
+    -- 出处原话:人要能核对"它是不是听岔了"
+    source_quote TEXT,
+    -- proposed | confirmed | rejected | done
+    status       TEXT NOT NULL DEFAULT 'proposed',
+    decided_by   TEXT,
+    decided_ms   BIGINT,
+    -- 确认后由某个节点跑起来的 run;服务端只记号,不执行
+    run_id       TEXT,
+    created_ms   BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_meeting ON meeting_action_item(meeting_id, created_ms);
+CREATE INDEX IF NOT EXISTS idx_action_status ON meeting_action_item(status);
