@@ -7,7 +7,10 @@ services:
       POSTGRES_USER: muster
       POSTGRES_PASSWORD: muster
       POSTGRES_DB: muster
-    ports: ["5432:5432"]
+    # 映射到 5433 而不是 5432:开发机上常已装有本地 Postgres,
+    # 它会占住 127.0.0.1:5432 并盖过 Docker 的映射,于是连上的是**另一个库**,
+    # 报错还是"role 不存在"这种看不出根因的话。换个端口,不动用户已有的服务。
+    ports: ["5433:5432"]
     volumes: ["pgdata:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U muster"]
@@ -18,10 +21,12 @@ services:
   # NAT 穿透是一门专业手艺,做完也只是追平一个已被解决透的问题。
   livekit:
     image: livekit/livekit-server:latest
-    # --dev 用固定的 devkey/secret,**只可用于本机开发**。
-    # 内网部署要换成 keys.yaml 里的真实密钥,并把 muster-server 的
-    # LIVEKIT_API_KEY / LIVEKIT_API_SECRET 一起改掉。
-    command: --dev --bind 0.0.0.0
+    # 不用 --dev:它内置的密钥是 6 个字符的 "secret",而 muster-server 要求
+    # LIVEKIT_API_SECRET ≥32 字符(房间准入全靠这把钥匙)。这里显式给一把,
+    # **内网部署务必换掉**——这一把是公开在仓库里的。
+    command: --bind 0.0.0.0
+    environment:
+      LIVEKIT_KEYS: "devkey: devsecret_0123456789abcdef0123456789abcdef"
     ports:
       - "7880:7880"    # WebSocket 信令
       - "7881:7881"    # TCP 回退

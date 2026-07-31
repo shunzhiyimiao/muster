@@ -33,3 +33,4 @@ livekit = ["dep:livekit", "dep:futures"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -37,15 +37,25 @@ pub struct Pipeline {
     sink: Arc<dyn TranscriptSink>,
     /// 语言提示;`None` 让后端自己判。
     language: Option<String>,
+    /// 领域词表 / 风格引导。两个用途,缺一不可:
+    /// 1. **纠术语**——"幂等键""网关"这类词,不给提示 whisper 会转成同音别字;
+    /// 2. **定字形**——中文 `zh` 默认出繁体,用一句简体提示把它带回简体。
+    /// 它每次调用都原样发给后端,**绝不能放机密内容**。
+    prompt: Option<String>,
 }
 
 impl Pipeline {
     pub fn new(router: Arc<SpeechRouter>, sink: Arc<dyn TranscriptSink>) -> Self {
-        Self { router, sink, language: None }
+        Self { router, sink, language: None, prompt: None }
     }
 
     pub fn with_language(mut self, lang: impl Into<String>) -> Self {
         self.language = Some(lang.into());
+        self
+    }
+
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = Some(prompt.into());
         self
     }
 
@@ -69,7 +79,7 @@ impl Pipeline {
                 audio: wav,
                 filename: format!("{}-{}.wav", u.speaker, u.started_ms),
                 language: self.language.clone(),
-                prompt: None,
+                prompt: self.prompt.clone(),
             })
             .await;
 

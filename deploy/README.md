@@ -2,7 +2,7 @@
 
 ```bash
 cd deploy && docker compose up -d          # PostgreSQL + LiveKit + whisper
-export DATABASE_URL=postgres://muster:muster@localhost:5432/muster
+export DATABASE_URL=postgres://muster:muster@localhost:5433/muster   # 5433:见 compose 注释
 export MUSTER_JWT_SECRET=$(openssl rand -hex 32)   # 少于 32 字符会被拒绝启动
 cargo run -p muster-server
 ```
@@ -40,12 +40,12 @@ cargo run -p muster-server --example admin -- disable bob
 
 | 变量 | 必需 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | 是 | 缺失即拒绝启动,不用默认值悄悄连到别处 |
+| `DATABASE_URL` | 是 | 缺失即拒绝启动。注意端口是 **5433**——开发机常已有本地 Postgres 占着 5432 |
 | `MUSTER_JWT_SECRET` | 是 | ≥32 字符。**不提供默认密钥**——默认密钥等于没有认证 |
 | `MUSTER_BIND` | 否 | 默认 `127.0.0.1:8787` |
 | `LIVEKIT_URL` | 会议需要 | 如 `ws://localhost:7880` |
 | `LIVEKIT_API_KEY` | 会议需要 | compose 的 `--dev` 模式是 `devkey` |
-| `LIVEKIT_API_SECRET` | 会议需要 | ≥32 字符;`--dev` 模式是 `secret`,**仅限本机** |
+| `LIVEKIT_API_SECRET` | 会议需要 | ≥32 字符,须与 compose 里 `LIVEKIT_KEYS` 的值一致。**仓库里那把是公开的,内网部署必须换** |
 
 ## 会议
 
