@@ -39,6 +39,10 @@ pub enum Push {
 #[derive(Clone, Default)]
 pub struct Hub {
     inner: Arc<Mutex<HashMap<String, broadcast::Sender<String>>>>,
+    /// 全局流(C2 SSE):一条连接复用所有频道,所以还需要一个不分频道的通道。
+    /// 载荷是 `(stream_seq, json)`——序号即 SSE 的事件 id。
+    /// 非消息类事件(在线状态、转写)序号填 0:它们不参与重放,过期即无意义。
+    all: Arc<Mutex<Option<broadcast::Sender<(i64, String)>>>>,
 }
 
 impl Hub {
@@ -57,15 +61,33 @@ impl Hub {
         self.sender(channel_id).subscribe()
     }
 
+    fn all_sender(&self) -> broadcast::Sender<(i64, String)> {
+        let mut g = self.all.lock().unwrap();
+        g.get_or_insert_with(|| broadcast::channel(CHANNEL_CAP).0).clone()
+    }
+
+    /// 订阅全局流(SSE 用)。
+    pub fn subscribe_all(&self) -> broadcast::Receiver<(i64, String)> {
+        self.all_sender().subscribe()
+    }
+
     pub fn broadcast(&self, channel_id: &str, msg: &MessageOut) {
-        self.push(channel_id, &Push::Message(msg.clone()));
+        let ev = Push::Message(msg.clone());
+        if let Ok(json) = serde_json::to_string(&ev) {
+            let _ = self.sender(channel_id).send(json.clone());
+            // 全局流带上序号:SSE 的事件 id 就是它,断线重连据此重放
+            let _ = self.all_sender().send((msg.stream_seq, json));
+        }
     }
 
     /// 推一条事件。**没有订阅者时静默丢弃**——这是广播不是队列;
     /// 需要"一条都不能少"的消费者应当走补拉(按 channel_seq),不是靠这里。
     pub fn push(&self, channel_id: &str, ev: &Push) {
         if let Ok(json) = serde_json::to_string(ev) {
-            let _ = self.sender(channel_id).send(json);
+            let _ = self.sender(channel_id).send(json.clone());
+            // 瞬时事件序号填 0:它们不参与重放(过期即无意义),
+            // 但仍要推给在线的人
+            let _ = self.all_sender().send((0, json));
         }
     }
 }

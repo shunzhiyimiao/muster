@@ -24,8 +24,10 @@ jsonwebtoken = "9"
 argon2 = "0.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros"] }

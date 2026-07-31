@@ -1983,6 +1983,17 @@ fn remote_logout(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 实时通道所需的令牌(C2)。前端拿它自己开 `EventSource`——
+/// **浏览器的自动重连与 `Last-Event-ID` 是白送的**,经 Tauri 命令中转
+/// 反而要把那套逻辑重写一遍。
+#[tauri::command]
+fn remote_token(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let r = b.remote.lock().unwrap();
+    Ok(r.as_ref().map(|r| r.token.clone()))
+}
+
 #[tauri::command]
 fn remote_status(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
     let guard = state.0.lock().unwrap();
@@ -2184,6 +2195,7 @@ fn main() {
             remote_status,
             remote_history,
             remote_channels,
+            remote_token,
             approvals_pending,
             approvals_decide,
             capsules_list,

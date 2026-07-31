@@ -135,3 +135,21 @@ CREATE TABLE IF NOT EXISTS meeting_action_item (
 );
 CREATE INDEX IF NOT EXISTS idx_action_meeting ON meeting_action_item(meeting_id, created_ms);
 CREATE INDEX IF NOT EXISTS idx_action_status ON meeting_action_item(status);
+
+-- 全局投递序号(C2 SSE 恢复用)。
+--
+-- 为什么不用 BIGSERIAL:序列号是**事务外**分配的,拿到 5 的事务可能比拿到 6 的
+-- 晚提交,于是消费者按 `id > last` 拉取时会永久跳过 5。这个坑在 outbox/CDC
+-- 里很经典,而它丢的是消息。
+--
+-- 改用单行游标 + `UPDATE ... RETURNING`:锁持有到提交,**加锁顺序即提交顺序**,
+-- 于是序号顺序就是可见顺序。代价是消息插入全局串行——团队规模下不值一提。
+CREATE TABLE IF NOT EXISTS stream_cursor (
+    id       INTEGER PRIMARY KEY DEFAULT 1,
+    next_seq BIGINT NOT NULL DEFAULT 1,
+    CHECK (id = 1)
+);
+INSERT INTO stream_cursor(id, next_seq) VALUES (1, 1) ON CONFLICT DO NOTHING;
+
+ALTER TABLE message ADD COLUMN IF NOT EXISTS stream_seq BIGINT;
+CREATE INDEX IF NOT EXISTS idx_message_stream ON message(stream_seq);

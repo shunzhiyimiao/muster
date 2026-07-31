@@ -26,6 +26,8 @@ export interface ChatState {
   send: (channelId: string, text: string, asTask: boolean) => void;
   /// C1:把持久化历史灌进尚未有内容的频道(避免与本次会话消息重复)。
   hydrate: (rows: StoredMsg[]) => void;
+  /** C2:服务端推来的一条(别人发的,或自己在别的客户端发的) */
+  pushRemote: (channelId: string, role: string, text: string, ts: number) => void;
 }
 
 export function useChat(onActivity: () => void): ChatState {
@@ -146,7 +148,24 @@ export function useChat(onActivity: () => void): ChatState {
     });
   };
 
-  return { msgs, busy, lastStart, lastDone, lastFail, lastDiff, send, hydrate };
+  /// 服务端推来的消息。**按 (ts, text) 去重**:自己发的那条既走了 HTTP 响应
+  /// 又会从 SSE 推回来,不去重就会看见两遍。
+  const pushRemote = (channelId: string, role: string, text: string, ts: number) => {
+    setMsgs((m) => {
+      const cur = m[channelId] ?? [];
+      if (cur.some((x) => x.text === text && Math.abs((x.ts ?? 0) - ts) < 2000)) return m;
+      const msg: Msg = {
+        key: `remote-${ts}-${cur.length}`,
+        role: role === "agent" ? "agent" : "user",
+        text,
+        status: "done",
+        ts,
+      };
+      return { ...m, [channelId]: [...cur, msg] };
+    });
+  };
+
+  return { msgs, busy, lastStart, lastDone, lastFail, lastDiff, send, hydrate, pushRemote };
 }
 
 /* ---------- 真实消息流 + 输入区(v4 皮肤) ---------- */

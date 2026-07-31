@@ -28,7 +28,10 @@
 //!
 //! - **无 Transactional Outbox**:消息落库与 WebSocket 广播不在同一事务里,
 //!   崩溃窗口内可能「落了库没广播」。补拉能纠正它,但补拉也还没做。
-//! - **无断线补拉与幂等**(P3-05):`channel_seq` 已经在写了,消费侧还没用。
+//! - ~~无断线补拉~~ 已由 SSE 的 `Last-Event-ID` + 全局 `stream_seq` 解决(C2)。
+//!   仍缺的是**幂等**:同一条消息重复 POST 会落两次(客户端重试时会发生)。
+//! - **`/ws` 仍在**,供未迁完的客户端过渡。**迁完即删**——两条实时通道并存久了,
+//!   就会有人只修其中一条。
 //! - **无节点链锚定**(设计已定:节点上报事件头 `event_id+hash+prev_hash`、
 //!   不含 payload,服务端串链校验后记 `chain.anchor`)。**在它落地之前,
 //!   组织级篡改检测等于没有**——节点自己的链仍然可验,但没人替组织盯着。
@@ -44,6 +47,7 @@ pub mod action;
 pub mod audit;
 pub mod auth;
 pub mod db;
+pub mod events;
 pub mod livekit;
 pub mod meeting;
 pub mod message;

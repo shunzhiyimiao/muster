@@ -119,6 +119,34 @@ export default function App() {
     channels: teamChannels.filter((c) => c.team_id === tid),
   })).filter((t) => t.channels.length > 0);
 
+  /* C2:实时通道。一条 SSE 复用所有频道,**断线重连与 Last-Event-ID 由
+     EventSource 自带**——这正是从 WebSocket 换过来的理由,不必自己写补拉。 */
+  useEffect(() => {
+    if (!remote?.connected || !remote.base) return;
+    let es: EventSource | null = null;
+    let stop = false;
+    api.remoteToken().then((tok) => {
+      if (!tok || stop) return;
+      es = new EventSource(api.eventsUrl(remote.base!, tok));
+      es.onmessage = (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          if (ev.type === "message") {
+            chat.pushRemote(ev.channel_id, ev.role, ev.body, ev.ts_ms);
+          }
+        } catch {
+          /* 单条解析失败不该拖垮整条流 */
+        }
+      };
+      // onerror 不用手动重连:EventSource 会自己退避重试并带上 Last-Event-ID
+    });
+    return () => {
+      stop = true;
+      es?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remote?.connected, remote?.base]);
+
   const soft = (label: string) =>
     setNotice(`「${label}」为完整形态占位模块,当前聚焦 控制台 / 个人工作台 / 团队协作`);
 

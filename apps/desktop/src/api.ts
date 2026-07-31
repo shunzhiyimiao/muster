@@ -261,9 +261,14 @@ export const api = {
   remoteLogin: (base: string, id: string, password: string) =>
     invoke<RemoteStatus>("remote_login", { base, id, password }),
   remoteLogout: () => invoke<void>("remote_logout"),
+  remoteToken: () => invoke<string | null>("remote_token"),
   /** 组织的频道(登录后);个人频道不在其中——它不上服务端 */
   remoteChannels: () => invoke<Channel[]>("remote_channels"),
   remoteHistory: (channelId: string) => invoke<StoredMsg[]>("remote_history", { channelId }),
+  /** C2:实时通道地址。SSE 的 EventSource 由前端直连服务端,不经 Tauri 命令
+      ——浏览器的自动重连与 Last-Event-ID 是白送的,绕一圈反而要自己重写 */
+  eventsUrl: (base: string, token: string) =>
+    `${base.replace(/\/$/, "")}/events?token=${encodeURIComponent(token)}`,
   transcriptStats: () => invoke<TranscriptStats>("transcript_stats"),
   /** kind: all | channel | run | older_than_days */
   transcriptExport: (kind: string, value?: string) =>

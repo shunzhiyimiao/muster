@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 
-use crate::{action, meeting, message, org, ws, Db};
+use crate::{action, events, meeting, message, org, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
@@ -31,6 +31,9 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/meetings/:mid/transcript", post(meeting::add_transcript))
         .route("/meetings/:mid/level", post(meeting::raise_level))
         .route("/meetings/:mid/end", post(meeting::end))
+        // C2:SSE 取代 WebSocket。/ws 暂留一版供未迁完的客户端过渡,
+        // 迁完即删——两条实时通道并存久了,就会有人只修其中一条。
+        .route("/events", get(events::handler))
         .route("/ws", get(ws::handler))
         .with_state(with_hub);
 

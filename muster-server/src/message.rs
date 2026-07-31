@@ -27,6 +27,10 @@ pub struct MessageOut {
     pub id: Uuid,
     pub channel_id: String,
     pub channel_seq: i64,
+    /// 全局投递序号(C2):SSE 的事件 id 就是它。**与 channel_seq 是两回事**——
+    /// 前者用于"一条连接复用所有频道"时的恢复,后者是单频道的无空洞校验。
+    #[serde(default)]
+    pub stream_seq: i64,
     pub author_id: String,
     pub role: String,
     pub body: String,
@@ -67,7 +71,8 @@ pub async fn list(
     require(&db, &id, &Action::SendMessage, &Scope::Channel(cid.clone())).await?;
     let limit = q.limit.clamp(1, 500);
     let rows = sqlx::query_as::<_, MessageOut>(
-        "SELECT id, channel_id, channel_seq, author_id, role, body, run_id, ts_ms
+        "SELECT id, channel_id, channel_seq, COALESCE(stream_seq,0) AS stream_seq,
+                author_id, role, body, run_id, ts_ms
          FROM message WHERE channel_id = $1 AND channel_seq > $2
          ORDER BY channel_seq ASC LIMIT $3",
     )
@@ -111,12 +116,19 @@ pub async fn insert(
     .bind(channel_id)
     .fetch_one(&mut *tx)
     .await?;
+    // 全局序号同事务分配:锁持有到提交 ⇒ **加锁顺序即提交顺序**,
+    // 于是不会出现"序号小的后可见"而被 `> last` 永久跳过(见迁移里的注释)
+    let (stream_seq,): (i64,) = sqlx::query_as(
+        "UPDATE stream_cursor SET next_seq = next_seq + 1 WHERE id = 1 RETURNING next_seq - 1",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
 
     let id = Uuid::new_v4();
     let ts = now_ms();
     sqlx::query(
-        "INSERT INTO message(id, channel_id, channel_seq, author_id, role, body, run_id, ts_ms)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
+        "INSERT INTO message(id, channel_id, channel_seq, author_id, role, body, run_id, ts_ms, stream_seq)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     )
     .bind(id)
     .bind(channel_id)
@@ -126,6 +138,7 @@ pub async fn insert(
     .bind(body)
     .bind(run_id)
     .bind(ts)
+    .bind(stream_seq)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -134,6 +147,7 @@ pub async fn insert(
         id,
         channel_id: channel_id.to_string(),
         channel_seq: seq,
+        stream_seq,
         author_id: author_id.to_string(),
         role: role.to_string(),
         body: body.to_string(),
