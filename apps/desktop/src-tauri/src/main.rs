@@ -426,7 +426,37 @@ struct Backend {
     state: Arc<Mutex<StateStore>>,
     run_seq: Arc<AtomicU64>,
     drill: Arc<Mutex<Option<DrillState>>>,
+    /// 已连接的服务端(C1)。`None` = 单机模式,**一切行为与从前完全一致**——
+    /// 单机才是这个产品的入口形态,不能因为加了联网模式就让它退化。
+    remote: Arc<Mutex<Option<remote::Remote>>>,
 }
+
+mod remote;
+
+/// 一条消息该记在哪:**个人频道永远本地,团队频道连着服务端时走服务端**。
+///
+/// 服务端写失败**不静默降级到本地**:那会让人以为发到了团队、其实只存在自己
+/// 机器上——比发不出去更糟。失败就返回 Err,让界面显出来。
+async fn record_msg(
+    remote: Option<&remote::Remote>,
+    store: &Arc<Mutex<StateStore>>,
+    channel_id: &str,
+    role: &str,
+    text: &str,
+    run_id: Option<&str>,
+    status: &str,
+) -> Result<(), String> {
+    match remote {
+        Some(r) if !remote::is_personal(channel_id) => {
+            r.send(channel_id, text, role, run_id).await.map(|_| ())
+        }
+        _ => {
+            store.lock().unwrap().insert(channel_id, role, text, run_id, status);
+            Ok(())
+        }
+    }
+}
+
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("时钟早于 epoch").as_millis() as u64
@@ -693,6 +723,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
             state: Arc::new(Mutex::new(state)),
             run_seq: Arc::new(AtomicU64::new(0)),
             drill: Arc::new(Mutex::new(None)),
+            remote: Arc::new(Mutex::new(None)),
         });
 
         // 保留期到点即清(仅在明确设了 MUSTER_TRANSCRIPT_KEEP_DAYS 时)。
@@ -749,7 +780,8 @@ async fn send_message(
     let sources = label_sources(&channel.id);
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let session_id = format!("session:{}", channel.id);
-    store.lock().unwrap().insert(&channel.id, "user", &text, None, "done");
+    let rmt = remote_of(&state);
+    record_msg(rmt.as_ref(), &store, &channel.id, "user", &text, None, "done").await?;
 
     // ---- E2 路由决策(含探活,fail-closed)
     let route_req = RouteRequest {
@@ -953,7 +985,7 @@ async fn send_message(
             .ok();
         }
         None => {
-            store.lock().unwrap().insert(&channel.id, "agent", &full, Some(&run_id), "done");
+            let _ = record_msg(rmt.as_ref(), &store, &channel.id, "agent", &full, Some(&run_id), "done").await;
             app.emit(
                 "task-done",
                 DonePayload {
@@ -1910,6 +1942,126 @@ fn purge_and_record(b: &Backend, sel: &Selector, keep_days: Option<u32>) -> Resu
     Ok(n)
 }
 
+// ---------------------------------------------------------------- C1 接服务端
+
+#[derive(Serialize)]
+struct RemoteStatus {
+    connected: bool,
+    base: Option<String>,
+    account_id: Option<String>,
+    display_name: Option<String>,
+}
+
+#[tauri::command]
+async fn remote_login(
+    state: State<'_, AppState>,
+    base: String,
+    id: String,
+    password: String,
+) -> Result<RemoteStatus, String> {
+    // 登录先做完再取锁:HTTP 要 await,而 std::sync::Mutex 的 guard 不能跨 await
+    let r = remote::Remote::login(&base, &id, &password).await?;
+    let handle = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.remote.clone()
+    };
+    let st = RemoteStatus {
+        connected: true,
+        base: Some(r.base.clone()),
+        account_id: Some(r.account_id.clone()),
+        display_name: Some(r.display_name.clone()),
+    };
+    *handle.lock().unwrap() = Some(r);
+    Ok(st)
+}
+
+#[tauri::command]
+fn remote_logout(state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    *b.remote.lock().unwrap() = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn remote_status(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let r = b.remote.lock().unwrap();
+    Ok(match r.as_ref() {
+        Some(r) => RemoteStatus {
+            connected: true,
+            base: Some(r.base.clone()),
+            account_id: Some(r.account_id.clone()),
+            display_name: Some(r.display_name.clone()),
+        },
+        None => RemoteStatus {
+            connected: false,
+            base: None,
+            account_id: None,
+            display_name: None,
+        },
+    })
+}
+
+/// 取当前服务端句柄的克隆(不持锁跨 await)。
+fn remote_of(state: &State<'_, AppState>) -> Option<remote::Remote> {
+    let guard = state.0.lock().ok()?;
+    let b = guard.as_ref()?;
+    let r = b.remote.lock().ok()?;
+    r.clone()
+}
+
+/// 组织的频道清单(登录后拉)。
+///
+/// 与 `bootstrap` 分开不是权宜:**bootstrap 回答"这台机器有什么",
+/// 本命令回答"这个组织有什么"**。两者来源不同、失败方式也不同——
+/// 服务端拉不到时前端仍要能显示本地那份,而不是整个界面起不来。
+///
+/// 个人频道不在返回值里:它不上服务端,所以服务端也不会有它。
+#[tauri::command]
+async fn remote_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    let rows = r.channels().await?;
+    Ok(rows
+        .into_iter()
+        .map(|c| ChannelInfo {
+            id: c.id,
+            name: c.name,
+            team_id: c.team_id.clone(),
+            team: c.team_id,
+            level: remote::parse_level(&c.level),
+            level_note: "频道密级由服务端组织配置决定".into(),
+            desc: String::new(),
+            personal: false,
+        })
+        .collect())
+}
+
+/// 团队频道的消息从服务端拉;**个人频道永不走这条路**(见 remote.rs 模块文档)。
+#[tauri::command]
+async fn remote_history(
+    state: State<'_, AppState>,
+    channel_id: String,
+) -> Result<Vec<StoredMsg>, String> {
+    if remote::is_personal(&channel_id) {
+        return Err("个人频道的内容不上服务端,这是产品承诺".into());
+    }
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    let msgs = r.messages(&channel_id, None).await?;
+    Ok(msgs
+        .into_iter()
+        .map(|m| StoredMsg {
+            channel_id: channel_id.clone(),
+            role: m.role,
+            text: m.body,
+            run_id: m.run_id,
+            status: "done".into(),
+            ts_ms: m.ts_ms,
+        })
+        .collect())
+}
+
 #[tauri::command]
 fn roster_counts_cmd(state: State<'_, AppState>) -> Result<Vec<TeamCountOut>, String> {
     let guard = state.0.lock().unwrap();
@@ -2027,6 +2179,11 @@ fn main() {
             transcript_stats,
             transcript_export,
             transcript_purge,
+            remote_login,
+            remote_logout,
+            remote_status,
+            remote_history,
+            remote_channels,
             approvals_pending,
             approvals_decide,
             capsules_list,

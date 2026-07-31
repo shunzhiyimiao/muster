@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  CapsuleOut, ForgeableRun, PendingApprovalOut, RosterEntryOut, TeamCount, WhoAmI, fmtBytes,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteStatus, RosterEntryOut, TeamCount, WhoAmI, fmtBytes,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -59,6 +59,10 @@ export default function App() {
   const [agent, setAgent] = useState<AgentStats | null>(null);
   const [rosterLive, setRosterLive] = useState<RosterEntryOut[]>([]);
   const [teamCounts, setTeamCounts] = useState<TeamCount[]>([]);
+  /* C1:服务端连接。null = 还没查;connected=false = 单机模式 */
+  const [remote, setRemote] = useState<RemoteStatus | null>(null);
+  const [remoteChans, setRemoteChans] = useState<Channel[]>([]);
+  const [loginOpen, setLoginOpen] = useState(false);
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
@@ -78,6 +82,11 @@ export default function App() {
     api.capsulesList().then(setCapsules).catch(() => {});
     api.forgeableRuns().then(setForgeable).catch(() => {});
     api.whoami().then(setMe).catch(() => {});
+    api.remoteStatus().then((r) => {
+      setRemote(r);
+      if (r.connected) api.remoteChannels().then(setRemoteChans).catch(() => setRemoteChans([]));
+      else setRemoteChans([]);
+    }).catch(() => {});
   };
   const chat = useChat(refreshAll);
 
@@ -94,7 +103,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const channels = boot?.channels ?? [];
+  // 连上服务端就用它的团队频道;**个人频道始终来自本地**——
+  // 它不上服务端(界面上承诺过"不进团队、不出现在任何频道与检索里")
+  const localChannels = boot?.channels ?? [];
+  const channels =
+    remote?.connected && remoteChans.length > 0
+      ? [...remoteChans, ...localChannels.filter((c) => c.personal)]
+      : localChannels;
   const teamChannels = useMemo(() => channels.filter((c) => !c.personal), [channels]);
   const personalChannel = useMemo(() => channels.find((c) => c.personal) ?? null, [channels]);
   const activeChannel = teamChannels.find((c) => c.id === channelId) ?? null;
@@ -233,6 +248,7 @@ export default function App() {
 
           {module === "console" && (
             <>
+              <ConnBar remote={remote} onClick={() => setLoginOpen(true)} />
               <SideSec>总览</SideSec>
               <SideItem icon={<Home size={16} />} label="中控台" active={view === "home"} onClick={() => { setView("home"); setNotice(""); refreshAll(); }} />
               <SideItem icon={<Shield size={16} />} label="审计中心" active={view === "audit"} onClick={() => { setView("audit"); setNotice(""); refreshAll(); }} />
@@ -277,6 +293,7 @@ export default function App() {
 
           {module === "personal" && (
             <>
+              <ConnBar remote={remote} onClick={() => setLoginOpen(true)} />
               <SideSec>我的</SideSec>
               <SideItem icon={<Home size={16} />} label="首页" active={view === "phome"} onClick={() => { setView("phome"); setNotice(""); }} />
               <SideItem icon={<Bot size={16} />} label="Agent 档案" active={view === "agent"} onClick={() => { setView("agent"); setNotice(""); refreshAll(); }}
@@ -320,6 +337,7 @@ export default function App() {
                 extra={<span className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: view === "meeting" ? "#fff" : T.green }}>
                   <span className="wv inline-block w-1 h-2.5 rounded-full" style={{ background: "currentColor" }} />进行中
                 </span>} />
+              <ConnBar remote={remote} onClick={() => setLoginOpen(true)} />
               <SideSec>团队</SideSec>
               {teams.map((t) => {
                 const open = !!expanded[t.id];
@@ -533,6 +551,25 @@ export default function App() {
         </div>
       )}
 
+      {/* ===== C1 服务端连接 ===== */}
+      {loginOpen && (
+        <LoginDialog
+          current={remote}
+          onClose={() => setLoginOpen(false)}
+          onDone={(r) => {
+            setRemote(r);
+            setLoginOpen(false);
+            if (r.connected) {
+              api.remoteChannels().then(setRemoteChans).catch(() => setRemoteChans([]));
+              setNotice(`已连接 ${r.base}(${r.display_name})——团队频道来自服务端,私有会话仍只在本机`);
+            } else {
+              setRemoteChans([]);
+              setNotice("已断开服务端,回到单机模式");
+            }
+          }}
+        />
+      )}
+
       {/* ===== 对话快照弹窗(概念示例) ===== */}
       {convo !== "closed" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
@@ -646,6 +683,130 @@ function TopBar({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* 连接状态条。**单机不是"没连上",是一种正常形态**——所以文案不用
+   "离线""未连接"这种带缺陷意味的词,而是如实说"单机模式"。 */
+function ConnBar({ remote, onClick }: { remote: RemoteStatus | null; onClick: () => void }) {
+  const on = !!remote?.connected;
+  return (
+    <button onClick={onClick} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl mb-1 text-left"
+      style={{ background: on ? T.greenSoft : T.soft }}>
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: on ? T.green : T.faint }} />
+      <span className="text-[11.5px] font-semibold" style={{ color: on ? T.green : T.sub }}>
+        {on ? "已连接团队服务器" : "单机模式"}
+      </span>
+      <span className="ml-auto text-[10px] truncate" style={{ color: T.faint, maxWidth: 90 }}>
+        {on ? remote?.display_name : "点此连接"}
+      </span>
+    </button>
+  );
+}
+
+/* ===== C1:服务端登录 =====
+   未连接时是单机点将台,一切照旧;连上之后团队频道来自服务端,
+   **私有会话仍然只在本机**——界面上承诺过它不进团队,连上服务器也不能破。 */
+function LoginDialog({
+  current,
+  onClose,
+  onDone,
+}: {
+  current: RemoteStatus | null;
+  onClose: () => void;
+  onDone: (r: RemoteStatus) => void;
+}) {
+  const [base, setBase] = useState(current?.base ?? "http://localhost:8787");
+  const [id, setId] = useState(current?.account_id ?? "");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = () => {
+    if (!base.trim() || !id.trim() || !pw) {
+      setErr("服务器地址、账号、口令都要填");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    api
+      .remoteLogin(base.trim(), id.trim(), pw)
+      .then(onDone)
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
+      <Card className="w-[420px] p-6">
+        <b className="text-sm">连接团队服务器</b>
+        <div className="text-[11.5px] mt-1.5 leading-relaxed" style={{ color: T.sub }}>
+          连上之后,团队频道与消息来自服务端;<b>私有会话仍然只存在这台机器上</b>。
+          任务执行、审计链、worktree 也都留在本机——服务端不持有源码。
+        </div>
+
+        {current?.connected ? (
+          <div className="mt-4">
+            <div className="text-xs" style={{ color: T.sub }}>
+              当前已连接 <b style={{ color: T.indigoDeep }}>{current.base}</b>
+              <br />身份:{current.display_name}({current.account_id})
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() =>
+                  api.remoteLogout().then(() =>
+                    onDone({ connected: false, base: null, account_id: null, display_name: null })
+                  )
+                }
+                className="px-4 py-2 rounded-xl text-xs font-semibold"
+                style={{ background: T.redSoft, color: T.red }}
+              >
+                断开,回到单机模式
+              </button>
+              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+                关闭
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 space-y-2">
+              {[
+                ["服务器地址", base, setBase, "text"],
+                ["账号", id, setId, "text"],
+                ["口令", pw, setPw, "password"],
+              ].map(([label, val, set, type]) => (
+                <label key={label as string} className="block">
+                  <span className="text-[11px]" style={{ color: T.faint }}>{label as string}</span>
+                  <input
+                    type={type as string}
+                    value={val as string}
+                    onChange={(e) => (set as (v: string) => void)(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && submit()}
+                    className="w-full mt-1 px-3 py-2 rounded-xl text-xs outline-none"
+                    style={{ background: T.panel, border: `1px solid ${T.line}` }}
+                  />
+                </label>
+              ))}
+            </div>
+            {err && (
+              <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.redSoft, color: T.red }}>
+                {err}
+              </div>
+            )}
+            <div className="flex gap-2 mt-4">
+              <button disabled={busy} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
+                {busy ? "连接中…" : "连接"}
+              </button>
+              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+                取消
+              </button>
+            </div>
+          </>
+        )}
+      </Card>
     </div>
   );
 }

@@ -183,6 +183,13 @@ export interface TranscriptStats {
   keep_days: number | null;
   export_dir: string;
 }
+/** C1:服务端连接状态。未连接 = 单机模式,一切行为与从前一致 */
+export interface RemoteStatus {
+  connected: boolean;
+  base: string | null;
+  account_id: string | null;
+  display_name: string | null;
+}
 export interface PendingApprovalOut {
   approval_id: string;
   ts_ms: number;
@@ -250,6 +257,13 @@ export const api = {
   rosterCounts: () => invoke<TeamCount[]>("roster_counts_cmd"),
   /** 封存断裂的审计链并重开一条;返回封存后的路径 */
   auditArchiveBroken: () => invoke<string>("audit_archive_broken"),
+  remoteStatus: () => invoke<RemoteStatus>("remote_status"),
+  remoteLogin: (base: string, id: string, password: string) =>
+    invoke<RemoteStatus>("remote_login", { base, id, password }),
+  remoteLogout: () => invoke<void>("remote_logout"),
+  /** 组织的频道(登录后);个人频道不在其中——它不上服务端 */
+  remoteChannels: () => invoke<Channel[]>("remote_channels"),
+  remoteHistory: (channelId: string) => invoke<StoredMsg[]>("remote_history", { channelId }),
   transcriptStats: () => invoke<TranscriptStats>("transcript_stats"),
   /** kind: all | channel | run | older_than_days */
   transcriptExport: (kind: string, value?: string) =>
