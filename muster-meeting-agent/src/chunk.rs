@@ -157,6 +157,11 @@ impl<G: SpeechGate> Accumulator<G> {
     pub fn tracked_speakers(&self) -> usize {
         self.speakers.len()
     }
+
+    /// 当前有缓冲状态的说话人。会议结束时用它逐个 flush——**一句都不能丢**。
+    pub fn speakers(&self) -> Vec<String> {
+        self.speakers.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

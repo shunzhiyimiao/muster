@@ -6,9 +6,14 @@
 ## 一、好消息:重采样不用我们做
 
 ```rust
-NativeAudioStream::new(track: RtcAudioTrack, sample_rate: i32, num_channels: i32,
-                       queue_size_frames: Option<usize>)
+// git 版(我们实际构建的那个):
+NativeAudioStream::new(track: RtcAudioTrack, sample_rate: i32, num_channels: i32)
+NativeAudioStream::with_options(track, sample_rate, num_channels, options)
 ```
+
+> ⚠️ **读 API 要读实际构建的那个版本。** crates.io 的 `libwebrtc 0.3.43` 是**四参**
+> (末位 `queue_size_frames: Option<usize>`),git 版是三参。我第一遍照 crates.io
+> 的源码写,编译当场报错。教训不大但很实:既然依赖走 git,参考也要走 git。
 
 **调用方直接指定想要的采样率与声道数,SDK 负责转换。** 所以可以直接要
 16 kHz 单声道——正是 whisper 想要的格式。原计划里"手写重采样"那一块可以整块划掉。

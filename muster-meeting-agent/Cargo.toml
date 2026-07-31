@@ -11,6 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 tracing = "0.1"
+async-trait = "0.1"
 
 # LiveKit 适配层**默认不编**。它传递依赖原生 WebRTC(构建期从 GitHub 拉
 # 100MB+,target 1GB+,见 docs/A1-livekit-探针结论.md),而本仓的约定是
@@ -18,13 +19,17 @@ tracing = "0.1"
 #
 # 核心链路(缓冲 → 切句 → 转写 → 回传)不依赖 SDK,在默认 feature 下全可测;
 # LiveKit 只是帧的一个来源,测试是另一个。
-livekit = { version = "0.8", default-features = false, features = ["tokio", "__rustls-tls"], optional = true }
+# 必须走 git + 固定 commit:crates.io 上**没有任何一组 livekit 版本能编过**
+# (0.8.1 的 data-stream 引用 livekit-common 里不存在的符号;0.7.53 的 api 与
+# protocol 类型漂移;钉旧 protocol 也不行——下限就是漂移那批)。
+# 详见 docs/A1-livekit-探针结论.md。**不要改成跟 main**:上游随时会再次失配。
+livekit = { git = "https://github.com/livekit/rust-sdks", rev = "00258d1e52e563327f3ed75807ea03a189a5c2d2", default-features = false, features = ["tokio", "native-tls"], optional = true }
 futures = { version = "0.3", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [features]
 default = []
-livekit = ["dep:livekit", "dep:futures", "dep:reqwest"]
+livekit = ["dep:livekit", "dep:futures"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

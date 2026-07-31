@@ -34,6 +34,8 @@
 
 pub mod chunk;
 pub mod gate;
+pub mod pipeline;
+pub mod sink;
 pub mod wav;
 
 #[cfg(feature = "livekit")]
@@ -41,6 +43,8 @@ pub mod room;
 
 pub use chunk::{Accumulator, ChunkConfig, Utterance};
 pub use gate::{EnergyGate, SpeechGate};
+pub use pipeline::{Pipeline, TranscriptSink};
+pub use sink::HttpSink;
 pub use wav::pcm16_to_wav;
 
 /// 会议 Agent 处理音频的采样格式。**固定 16k 单声道**:whisper 要这个,
