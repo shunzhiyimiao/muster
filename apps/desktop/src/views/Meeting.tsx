@@ -109,6 +109,9 @@ export function MeetingRoom({
   };
 
   const connected = state === ConnectionState.Connected;
+  // Agent 是不是一个在场的参会者。名字来自它的账号 id / 显示名,
+  // 两者都认——部署方可能改过显示名。
+  const agentHere = peers.some((p) => p === "A-007" || p === "小七");
   const levelTone = meeting.level === "restricted" ? "red" : meeting.level === "internal" ? "amb" : undefined;
 
   return (
@@ -209,12 +212,30 @@ export function MeetingRoom({
       {/* 实时纪要:由会议 Agent 转写后落库,再经 SSE 推来 */}
       <Card className="px-5 pt-4 pb-2 flex flex-col" style={{ maxHeight: 560 }}>
         <div className="flex items-center gap-2">
-          <Radio size={13} style={{ color: T.indigo }} />
+          <Radio size={13} style={{ color: agentHere ? T.indigo : T.faint }} />
           <b className="text-[13px]">实时纪要</b>
+          {/* **Agent 在不在必须看得见。** 它退出了而界面无声无息,
+              人只会觉得"说了没反应"——真机上就撞过这一次。 */}
+          <span
+            className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
+            style={{
+              background: agentHere ? T.greenSoft : T.redSoft,
+              color: agentHere ? T.green : T.red,
+            }}
+          >
+            {agentHere ? "Agent 在会中" : "Agent 不在会中"}
+          </span>
           <span className="ml-auto text-[10px]" style={{ color: T.faint }}>
-            由会议 Agent 本地转写
+            本地转写
           </span>
         </div>
+        {!agentHere && (
+          <div className="mt-2 px-3 py-2 rounded-xl text-[11px] leading-relaxed"
+            style={{ background: T.redSoft, color: T.red }}>
+            会议 Agent 不在这场会里,<b>说话不会被转写</b>。
+            需要在服务器上把它拉起来并指向本会议。
+          </div>
+        )}
         <div className="mt-2 overflow-y-auto flex-1">
           {transcript.length === 0 ? (
             <div className="py-6 text-[11.5px] leading-relaxed" style={{ color: T.sub }}>
