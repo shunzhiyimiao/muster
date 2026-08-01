@@ -79,6 +79,15 @@ where
             // 优先消费音频帧:积压会直接变成转写延迟
             biased;
 
+            // Ctrl-C 走**正常收尾**,不是杀进程。
+            // 停会议最自然的方式就是 Ctrl-C,而直接被杀掉会丢两样东西:
+            // 每个人**没断完的最后半句**,以及散会后的提炼——
+            // 而最后一句往往是结论,提炼更是这场会的产出。
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("收到 Ctrl-C,正常收尾中(不要再按)…");
+                break;
+            }
+
             Some(f) = rx.recv() => {
                 if let Some(u) = acc.push(&f.speaker, &f.pcm, f.ts_ms) {
                     on_utterance(u).await;
