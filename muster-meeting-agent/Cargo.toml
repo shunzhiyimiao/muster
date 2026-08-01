@@ -45,3 +45,7 @@ required-features = ["livekit"]
 [[example]]
 name = "speak_wav"
 required-features = ["livekit"]
+
+[[example]]
+name = "daemon"
+required-features = ["livekit"]

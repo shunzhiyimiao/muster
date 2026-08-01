@@ -17,7 +17,7 @@ import {
   Track,
   type RemoteParticipant,
 } from "livekit-client";
-import { Mic, MicOff, PhoneOff, Radio, Users, Video, VideoOff } from "lucide-react";
+import { Bot, Mic, MicOff, PhoneOff, Radio, Users, Video, VideoOff } from "lucide-react";
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
 import { api, RemoteMeeting, fmtTime } from "../api";
@@ -45,6 +45,8 @@ export function MeetingRoom({
   const [micOn, setMicOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
   const [peers, setPeers] = useState<string[]>([]);
+  const [wantsAgent, setWantsAgent] = useState(meeting.wants_agent);
+  const [agentBusy, setAgentBusy] = useState(false);
   const mediaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -231,11 +233,36 @@ export function MeetingRoom({
         </div>
         {!agentHere && (
           <div className="mt-2 px-3 py-2 rounded-xl text-[11px] leading-relaxed"
-            style={{ background: T.redSoft, color: T.red }}>
-            会议 Agent 不在这场会里,<b>说话不会被转写</b>。
-            需要在服务器上把它拉起来并指向本会议。
+            style={{ background: wantsAgent ? T.soft : T.redSoft, color: wantsAgent ? T.sub : T.red }}>
+            {wantsAgent ? (
+              <>已请 Agent,等它进来(常驻服务每几秒认领一次)。若一直不来,检查服务器上的 agent-daemon 是否在跑。</>
+            ) : (
+              <>会议 Agent 不在这场会里,<b>说话不会被转写</b>。</>
+            )}
           </div>
         )}
+        <button
+          disabled={agentBusy}
+          onClick={() => {
+            const next = !wantsAgent;
+            setAgentBusy(true);
+            api
+              .remoteMeetingAgent(meeting.id, next)
+              .then(() => setWantsAgent(next))
+              .catch((e) => setErr(String(e)))
+              .finally(() => setAgentBusy(false));
+          }}
+          className="mt-2.5 w-full flex items-center justify-center gap-1.5 text-xs font-semibold py-2 rounded-xl"
+          style={{
+            background: wantsAgent ? T.soft : T.indigo,
+            color: wantsAgent ? T.sub : "#fff",
+            opacity: agentBusy ? 0.5 : 1,
+          }}
+          title="按钮只在服务端记一个意愿;真正入会的是服务器上常驻的 agent-daemon——桌面壳自己起一个的话,两个人开会就有两个 Agent 各转各的"
+        >
+          <Bot size={13} />
+          {agentBusy ? "…" : wantsAgent ? "请 Agent 离开" : "请 Agent 来记录"}
+        </button>
         <div className="mt-2 overflow-y-auto flex-1">
           {transcript.length === 0 ? (
             <div className="py-6 text-[11.5px] leading-relaxed" style={{ color: T.sub }}>

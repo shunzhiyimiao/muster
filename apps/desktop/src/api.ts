@@ -199,6 +199,8 @@ export interface RemoteMeeting {
   room: string;
   started_ms: number;
   ended_ms: number | null;
+  /** 是否请了 Agent。**只是意愿**——它到没到看参会者列表 */
+  wants_agent: boolean;
 }
 export interface JoinInfo {
   url: string;
@@ -286,6 +288,9 @@ export const api = {
     invoke<RemoteMeeting>("remote_meeting_start", { channelId, title }),
   remoteMeetingJoin: (meetingId: string) => invoke<JoinInfo>("remote_meeting_join", { meetingId }),
   remoteMeetingEnd: (meetingId: string) => invoke<void>("remote_meeting_end", { meetingId }),
+  /** 请 Agent 来 / 请它离开;认领由服务器上的 agent-daemon 完成 */
+  remoteMeetingAgent: (meetingId: string, want: boolean) =>
+    invoke<void>("remote_meeting_agent", { meetingId, want }),
   /** 组织的频道(登录后);个人频道不在其中——它不上服务端 */
   remoteChannels: () => invoke<Channel[]>("remote_channels"),
   remoteHistory: (channelId: string) => invoke<StoredMsg[]>("remote_history", { channelId }),

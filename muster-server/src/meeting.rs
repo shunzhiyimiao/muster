@@ -48,6 +48,9 @@ pub struct MeetingOut {
     pub room: String,
     pub started_ms: i64,
     pub ended_ms: Option<i64>,
+    /// 这场会是否请了 Agent。**只是意愿**——它到没到看参会者列表。
+    #[serde(default)]
+    pub wants_agent: bool,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +122,7 @@ pub async fn start(
         room,
         started_ms: started,
         ended_ms: None,
+        wants_agent: false,
     }))
 }
 
@@ -129,7 +133,7 @@ pub async fn list(
 ) -> Result<Json<Vec<MeetingOut>>> {
     require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid.clone())).await?;
     let rows = sqlx::query_as::<_, MeetingOut>(
-        "SELECT id, channel_id, title, level, room, started_ms, ended_ms
+        "SELECT id, channel_id, title, level, room, started_ms, ended_ms, wants_agent
          FROM meeting WHERE channel_id = $1 ORDER BY started_ms DESC LIMIT 50",
     )
     .bind(&cid)
@@ -241,6 +245,49 @@ pub async fn transcript(
          WHERE meeting_id = $1 ORDER BY ts_ms ASC",
     )
     .bind(mid)
+    .fetch_all(&db.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+pub struct WantAgent {
+    pub want: bool,
+}
+
+/// 请 Agent 来这场会 / 请它离开。
+///
+/// **只记意愿,不起进程。** 认领由服务器上常驻的 agent-daemon 完成——
+/// 让桌面壳自己 spawn 一个的话,两个人开会就有两个 Agent 各转各的。
+pub async fn set_wants_agent(
+    State((db, _hub)): State<(Db, Hub)>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+    Json(w): Json<WantAgent>,
+) -> Result<Json<serde_json::Value>> {
+    let (cid,): (String,) = sqlx::query_as("SELECT channel_id FROM meeting WHERE id = $1")
+        .bind(mid)
+        .fetch_optional(&db.pool)
+        .await?
+        .ok_or_else(|| ServerError::NotFound(format!("会议 {mid}")))?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid)).await?;
+    sqlx::query("UPDATE meeting SET wants_agent = $1 WHERE id = $2 AND ended_ms IS NULL")
+        .bind(w.want)
+        .bind(mid)
+        .execute(&db.pool)
+        .await?;
+    Ok(Json(serde_json::json!({ "wants_agent": w.want })))
+}
+
+/// agent-daemon 用:哪些**进行中**的会议请了 Agent。
+pub async fn agent_wanted(
+    State((db, _hub)): State<(Db, Hub)>,
+    _id: Identity,
+) -> Result<Json<Vec<MeetingOut>>> {
+    let rows = sqlx::query_as::<_, MeetingOut>(
+        "SELECT id, channel_id, title, level, room, started_ms, ended_ms, wants_agent
+         FROM meeting WHERE wants_agent AND ended_ms IS NULL ORDER BY started_ms",
+    )
     .fetch_all(&db.pool)
     .await?;
     Ok(Json(rows))

@@ -153,3 +153,12 @@ INSERT INTO stream_cursor(id, next_seq) VALUES (1, 1) ON CONFLICT DO NOTHING;
 
 ALTER TABLE message ADD COLUMN IF NOT EXISTS stream_seq BIGINT;
 CREATE INDEX IF NOT EXISTS idx_message_stream ON message(stream_seq);
+
+-- 这场会要不要 Agent。
+--
+-- **按钮不直接起进程。** 桌面壳自己 spawn 一个 Agent 的话,两个人开会就有两个
+-- Agent 在同一个房间里各转各的,同一句话转两遍、纪要出现重复行;而且 Agent
+-- 该在服务器上(架构文档的部署拓扑),不该在每个人的笔记本上。
+-- 所以这里只记一个**意愿**,由常驻的 agent-daemon 去认领。
+ALTER TABLE meeting ADD COLUMN IF NOT EXISTS wants_agent BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_meeting_wants_agent ON meeting(wants_agent) WHERE wants_agent;

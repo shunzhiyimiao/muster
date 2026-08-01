@@ -74,6 +74,9 @@ pub struct RemoteMeeting {
     pub started_ms: i64,
     #[serde(default)]
     pub ended_ms: Option<i64>,
+    /// 是否请了 Agent。**只是意愿**——它到没到看参会者列表。
+    #[serde(default)]
+    pub wants_agent: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -190,6 +193,14 @@ impl Remote {
     /// 拿入会票。**能不能开麦由服务端的 can() 决定**,前端只照着显示。
     pub async fn join_meeting(&self, meeting_id: &str) -> Result<JoinInfo, String> {
         self.post_json(&format!("/meetings/{meeting_id}/join"), &serde_json::json!({})).await
+    }
+
+    /// 请 Agent 来 / 请它离开。**只记意愿**,认领由服务器上的 agent-daemon 做。
+    pub async fn set_wants_agent(&self, meeting_id: &str, want: bool) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .post_json(&format!("/meetings/{meeting_id}/agent"), &serde_json::json!({ "want": want }))
+            .await?;
+        Ok(())
     }
 
     pub async fn end_meeting(&self, meeting_id: &str) -> Result<(), String> {

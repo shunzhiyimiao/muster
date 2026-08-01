@@ -31,6 +31,8 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/meetings/:mid/transcript", get(meeting::transcript).post(meeting::add_transcript))
         .route("/meetings/:mid/level", post(meeting::raise_level))
         .route("/meetings/:mid/end", post(meeting::end))
+        .route("/meetings/:mid/agent", post(meeting::set_wants_agent))
+        .route("/meetings/agent-wanted", get(meeting::agent_wanted))
         // C2:SSE 取代 WebSocket。/ws 暂留一版供未迁完的客户端过渡,
         // 迁完即删——两条实时通道并存久了,就会有人只修其中一条。
         .route("/events", get(events::handler))

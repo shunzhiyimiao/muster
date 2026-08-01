@@ -2111,6 +2111,16 @@ async fn remote_meeting_join(
 }
 
 #[tauri::command]
+async fn remote_meeting_agent(
+    state: State<'_, AppState>,
+    meeting_id: String,
+    want: bool,
+) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.set_wants_agent(&meeting_id, want).await
+}
+
+#[tauri::command]
 async fn remote_meeting_end(state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
     let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
     r.end_meeting(&meeting_id).await
@@ -2267,6 +2277,7 @@ fn main() {
             remote_meeting_start,
             remote_meeting_join,
             remote_meeting_end,
+            remote_meeting_agent,
             approvals_pending,
             approvals_decide,
             capsules_list,
