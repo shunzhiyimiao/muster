@@ -73,6 +73,10 @@ where
 
     let (tx, mut rx) = mpsc::channel::<Frame>(FRAME_QUEUE);
     let mut acc = Accumulator::new(cfg, gate);
+    // 搬运任务的句柄。**散会时必须停掉**:否则它们继续往没人读的队列里塞,
+    // 一边刷"转写跟不上采集,已丢帧"一边空转——真机上散会提炼那 20 秒里
+    // 刷了 2000 多条警告,看着像出了大事,其实是没收摊。
+    let mut pumps: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     loop {
         tokio::select! {
@@ -101,7 +105,7 @@ where
                         let who = participant.identity().to_string();
                         if let RemoteTrack::Audio(audio) = track {
                             tracing::info!(speaker = %who, "订阅到音轨");
-                            spawn_pump(audio, who, tx.clone());
+                            pumps.push(spawn_pump(audio, who, tx.clone()));
                         }
                     }
                     RoomEvent::ParticipantDisconnected(p) => {
@@ -124,6 +128,11 @@ where
         }
     }
 
+    // 先停搬运任务,再收残留:顺序反了的话,收残留期间还在往队列里塞。
+    for h in pumps {
+        h.abort();
+    }
+
     // 会议结束:所有人的残留都要吐出来,一句都不能丢
     let speakers: Vec<String> = acc.speakers();
     for s in speakers {
@@ -135,7 +144,11 @@ where
 }
 
 /// 一条音轨一个任务:只负责把帧丢进 channel,不做任何判断。
-fn spawn_pump(audio: RemoteAudioTrack, speaker: String, tx: mpsc::Sender<Frame>) {
+fn spawn_pump(
+    audio: RemoteAudioTrack,
+    speaker: String,
+    tx: mpsc::Sender<Frame>,
+) -> tokio::task::JoinHandle<()> {
     // 关键:直接要 whisper 想要的格式,SDK 负责重采样。
     // 注意签名是三参(队列深度用 SDK 默认值)——crates.io 上的 0.3.43 是四参,
     // 而我们构建的是 git 版。**读 API 要读实际构建的那个版本**,别读别的。
@@ -161,7 +174,7 @@ fn spawn_pump(audio: RemoteAudioTrack, speaker: String, tx: mpsc::Sender<Frame>)
         if dropped > 0 {
             tracing::warn!(speaker = %speaker, dropped, "音轨结束,累计丢帧");
         }
-    });
+    })
 }
 
 /// 便利入口:连房间 + 跑转写流水线。
