@@ -2001,6 +2001,7 @@ async fn remote_login(
         account_id: Some(r.account_id.clone()),
         display_name: Some(r.display_name.clone()),
     };
+    r.save_session();
     *handle.lock().unwrap() = Some(r);
     Ok(st)
 }
@@ -2010,7 +2011,36 @@ fn remote_logout(state: State<'_, AppState>) -> Result<(), String> {
     let guard = state.0.lock().unwrap();
     let b = guard.as_ref().ok_or("后端未初始化")?;
     *b.remote.lock().unwrap() = None;
+    remote::Remote::clear_session();
     Ok(())
+}
+
+/// 启动时恢复上次的连接。**探不通就当没连上**——显示"已连接"却什么都拉不到
+/// 比显示"单机模式"糟得多。
+#[tauri::command]
+async fn remote_restore(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
+    let handle = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.remote.clone()
+    };
+    match remote::Remote::restore().await {
+        Some(r) => {
+            let st = RemoteStatus {
+                connected: true,
+                base: Some(r.base.clone()),
+                account_id: Some(r.account_id.clone()),
+                display_name: Some(r.display_name.clone()),
+            };
+            *handle.lock().unwrap() = Some(r);
+            Ok(st)
+        }
+        None => Ok(RemoteStatus {
+            connected: false,
+            base: None,
+            account_id: None,
+            display_name: None,
+        }),
+    }
 }
 
 /// 实时通道所需的令牌(C2)。前端拿它自己开 `EventSource`——
@@ -2270,6 +2300,7 @@ fn main() {
             remote_login,
             remote_logout,
             remote_status,
+            remote_restore,
             remote_history,
             remote_channels,
             remote_token,

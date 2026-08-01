@@ -453,6 +453,20 @@ export function MeetingView() {
     asked && ci === 0 ? ["Agent-007", "结论复述:幂等键由网关层统一生成;回滚脚本由我会后产出,今天内给草稿。"] : CAPTIONS[ci];
 
   return (
+    <>
+    <div className="px-7 pt-3">
+      <div className="px-4 py-3 rounded-2xl flex items-start gap-2.5"
+        style={{ background: T.redSoft, color: T.red }}>
+        <Video size={15} className="mt-0.5 shrink-0" />
+        <div className="text-[11.5px] leading-relaxed">
+          <b>这是概念稿,不是真会议</b>——下面的字幕、计时、座位全是写死的演示数据,
+          不会真的转写任何东西。
+          <br />
+          真会议要<b>先在侧栏连上团队服务器</b>:会议本就是多人的事,
+          单机模式下没有别人可开会。
+        </div>
+      </div>
+    </div>
     <div className="px-7 pb-6 pt-1 flex gap-4" style={{ height: "calc(100% - 78px)" }}>
       <div className="flex-1 min-w-0 flex flex-col gap-3.5">
         <div className="flex items-center gap-2.5">
@@ -522,6 +536,7 @@ export function MeetingView() {
         </div>
       </Card>
     </div>
+    </>
   );
 }
 const Seat = ({ n, tone, speaking, muted }: { n: string; tone: string; speaking?: boolean; muted?: boolean }) => (

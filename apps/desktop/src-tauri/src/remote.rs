@@ -245,6 +245,78 @@ impl Remote {
     }
 }
 
+/// 会话持久化。
+///
+/// 不存的话,每次重启桌面壳都掉回单机模式——而单机模式的会议室是**概念稿**
+/// (自动滚动的字幕、假计时器),于是人会以为"这东西在模拟执行"。
+/// 真机上就撞过这一次:重启一次,整个产品看起来像个演示。
+///
+/// **只存服务器地址与账号,不存口令。** 令牌 12 小时过期,过期就要求重新登录
+/// ——把口令留在盘上换取"永不掉线"是笔坏买卖。
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Session {
+    pub base: String,
+    pub account_id: String,
+    pub display_name: String,
+    pub token: String,
+}
+
+fn session_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::PathBuf::from(home).join(".muster").join("desktop-session.json"))
+}
+
+impl Remote {
+    pub fn save_session(&self) {
+        let Some(p) = session_path() else { return };
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let s = Session {
+            base: self.base.clone(),
+            account_id: self.account_id.clone(),
+            display_name: self.display_name.clone(),
+            token: self.token.clone(),
+        };
+        if let Ok(j) = serde_json::to_string(&s) {
+            let _ = std::fs::write(&p, j);
+            // 令牌等同口令,别让同机其他用户读到
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
+    pub fn clear_session() {
+        if let Some(p) = session_path() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// 从盘上恢复。**令牌可能已过期**——所以恢复后要探一次,
+    /// 探不通就当没连上,而不是显示"已连接"却什么都拉不到。
+    pub async fn restore() -> Option<Self> {
+        let p = session_path()?;
+        let s: Session = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()?;
+        let r = Self {
+            base: s.base,
+            token: s.token,
+            account_id: s.account_id,
+            display_name: s.display_name,
+            client,
+        };
+        // 探活:令牌过期或服务器换了地方,就别假装还连着
+        r.channels().await.ok()?;
+        Some(r)
+    }
+}
+
 /// 频道归属:决定这条消息走本地还是服务端。
 ///
 /// **个人频道永远走本地**,这是产品承诺不是实现细节(见模块文档)。

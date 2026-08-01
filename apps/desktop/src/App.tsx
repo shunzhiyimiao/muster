@@ -87,7 +87,7 @@ export default function App() {
     api.capsulesList().then(setCapsules).catch(() => {});
     api.forgeableRuns().then(setForgeable).catch(() => {});
     api.whoami().then(setMe).catch(() => {});
-    api.remoteStatus().then((r) => {
+    api.remoteRestore().then((r) => {
       setRemote(r);
       if (r.connected) api.remoteChannels().then(setRemoteChans).catch(() => setRemoteChans([]));
       else setRemoteChans([]);

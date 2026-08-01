@@ -279,6 +279,8 @@ export const api = {
   /** 封存断裂的审计链并重开一条;返回封存后的路径 */
   auditArchiveBroken: () => invoke<string>("audit_archive_broken"),
   remoteStatus: () => invoke<RemoteStatus>("remote_status"),
+  /** 启动时恢复上次连接;探不通就返回未连接,不假装还连着 */
+  remoteRestore: () => invoke<RemoteStatus>("remote_restore"),
   remoteLogin: (base: string, id: string, password: string) =>
     invoke<RemoteStatus>("remote_login", { base, id, password }),
   remoteLogout: () => invoke<void>("remote_logout"),
