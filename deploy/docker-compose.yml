@@ -38,6 +38,13 @@ services:
           tcp_port: 7881
           udp_port: 7882
           use_external_ip: false
+          # **必须显式指定**:不指定的话 LiveKit 广播的 ICE 候选是容器内网 IP
+          # (172.x.x.x),宿主机上的浏览器路由不到 ⇒
+          # "could not establish pc connection"。
+          # 原生客户端有时能靠 NAT 回程蒙混过去,浏览器不吃这套——
+          # 所以"Rust 端能通"并不代表这条配置对。
+          # 内网部署时改成服务器在内网的真实地址。
+          node_ip: 127.0.0.1
         keys:
           devkey: devsecret_0123456789abcdef0123456789abcdef
     ports:
