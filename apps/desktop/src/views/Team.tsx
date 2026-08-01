@@ -455,15 +455,20 @@ export function MeetingView() {
   return (
     <>
     <div className="px-7 pt-3">
+      {/* 展示形态。**标注不能省**——但语气是"这是演示",不是"这是假的":
+          它确实在展示产品的完整形态,只是数据写死。
+          分寸在于:看的人一眼就知道它不在真转写,而不必怀疑自己是不是搞错了。 */}
       <div className="px-4 py-3 rounded-2xl flex items-start gap-2.5"
-        style={{ background: T.redSoft, color: T.red }}>
-        <Video size={15} className="mt-0.5 shrink-0" />
-        <div className="text-[11.5px] leading-relaxed">
-          <b>这是概念稿,不是真会议</b>——下面的字幕、计时、座位全是写死的演示数据,
-          不会真的转写任何东西。
+        style={{ background: T.indigoSoft }}>
+        <Video size={15} className="mt-0.5 shrink-0" style={{ color: T.indigo }} />
+        <div className="text-[11.5px] leading-relaxed" style={{ color: T.indigoDeep }}>
+          <b>演示形态</b>:这一页展示会议功能长成的样子——实时字幕、Agent 参与、
+          纪要与行动项转任务。<b>数据是写死的,不会真的转写</b>。
           <br />
-          真会议要<b>先在侧栏连上团队服务器</b>:会议本就是多人的事,
-          单机模式下没有别人可开会。
+          <span style={{ color: T.sub }}>
+            真实会议在侧栏连上团队服务器后使用:开麦说话由会议 Agent 走本地
+            whisper 转写,音频不出内网。
+          </span>
         </div>
       </div>
     </div>

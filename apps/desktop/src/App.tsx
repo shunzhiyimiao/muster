@@ -68,6 +68,8 @@ export default function App() {
   /* C3:当前所在的会议(null = 不在会里);转写由 SSE 推来 */
   const [meeting, setMeeting] = useState<RemoteMeeting | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  /* 连上服务器后仍要能看演示形态——否则想给人演示时反而找不到它 */
+  const [showDemo, setShowDemo] = useState(false);
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
@@ -498,16 +500,28 @@ export default function App() {
                   transcript={transcript}
                   onLeave={() => setMeeting(null)}
                 />
-              ) : remote?.connected ? (
+              ) : remote?.connected && !showDemo ? (
                 <MeetingLobby
                   channelId={channelId}
                   onEnter={(m) => {
                     setTranscript([]);
                     setMeeting(m);
                   }}
+                  onDemo={() => setShowDemo(true)}
                 />
               ) : (
-                <MeetingView />
+                <>
+                  {remote?.connected && (
+                    <div className="px-7 pt-3">
+                      <button onClick={() => setShowDemo(false)}
+                        className="text-[11.5px] font-semibold px-3 py-1.5 rounded-xl"
+                        style={{ background: T.soft, color: T.sub }}>
+                        ← 回到真实会议
+                      </button>
+                    </div>
+                  )}
+                  <MeetingView />
+                </>
               ))}
             {view === "caps" && (
               <CapsView trace={trace} setTrace={setTrace} introduced={introduced}
@@ -890,9 +904,11 @@ function LoginDialog({
 function MeetingLobby({
   channelId,
   onEnter,
+  onDemo,
 }: {
   channelId: string;
   onEnter: (m: RemoteMeeting) => void;
+  onDemo: () => void;
 }) {
   const [list, setList] = useState<RemoteMeeting[]>([]);
   const [title, setTitle] = useState("");
@@ -948,6 +964,10 @@ function MeetingLobby({
         {err && (
           <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.redSoft, color: T.red }}>{err}</div>
         )}
+        <button onClick={onDemo} className="mt-3 text-[11px] font-semibold"
+          style={{ color: T.indigo }}>
+          看演示形态 →
+        </button>
       </Card>
 
       <Card className="px-5 pt-4 pb-2">
