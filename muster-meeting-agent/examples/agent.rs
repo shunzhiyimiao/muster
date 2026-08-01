@@ -129,6 +129,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent_name = std::env::var("MUSTER_AGENT_NAME").unwrap_or_else(|_| "小七".into());
     let ctx = Arc::new(Mutex::new(Context::default()));
 
+    // **入会先补上下文**:晚到、重连、崩溃重启都是常态,而上下文只在进程内存里,
+    // 不补的话它对会上明明说过的事会答"记录里没有"——听起来像失忆,
+    // 而人不会知道那是因为进程重启过。
+    match reqwest::Client::new()
+        .get(format!("{server}/meetings/{meeting}/transcript"))
+        .bearer_auth(&token)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let rows: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
+            let n = rows.len();
+            let mut c = ctx.lock().await;
+            for row in rows {
+                if let (Some(sp), Some(tx)) = (row["speaker_id"].as_str(), row["text"].as_str()) {
+                    c.push(sp, tx);
+                }
+            }
+            if n > 0 {
+                println!("已补回 {n} 条既有纪要(中途入会不至于失忆)");
+            }
+        }
+        // 补不回来不该挡住入会:听不到过去总比完全不来强,但要说出来
+        Err(e) => println!("⚠️ 补历史纪要失败({e}),将只带本次入会后听到的内容"),
+    }
+
     println!("进房间,开始听…\n");
     let pipeline = Arc::new(pipeline);
     let (ctx2, sink2, agent_name2) = (ctx.clone(), sink.clone(), agent_name.clone());

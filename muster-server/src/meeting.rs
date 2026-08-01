@@ -215,6 +215,37 @@ pub async fn add_transcript(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+pub struct TranscriptLine {
+    pub speaker_id: String,
+    pub text: String,
+    pub ts_ms: i64,
+}
+
+/// 取会议纪要。**Agent 中途入会要靠它补上下文**——
+/// 晚到、重连、崩溃重启都是常态,而上下文只存在进程内存里的话,
+/// 重启一次就等于失忆:会上明明说过的事,它答"记录里没有"。
+pub async fn transcript(
+    State((db, _hub)): State<(Db, Hub)>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+) -> Result<Json<Vec<TranscriptLine>>> {
+    let (cid,): (String,) = sqlx::query_as("SELECT channel_id FROM meeting WHERE id = $1")
+        .bind(mid)
+        .fetch_optional(&db.pool)
+        .await?
+        .ok_or_else(|| ServerError::NotFound(format!("会议 {mid}")))?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid)).await?;
+    let rows = sqlx::query_as::<_, TranscriptLine>(
+        "SELECT speaker_id, text, ts_ms FROM meeting_transcript
+         WHERE meeting_id = $1 ORDER BY ts_ms ASC",
+    )
+    .bind(mid)
+    .fetch_all(&db.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
 pub async fn end(
     State((db, _hub)): State<(Db, Hub)>,
     id: Identity,
