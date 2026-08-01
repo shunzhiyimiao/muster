@@ -116,6 +116,27 @@ export default function App() {
       ? [...remoteChans, ...localChannels.filter((c) => c.personal)]
       : localChannels;
   const teamChannels = useMemo(() => channels.filter((c) => !c.personal), [channels]);
+
+  /* 频道列表换了(比如刚连上服务端)就校正选中项。
+     连上之后本地那套 demo 频道 id 全都不存在于服务端了,再拿着旧 id 去请求
+     只会得到「找不到:频道 xxx」——而那句话完全看不出根因是"你选的频道是
+     上一套里的"。这里按列表校正,而不是只修某一个 id。 */
+  useEffect(() => {
+    if (channels.length === 0) return;
+    const cur = channels.find((c) => c.id === channelId);
+    if (cur) {
+      // 频道还在,但所属团队可能变了(服务端的 team_id 与本地不同)
+      if (!cur.personal && cur.team_id !== team) setTeam(cur.team_id);
+      return;
+    }
+    const first = teamChannels[0] ?? channels[0];
+    if (first) {
+      setChannelId(first.id);
+      setTeam(first.team_id);
+      setExpanded((e) => ({ ...e, [first.team_id]: true }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channels]);
   const personalChannel = useMemo(() => channels.find((c) => c.personal) ?? null, [channels]);
   const activeChannel = teamChannels.find((c) => c.id === channelId) ?? null;
   const teams = TEAM_ORDER.map((tid) => ({

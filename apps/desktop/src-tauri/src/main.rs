@@ -106,17 +106,23 @@ fn demo_channels() -> Vec<ChannelInfo> {
     v
 }
 
-fn label_sources(channel_id: &str) -> Vec<LabelSource> {
-    let channel_internal =
-        |id: &str| vec![LabelSource::new(LabelOrigin::Channel, Sensitivity::Internal, format!("channel:{id}"))];
-    match channel_id {
-        "platform" | "code-review" | "payments" | "release-train" => channel_internal(channel_id),
-        "sec-ops" => vec![LabelSource::new(
+/// 频道的密级标签来源。
+///
+/// **按已解析频道的 level 生成,不按 id 硬编码。** 曾经这里是按 demo 频道 id
+/// 打表的,于是服务端来的频道(id 不在表里)落进兜底分支、拿到空标签——
+/// 一个 restricted 的服务端频道会被当成 open 来路由。**那是密级泄漏**,
+/// 而且外部完全看不出来:界面上密级徽章显示得好好的,路由却当它不存在。
+///
+/// `Open` 不产生标签是**有意的**:E1 里"未标注即 open"是默认值而非断言,
+/// 加一条 open 标签会让 `deciders`(为什么是这个密级)里多出一条无信息的来源。
+fn label_sources(channel: &ChannelInfo) -> Vec<LabelSource> {
+    match channel.level {
+        Sensitivity::Open => vec![],
+        level => vec![LabelSource::new(
             LabelOrigin::Channel,
-            Sensitivity::Restricted,
-            "channel:sec-ops",
+            level,
+            format!("channel:{}", channel.id),
         )],
-        _ => vec![],
     }
 }
 
@@ -432,6 +438,39 @@ struct Backend {
 }
 
 mod remote;
+
+/// 解析频道。**连着服务端时向服务端要,不查本地那份 demo 清单。**
+///
+/// 两个理由:
+/// 1. 服务端的频道 id 与本地 demo 的不是一套(`platform-main` vs `platform`),
+///    查本地只会得到"未知频道",而那句话看不出根因;
+/// 2. **密级必须来自可信来源**。让前端把 level 传下来,等于让客户端自己声明
+///    密级——它可以声明成 open 然后把 restricted 的内容送去云端。
+async fn resolve_channel(
+    state: &State<'_, AppState>,
+    channel_id: &str,
+) -> Result<ChannelInfo, String> {
+    if let Some(r) = remote_of(state) {
+        if !remote::is_personal(channel_id) {
+            let c = r.channel(channel_id).await?;
+            return Ok(ChannelInfo {
+                id: c.id,
+                name: c.name,
+                team_id: c.team_id.clone(),
+                team: c.team_id,
+                level: remote::parse_level(&c.level),
+                level_note: "频道密级由服务端组织配置决定".into(),
+                desc: String::new(),
+                personal: false,
+            });
+        }
+    }
+    demo_channels()
+        .into_iter()
+        .find(|c| c.id == channel_id)
+        .ok_or_else(|| format!("未知频道 {channel_id}"))
+}
+
 
 /// 一条消息该记在哪:**个人频道永远本地,团队频道连着服务端时走服务端**。
 ///
@@ -773,11 +812,8 @@ async fn send_message(
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
         (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
     };
-    let channel = demo_channels()
-        .into_iter()
-        .find(|c| c.id == channel_id)
-        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
-    let sources = label_sources(&channel.id);
+    let channel = resolve_channel(&state, &channel_id).await?;
+    let sources = label_sources(&channel);
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let session_id = format!("session:{}", channel.id);
     let rmt = remote_of(&state);
@@ -1134,10 +1170,7 @@ async fn run_workspace_task(
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
         (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
     };
-    let channel = demo_channels()
-        .into_iter()
-        .find(|c| c.id == channel_id)
-        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
+    let channel = resolve_channel(&state, &channel_id).await?;
     // P2:发起任务需权限(访客不得调用敏感 Runner;禁任务频道对谁都禁)
     require(
         muster_identity::Action::CreateTask,
@@ -1159,7 +1192,7 @@ async fn run_workspace_task(
         session_id: Some(format!("session:{}", channel.id)),
         team: Some(channel.team.clone()),
         channel: Some(channel.id.clone()),
-        sources: label_sources(&channel.id),
+        sources: label_sources(&channel),
         requested_provider: None,
         default_provider: Some("kimi".into()),
         prompt: text,
@@ -1468,10 +1501,7 @@ async fn capsule_run(
     channel_id: String,
     context: Option<String>,
 ) -> Result<String, String> {
-    let channel = demo_channels()
-        .into_iter()
-        .find(|c| c.id == channel_id)
-        .ok_or_else(|| format!("未知频道 {channel_id}"))?;
+    let channel = resolve_channel(&state, &channel_id).await?;
     require(
         muster_identity::Action::CreateTask,
         muster_identity::Scope::Channel(channel.id.clone()),
@@ -1514,7 +1544,7 @@ async fn capsule_run(
         std::path::Path::new(&workspace),
         std::path::Path::new(&root),
         context.as_deref(),
-        label_sources(&channel.id),
+        label_sources(&channel),
         Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
         move |ev| forward_runner_event(&a, &rid, &chan, &tr, ev),
     )
@@ -2249,6 +2279,49 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    fn ch(id: &str, level: Sensitivity) -> ChannelInfo {
+        ChannelInfo {
+            id: id.into(),
+            name: id.into(),
+            team_id: "t".into(),
+            team: "t".into(),
+            level,
+            level_note: String::new(),
+            desc: String::new(),
+            personal: false,
+        }
+    }
+
+    /// **密级标签按频道的 level 生成,不按 id 打表。**
+    ///
+    /// 曾经这里是按 demo 频道 id 匹配的,于是服务端来的频道(id 不在表里)
+    /// 拿到空标签——一个 restricted 的服务端频道会被当成 open 路由。
+    /// 那是密级泄漏,而且外部完全看不出来:界面上徽章显示得好好的,
+    /// 路由却当它不存在。
+    #[test]
+    fn labels_follow_the_level_not_the_id() {
+        // 服务端来的陌生 id,照样要带上密级
+        let s = label_sources(&ch("platform-main", Sensitivity::Restricted));
+        assert_eq!(s.len(), 1, "陌生 id 的 restricted 频道必须带标签");
+        assert_eq!(s[0].level, Sensitivity::Restricted);
+        assert_eq!(s[0].subject, "channel:platform-main");
+
+        let s = label_sources(&ch("随便什么id", Sensitivity::Internal));
+        assert_eq!(s[0].level, Sensitivity::Internal);
+    }
+
+    /// open 不产生标签是**有意的**:E1 里"未标注即 open"是默认值而非断言,
+    /// 加一条 open 标签只会让「为什么是这个密级」里多一条无信息的来源。
+    #[test]
+    fn open_produces_no_label_on_purpose() {
+        assert!(label_sources(&ch("general", Sensitivity::Open)).is_empty());
+    }
 }
 
 #[cfg(test)]

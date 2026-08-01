@@ -146,6 +146,10 @@ impl Remote {
         self.get("/channels").await
     }
 
+    pub async fn channel(&self, id: &str) -> Result<RemoteChannel, String> {
+        self.get(&format!("/channels/{id}")).await
+    }
+
     pub async fn meetings(&self, channel: &str) -> Result<Vec<RemoteMeeting>, String> {
         self.get(&format!("/channels/{channel}/meetings")).await
     }
