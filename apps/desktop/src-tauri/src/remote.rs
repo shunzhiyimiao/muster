@@ -262,6 +262,11 @@ pub struct Session {
 }
 
 fn session_path() -> Option<std::path::PathBuf> {
+    // 可覆盖:同一台机器上开两个桌面壳(演示两个人开会)时,共用一个文件会
+    // 互相覆盖——后登录的把先登录的挤掉,而界面上看不出来。
+    if let Ok(p) = std::env::var("MUSTER_SESSION_FILE") {
+        return Some(std::path::PathBuf::from(p));
+    }
     let home = std::env::var("HOME").ok()?;
     Some(std::path::PathBuf::from(home).join(".muster").join("desktop-session.json"))
 }

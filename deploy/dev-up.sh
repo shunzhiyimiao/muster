@@ -20,7 +20,15 @@ if [ "${1:-}" = "--clean" ]; then
   rm -f /tmp/muster-dev-audit.db ~/.muster/admin-token
 fi
 
+# 局域网 IP:两台机器一起开会时,服务端与 LiveKit 都必须用它对外
+# (127.0.0.1 只有本机连得上,第二台会报 "could not establish pc connection")
+LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null \
+  || ifconfig 2>/dev/null | grep -oE 'inet 192\.168\.[0-9.]+' | head -1 | awk '{print $2}')
+LAN_IP=${LAN_IP:-127.0.0.1}
+export LIVEKIT_NODE_IP="$LAN_IP"
+
 say "1/5 起依赖(PostgreSQL / LiveKit / whisper)"
+ok "局域网地址 ${LAN_IP}(第二台机器用它连过来)"
 if ! docker info >/dev/null 2>&1; then
   bad "Docker 没在跑。先打开 Docker Desktop,再重跑本脚本。"; exit 1
 fi
@@ -53,6 +61,8 @@ export LIVEKIT_API_KEY=devkey
 export LIVEKIT_API_SECRET=devsecret_0123456789abcdef0123456789abcdef
 export MUSTER_SERVER_AUDIT_DB=/tmp/muster-dev-audit.db
 export MUSTER_SERVER=http://localhost:8787
+# 监听 0.0.0.0:局域网里的第二台机器才连得上(默认只听 127.0.0.1)
+export MUSTER_BIND=0.0.0.0:8787
 ENV
 ok "写入 /tmp/muster-dev.env(密钥是开发用的,内网部署必须换)"
 # shellcheck disable=SC1091
@@ -103,6 +113,7 @@ check_login() {
   fi
 }
 check_login alice alicepass123 Alice human >/dev/null
+check_login bob bobpass123 Bob human >/dev/null
 AGENT_TOKEN=$(check_login A-007 agentpass123 小七 agent)
 
 echo "$AGENT_TOKEN" > /tmp/muster-agent-token
@@ -110,9 +121,14 @@ echo "$AGENT_TOKEN" > /tmp/muster-agent-token
 
 say "5/5 下一步"
 cat <<NEXT
-  桌面壳:
+  桌面壳(第一个人):
     cd apps/desktop && pnpm tauri dev
-    侧栏顶部「单机模式」→ 填 $SERVER,账号 alice / alicepass123
+    侧栏顶部「单机模式」→ 填 http://${LAN_IP}:8787,账号 alice / alicepass123
+
+  第二个人:
+    另一台机器 → 同样填 http://${LAN_IP}:8787,账号 bob / bobpass123
+    同一台机器再开一个 → 必须换会话文件,否则两个壳互相挤掉:
+      MUSTER_SESSION_FILE=/tmp/muster-bob.json pnpm tauri dev
 
   会议 Agent(先在桌面壳里发起会议,拿到会议 id 再跑):
     source /tmp/muster-dev.env

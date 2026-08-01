@@ -44,7 +44,10 @@ services:
           # 原生客户端有时能靠 NAT 回程蒙混过去,浏览器不吃这套——
           # 所以"Rust 端能通"并不代表这条配置对。
           # 内网部署时改成服务器在内网的真实地址。
-          node_ip: 127.0.0.1
+          # 由 dev-up.sh 注入本机局域网 IP。**用 127.0.0.1 只有本机能开会**——
+          # 第二台机器拿到这个候选会连不上,报的正是
+          # "could not establish pc connection"(和本机那次同一个症状,不同原因)。
+          node_ip: ${LIVEKIT_NODE_IP:-127.0.0.1}
         keys:
           devkey: devsecret_0123456789abcdef0123456789abcdef
     ports:
