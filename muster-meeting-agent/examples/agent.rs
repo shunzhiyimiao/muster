@@ -2,7 +2,7 @@
 //!
 //! ```bash
 //! MUSTER_SERVER=http://localhost:8787 \
-//! MUSTER_TOKEN=<账号令牌> \
+//! MUSTER_ACCOUNT=A-007 MUSTER_PASSWORD=… \
 //! MUSTER_STT_URL=http://localhost:9000/v1 \
 //! cargo run -p muster-meeting-agent --features livekit --example agent -- <会议id>
 //! ```
@@ -32,7 +32,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let meeting = std::env::args().nth(1).ok_or("用法:agent <会议id>")?;
     let server = std::env::var("MUSTER_SERVER").unwrap_or_else(|_| "http://localhost:8787".into());
-    let token = std::env::var("MUSTER_TOKEN").map_err(|_| "需要 MUSTER_TOKEN")?;
+    // 优先用账号口令**当场登录**,而不是吃一个预先签好的令牌:
+    // 令牌 12 小时过期,而 Agent 常常是隔天才被拉起来的——那时报
+    // "令牌无效:ExpiredSignature",看不出根因是"你手上那份是昨天的"。
+    let token = match (std::env::var("MUSTER_ACCOUNT"), std::env::var("MUSTER_PASSWORD")) {
+        (Ok(id), Ok(pw)) => {
+            let v: serde_json::Value = reqwest::Client::new()
+                .post(format!("{server}/auth/login"))
+                .json(&serde_json::json!({ "id": id, "password": pw }))
+                .send()
+                .await?
+                .json()
+                .await?;
+            v["token"]
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| format!("登录失败:{}", v["error"].as_str().unwrap_or("未知原因")))?
+        }
+        _ => std::env::var("MUSTER_TOKEN")
+            .map_err(|_| "需要 MUSTER_ACCOUNT + MUSTER_PASSWORD,或 MUSTER_TOKEN")?,
+    };
     let stt_url = std::env::var("MUSTER_STT_URL").unwrap_or_else(|_| "http://localhost:9000/v1".into());
 
     // 换入会令牌:和人走同一个接口,同一套权限判定

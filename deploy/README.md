@@ -115,4 +115,6 @@ provider、路由、密级和 whisper 后端。
 | 会议里两个身份互踢 | 两端用了同一个账号 ⇒ LiveKit `DuplicateIdentity`。**Agent 要用自己的账号** |
 | 转写出繁体、术语错 | 设 `MUSTER_STT_PROMPT` 给一句简体的领域提示 |
 | 第一次转写特别慢 | 在下模型。**别拿冷启动数据下结论**,热态 base 快 7 倍于实时 |
+| `could not establish pc connection` | **信令通了、媒体没通**——两条路只断了后者。LiveKit 默认走 ICE 端口段 50000-60000,Docker 下等于要映射一万个端口。compose 已改成 `rtc.udp_port: 7882` 单端口复用 |
+| `令牌无效:ExpiredSignature` | 令牌 12 小时过期。Agent 改用 `MUSTER_ACCOUNT` + `MUSTER_PASSWORD` **当场登录**,不吃预签的令牌 |
 | 喊了名字它没反应 | 转写可能把逗号吃了或名字转错。用 `MUSTER_AGENT_ALIASES` 把常见错法列进去 |

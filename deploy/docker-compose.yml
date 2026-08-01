@@ -24,9 +24,22 @@ services:
     # 不用 --dev:它内置的密钥是 6 个字符的 "secret",而 muster-server 要求
     # LIVEKIT_API_SECRET ≥32 字符(房间准入全靠这把钥匙)。这里显式给一把,
     # **内网部署务必换掉**——这一把是公开在仓库里的。
+    #
+    # rtc.udp_port(**单端口 UDP 复用**)是这份配置里最要紧的一行:
+    # LiveKit 默认走 ICE 端口段 50000-60000,而 Docker 里那意味着要映射一万个
+    # 端口——不映射的话信令能通、媒体连不上,客户端报
+    # "could not establish pc connection"(信令与媒体是两条路,只有后者断了)。
+    # use_external_ip=false:本机开发时别去猜公网地址。
     command: --bind 0.0.0.0
     environment:
-      LIVEKIT_KEYS: "devkey: devsecret_0123456789abcdef0123456789abcdef"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+        keys:
+          devkey: devsecret_0123456789abcdef0123456789abcdef
     ports:
       - "7880:7880"    # WebSocket 信令
       - "7881:7881"    # TCP 回退
