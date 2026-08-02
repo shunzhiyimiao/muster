@@ -497,6 +497,26 @@ mod tests {
         assert!(authorize(&tokenize("git status").unwrap(), &wide_open).is_ok());
     }
 
+    /// 「打印自身环境」和「睡很久」——两个平台写法不同,要验的性质一样。
+    ///
+    /// 用 `#[cfg(unix)]` 把这两条测试跳过是省事的做法,但那意味着
+    /// **"密钥不进子进程"这条在 Windows 上没人验**。既然现在也出 Windows
+    /// 客户端,它就得在两边都成立。
+    #[cfg(unix)]
+    const DUMP_ENV: &str = "/usr/bin/env";
+    /// Windows 没有 env(1);`set` 是 cmd 的内建命令,所以要经 `cmd /c`。
+    /// 顺带把 [`super::ENV_KEEP_WINDOWS`] 也验了:少了 SYSTEMROOT,
+    /// cmd.exe 自己就起不来。
+    #[cfg(windows)]
+    const DUMP_ENV: &str = "cmd /c set";
+
+    #[cfg(unix)]
+    const SLEEP_LONG: &str = "/bin/sleep 30";
+    /// Windows 上不用 `timeout /t`:它在 stdin 被重定向时直接报错退出
+    /// (我们给子进程的 stdin 是 null),那样测的就不是超时了。
+    #[cfg(windows)]
+    const SLEEP_LONG: &str = "ping -n 31 127.0.0.1";
+
     /// 环境剥离:凭据类变量绝不进子进程。这是本模块最要紧的一条。
     #[test]
     fn secrets_never_reach_the_child_process() {
@@ -517,8 +537,16 @@ mod tests {
 
         // 端到端确认:子进程自己看到的环境里真的没有
         let d = ws();
-        let p = CommandPolicy::with_allow(["/usr/bin/env"]);
-        let o = run("/usr/bin/env", d.path(), &p);
+        let p = CommandPolicy::with_allow([DUMP_ENV]);
+        let o = run(DUMP_ENV, d.path(), &p);
+        // **先确认子进程真的跑起来了。** 否则 o.text 是「无法启动 …」,
+        // 它当然不含 should-never-leak,下面那条断言就白过了——
+        // 一条永远通过的安全测试比没有测试更坏。
+        assert!(
+            o.text.to_uppercase().contains("PATH="),
+            "子进程没能真的执行,这条测试是空的:{}",
+            o.text
+        );
         assert!(!o.text.contains("should-never-leak"), "子进程环境泄漏:{}", o.text);
     }
 
@@ -550,10 +578,10 @@ mod tests {
     fn hung_command_is_killed_and_recorded_as_timeout() {
         let d = ws();
         let p = CommandPolicy {
-            allow: vec!["/bin/sleep".into()],
+            allow: vec![SLEEP_LONG.into()],
             timeout: Duration::from_millis(300),
         };
-        let o = run("/bin/sleep 30", d.path(), &p);
+        let o = run(SLEEP_LONG, d.path(), &p);
         assert!(o.text.contains("超时"), "{}", o.text);
         match o.audit {
             EventBody::CommandRun { timed_out, exit_code, duration_ms, .. } => {

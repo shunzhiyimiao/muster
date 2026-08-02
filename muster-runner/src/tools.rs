@@ -45,6 +45,25 @@ pub struct ToolSet {
     command: CommandPolicy,
 }
 
+/// 这条路径是不是**带根**的——即 join 到工作区上会把工作区整个顶掉。
+///
+/// 不能用 `Path::is_absolute()`:它在 Windows 上认不出 `/etc/hosts`,
+/// 因为没有盘符就不算绝对路径。可 `join` 照样会因为它带根而丢掉工作区前缀,
+/// 于是这条路径一样跑到工作区外面去——**判定说"它是相对路径",行为却不是**。
+///
+/// 还有更隐蔽的一种:`C:foo` 是**驱动器相对路径**,既非绝对、也无根,
+/// 却相对于"C 盘的当前目录"解析,跟工作区没有任何关系。
+///
+/// 所以这里不问"是不是绝对路径",问的是"第一个组件是不是根或盘符"。
+///
+/// 真正的防线仍是后面的 canonicalize + starts_with——这一道是为了**早拒、
+/// 且说得清**。不然 `/etc/hosts` 会以"文件不存在"的面目被拒绝,
+/// 看日志的人完全不知道刚才发生的是一次越界尝试。
+fn is_rooted(p: &Path) -> bool {
+    use std::path::Component;
+    matches!(p.components().next(), Some(Component::Prefix(_) | Component::RootDir))
+}
+
 impl ToolSet {
     /// 只读工具集(默认):用户工作区直连时的唯一合法形态。
     pub fn new(workspace: &Path) -> std::io::Result<Self> {
@@ -230,7 +249,7 @@ impl ToolSet {
 
     /// 路径圈禁:相对路径 join 工作区后 canonicalize,必须仍在工作区内。
     fn resolve(&self, rel: &str) -> Result<PathBuf, String> {
-        if Path::new(rel).is_absolute() {
+        if is_rooted(Path::new(rel)) {
             return Err(format!("拒绝绝对路径 {rel}:仅允许工作区内的相对路径"));
         }
         let joined = self.workspace.join(rel);
@@ -247,7 +266,7 @@ impl ToolSet {
     /// 再拼回文件名。父目录不存在时逐级向上找已存在的祖先来验证,
     /// 这样 `../` 逃逸与符号链接逃逸都会在祖先这一步被挡下。
     fn resolve_for_write(&self, rel: &str) -> Result<PathBuf, String> {
-        if Path::new(rel).is_absolute() {
+        if is_rooted(Path::new(rel)) {
             return Err(format!("拒绝绝对路径 {rel}:仅允许工作区内的相对路径"));
         }
         let joined = self.workspace.join(rel);
@@ -407,7 +426,11 @@ impl ToolSet {
                         if line.trim().chars().count() > 200 {
                             shown.push('…');
                         }
-                        hits.push(format!("{}:{}: {}", rel_path.display(), ln + 1, shown));
+                        // 分隔符一律用 `/`:这些路径要进提示词,模型还会原样传回来。
+                        // 让同一个仓库在 Windows 上显示成 `sub\a.rs`、在别处显示成
+                        // `sub/a.rs`,等于给模型两套路径写法。Windows 也吃 `/`。
+                        let shown_path = rel_path.to_string_lossy().replace('\\', "/");
+                        hits.push(format!("{shown_path}:{}: {shown}", ln + 1));
                         if hits.len() >= GREP_CAP {
                             break;
                         }
@@ -450,6 +473,43 @@ mod tests {
         assert!(rf.contains("你好,Muster"), "{rf}");
         let gr = t.execute("grep", r#"{"pattern":"needle"}"#);
         assert!(gr.contains("hello.txt:2") && gr.contains("sub/a.rs:1"), "{gr}");
+    }
+
+    /// 带根路径的判定,**逐平台列举**。
+    ///
+    /// 这条测试存在的理由:`is_rooted` 很容易被"简化"回 `Path::is_absolute()`,
+    /// 而那个改动在 macOS 上一个测试都不会红——`/etc/hosts` 在 Unix 上
+    /// 本来就是绝对路径。只有把 Windows 特有的形状写进来,这个退化才拦得住。
+    #[test]
+    fn rooted_paths_are_recognised_on_every_platform() {
+        use super::is_rooted;
+        use std::path::Path;
+
+        // 两个平台都必须认出来
+        assert!(is_rooted(Path::new("/etc/hosts")));
+        assert!(is_rooted(Path::new("/")));
+
+        // 老实的相对路径:一律放行到下一道闸(canonicalize + starts_with)
+        for ok in ["a.txt", "sub/a.rs", "./a.txt", "../outside.txt", "..", "."] {
+            assert!(!is_rooted(Path::new(ok)), "{ok} 不该被当成带根路径");
+        }
+
+        #[cfg(windows)]
+        {
+            assert!(is_rooted(Path::new(r"C:\Windows\System32")));
+            assert!(is_rooted(Path::new(r"\Windows")), "反斜杠开头也是根");
+            // **驱动器相对路径**:既非绝对、也无根,却相对于"C 盘的当前目录"
+            // 解析——跟工作区毫无关系,是最容易漏掉的一种
+            assert!(is_rooted(Path::new("C:foo")), "驱动器相对路径必须挡住");
+            // UNC:直接指向网络共享,连本机都不在
+            assert!(is_rooted(Path::new(r"\\server\share\f")), "UNC 路径必须挡住");
+        }
+        #[cfg(unix)]
+        {
+            // 在 Unix 上这些只是普通文件名,不该被误判成越界
+            assert!(!is_rooted(Path::new("C:foo")));
+            assert!(!is_rooted(Path::new(r"C:\Windows")));
+        }
     }
 
     #[test]
