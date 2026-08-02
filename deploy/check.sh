@@ -2,6 +2,9 @@
 # 多人会议测试的**验收脚本**:每一项自己判定通过与否,不靠眼睛看。
 #
 #   ./deploy/check.sh            环境自检(开测前跑)
+#
+# 在**第二台机器**上也能跑,指到第一台即可:
+#   MUSTER_SERVER=http://<第一台IP>:8787 ./deploy/check.sh
 #   ./deploy/check.sh <会议id>   针对某场会议查结果(测的过程中随时跑)
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -38,6 +41,21 @@ elif [ -n "$CAND" ]; then
   ok "LiveKit 广播 $CAND(第二台可达)"
 else
   bad "LiveKit 没在跑"
+fi
+
+# 局域网可达性:从别的机器连过来靠的就是这三个口
+if [ -n "$LAN" ]; then
+  for p in 8787 7880 7881; do
+    if nc -z -G 2 "$LAN" "$p" 2>/dev/null; then
+      ok "$LAN:$p 可达"
+    else
+      bad "$LAN:$p 不可达 —— 第二台连不上(查防火墙 / 服务有没有起)"
+    fi
+  done
+  # UDP 探不出来,只能看它在不在听
+  lsof -nP -i UDP:7882 2>/dev/null | grep -q "7882" \
+    && ok "UDP 7882 在听(媒体面;探不到就没法开会)" \
+    || bad "UDP 7882 没在听 —— 会议连不上"
 fi
 
 pgrep -f "examples/daemon" >/dev/null && ok "Agent 常驻服务在跑" \
