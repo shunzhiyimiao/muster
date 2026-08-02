@@ -37,6 +37,9 @@ struct Frame {
 /// 本 crate 侧的帧队列深度。转写比采集慢,队列的作用是吸收抖动而不是无限缓冲——
 /// **满了宁可丢帧也不阻塞采集**:阻塞会让 WebRTC 侧堆积,越拖越糟。
 /// (SDK 内部另有一层队列,用它的默认深度。)
+/// 512 帧 ≈ 5 秒缓冲。转写已改为独立任务,这里只需吸收抖动;
+/// 若仍持续丢帧,说明转写整体跟不上(该上 GPU 或降到 tiny),
+/// 加大队列只会把延迟拖长,不解决问题。
 const FRAME_QUEUE: usize = 512;
 
 #[derive(Debug, thiserror::Error)]
@@ -52,8 +55,13 @@ fn now_ms() -> u64 {
 
 /// 连上房间,持续产出切好的句子,直到断开。
 ///
-/// `on_utterance` 每断出一句调用一次。它应当**尽快返回**(把活儿丢给别的任务),
-/// 否则会拖住整个房间的帧消费。
+/// `on_utterance` 每断出一句调用一次,**由本函数放到独立任务里跑**——
+/// 调用方不必自己记得 spawn。
+///
+/// 为什么必须这样:转写要 ~1 秒、作答要几秒,而这期间主循环若在 await,
+/// **就没人消费音频队列**,队列填满即丢帧;丢帧让送去转写的音频变得破碎,
+/// whisper 于是开始重复吐字("音乐音乐音乐…")。单人短句时勉强跟得上,
+/// 两个人一起说就塌——双人真机测试逼出来的。
 pub async fn run<G, F, Fut>(
     url: &str,
     token: &str,
@@ -64,7 +72,7 @@ pub async fn run<G, F, Fut>(
 where
     G: SpeechGate + 'static,
     F: FnMut(Utterance) -> Fut,
-    Fut: std::future::Future<Output = ()>,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let (room, mut events) = Room::connect(url, token, RoomOptions::default())
         .await
@@ -94,7 +102,8 @@ where
 
             Some(f) = rx.recv() => {
                 if let Some(u) = acc.push(&f.speaker, &f.pcm, f.ts_ms) {
-                    on_utterance(u).await;
+                    // 丢给独立任务:主循环必须立刻回到消费音频上
+                    tokio::spawn(on_utterance(u));
                 }
             }
 
@@ -112,7 +121,7 @@ where
                         // 人走了要把残留的半句吐出来——**最后一句往往是结论**
                         let who = p.identity().to_string();
                         if let Some(u) = acc.remove(&who) {
-                            on_utterance(u).await;
+                            tokio::spawn(on_utterance(u));
                         }
                         tracing::info!(speaker = %who, "参会者离开");
                     }
@@ -135,10 +144,16 @@ where
 
     // 会议结束:所有人的残留都要吐出来,一句都不能丢
     let speakers: Vec<String> = acc.speakers();
+    let mut tail = Vec::new();
     for s in speakers {
         if let Some(u) = acc.remove(&s) {
-            on_utterance(u).await;
+            tail.push(tokio::spawn(on_utterance(u)));
         }
+    }
+    // 散会时**要等**残留处理完:后面紧接着就是提炼行动项,
+    // 不等的话最后几句还没进纪要,提炼就看不见它们了
+    for t in tail {
+        let _ = t.await;
     }
     Ok(())
 }
@@ -156,7 +171,26 @@ fn spawn_pump(
         NativeAudioStream::new(audio.rtc_track(), SAMPLE_RATE as i32, CHANNELS as i32);
     tokio::spawn(async move {
         let mut dropped = 0u64;
+        // 电平采样:排查"说了没反应"时,这是唯一能分清
+        // "音频没进来" / "进来了但太轻被闸挡住" / "闸放行了但转写空"的东西。
+        // debug 级,平时不打;RUST_LOG=muster_meeting_agent=debug 打开。
+        let (mut n_frames, mut sum_sq, mut peak) = (0u64, 0f64, 0i32);
         while let Some(frame) = stream.next().await {
+            for s in frame.data.iter() {
+                sum_sq += (*s as f64) * (*s as f64);
+                peak = peak.max((*s as i32).abs());
+            }
+            n_frames += 1;
+            if n_frames % 300 == 0 {
+                let rms = (sum_sq / (n_frames as f64 * frame.data.len() as f64)).sqrt();
+                tracing::debug!(
+                    speaker = %speaker, rms = rms as i32, peak,
+                    "近 3 秒电平(能量闸阈值 300;远低于它就是麦克风没拾到声)"
+                );
+                sum_sq = 0.0;
+                n_frames = 0;
+                peak = 0;
+            }
             let f = Frame {
                 speaker: speaker.clone(),
                 pcm: frame.data.to_vec(),
