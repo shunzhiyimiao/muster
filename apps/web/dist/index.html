@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Muster 点将台 · 参会</title>
+<style>
+  :root { --ink:#17181c; --sub:#5A5E70; --faint:#9095A6; --line:#E7E8EF;
+          --panel:#F6F7FB; --indigo:#5B5BF5; --green:#12A150; --red:#E5484D; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         color:var(--ink); background:#F1F2F7; }
+  .wrap { max-width:1080px; margin:0 auto; padding:24px 20px 40px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  .dim { color:var(--faint); font-size:12px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:20px; margin-bottom:16px; }
+  input,select,button { font:inherit; }
+  input,select { width:100%; padding:9px 12px; border:1px solid var(--line);
+                 border-radius:10px; background:var(--panel); outline:none; }
+  label { display:block; margin-bottom:10px; }
+  label span { font-size:12px; color:var(--faint); }
+  button { padding:9px 16px; border:0; border-radius:10px; background:var(--panel);
+           color:var(--sub); font-weight:600; cursor:pointer; }
+  button.primary { background:var(--indigo); color:#fff; }
+  button.danger { background:#FEEBEC; color:var(--red); }
+  button.active { background:var(--indigo); color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .row { display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+         padding:10px 0; border-top:1px solid var(--line); background:none; border-radius:0; }
+  .tag { font-size:11px; padding:2px 8px; border-radius:8px; background:var(--panel); color:var(--sub); }
+  .tag.internal { background:#FFF4E5; color:#B45309; }
+  .tag.restricted { background:#FEEBEC; color:var(--red); }
+  .badge { font-size:11px; font-weight:700; padding:3px 9px; border-radius:8px; }
+  .badge.on { background:#E7F7EE; color:var(--green); }
+  .badge.off { background:#FEEBEC; color:var(--red); }
+  .grid { display:grid; grid-template-columns:1.4fr 1fr; gap:16px; }
+  @media (max-width:820px) { .grid { grid-template-columns:1fr; } }
+  #videos { display:grid; grid-template-columns:1fr 1fr; gap:10px; min-height:8px; }
+  .video { width:100%; border-radius:12px; background:#000; }
+  #lines { max-height:440px; overflow-y:auto; }
+  .line { padding:7px 0; border-top:1px solid var(--line); }
+  .line b.sys { color:var(--red); }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+           background:var(--ink); color:#fff; padding:10px 16px; border-radius:12px;
+           font-size:12.5px; max-width:80vw; }
+  .toast.bad { background:var(--red); }
+  .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .note { font-size:11.5px; color:var(--sub); background:var(--panel);
+          padding:10px 12px; border-radius:12px; margin-top:12px; line-height:1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <section id="login" class="card" hidden>
+    <h1>Muster 点将台 · 参会</h1>
+    <div class="dim">用浏览器加入团队会议。开麦说话由会议 Agent 走本地转写,音频不出内网。</div>
+    <form id="loginForm" style="margin-top:16px">
+      <label><span>服务器地址</span><input id="server" /></label>
+      <label><span>账号</span><input id="account" autocomplete="username" /></label>
+      <label><span>口令</span><input id="password" type="password" autocomplete="current-password" /></label>
+      <button class="primary" type="submit">连接</button>
+    </form>
+    <div class="note">
+      这个页面只用来<b>参会</b>:发消息、开会、看纪要。<br />
+      跑任务、审批、能力库需要本地 Runner 与本地审计链,浏览器里做不了——那些在桌面壳里。
+    </div>
+  </section>
+
+  <section id="lobby" hidden>
+    <div class="card">
+      <div class="bar">
+        <h1 style="flex:1">会议</h1>
+        <span class="dim">已登录 <b id="who"></b></span>
+      </div>
+      <div class="bar" style="margin-top:14px">
+        <select id="channel" style="max-width:260px"></select>
+        <input id="title" placeholder="会议主题,例如「平台组周会」" style="flex:1;min-width:200px" />
+        <button id="startMeeting" class="primary">发起会议</button>
+        <button id="refresh">刷新</button>
+      </div>
+      <div class="note">会议密级继承所在频道——否则「把话题挪进会议」就成了绕过密级的办法。</div>
+    </div>
+    <div class="card">
+      <b style="font-size:13px">进行中</b>
+      <div id="meetings" style="margin-top:8px"></div>
+    </div>
+  </section>
+
+  <section id="meeting" hidden>
+    <div class="grid">
+      <div>
+        <div class="card">
+          <div class="bar">
+            <b id="mTitle" style="font-size:15px"></b>
+            <span id="mLevel" class="tag"></span>
+            <span id="peers" class="dim" style="margin-left:auto"></span>
+          </div>
+          <div class="dim" id="mState" style="margin-top:4px">连接中…</div>
+          <div id="videos" style="margin-top:12px"></div>
+          <div class="bar" style="margin-top:14px">
+            <button id="micBtn">开麦</button>
+            <button id="agentBtn">请 Agent 来记录</button>
+            <button id="leaveBtn" class="danger" style="margin-left:auto">离开</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="bar">
+          <b style="font-size:13px">实时纪要</b>
+          <span id="agentState" class="badge off">Agent 不在会中</span>
+          <span class="dim" style="margin-left:auto">本地转写</span>
+        </div>
+        <div id="lines" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+</div>
+<script src="./app.js"></script>
+</body>
+</html>

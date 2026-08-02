@@ -51,11 +51,34 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/web", get(web_index))
+        .route("/web/", get(web_index))
+        .route("/app.js", get(web_app_js))
         .merge(auth_routes)
         .merge(chan_routes)
         .merge(action_routes)
         // 桌面壳与浏览器都要连,开发期放开;上线前收敛到白名单(已登记)
         .layer(CorsLayer::permissive())
+}
+
+/// 网页参会端。**嵌进二进制**,不读磁盘也不依赖 CDN——
+/// 内网部署连不上外网,依赖必须随包走;而多一个静态文件目录就多一处
+/// "部署时忘了拷"的失败方式。
+///
+/// 它只用来**参会**:发消息、开会、看纪要。跑任务、审批、能力库需要本地
+/// Runner 与本地审计链,浏览器里做不了,页面上也如实写明了。
+async fn web_index() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../../apps/web/dist/index.html"),
+    )
+}
+
+async fn web_app_js() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        include_str!("../../apps/web/dist/app.js"),
+    )
 }
 
 async fn health() -> axum::Json<serde_json::Value> {

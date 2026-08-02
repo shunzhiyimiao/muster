@@ -1,0 +1,8 @@
+{
+  "name": "muster-web",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "vite build" },
+  "dependencies": { "livekit-client": "^2.21.0" },
+  "devDependencies": { "vite": "^5.4.0" }
+}
