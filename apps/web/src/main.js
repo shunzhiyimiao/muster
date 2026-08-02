@@ -129,6 +129,17 @@ $("startMeeting").onclick = async () => {
 // ---------------------------------------------------------------- 会议
 
 async function joinMeeting(m) {
+  // **先把上一个房间断干净。** 不断的话旧 Room 的音频元素还挂在页面上继续播,
+  // 两份声音叠在一起——听起来就是回声,而人会以为是声学回授去找耳机。
+  if (state.room) {
+    try {
+      await state.room.disconnect();
+    } catch {
+      /* 已经断了就算了 */
+    }
+    state.room = null;
+  }
+  $("videos").innerHTML = "";
   state.meeting = m;
   $("mTitle").textContent = m.title;
   $("mLevel").textContent = m.level;
@@ -155,6 +166,9 @@ async function joinMeeting(m) {
       $("mState").textContent = s === ConnectionState.Connected ? "已入房间" : String(s);
     })
     .on(RoomEvent.TrackSubscribed, (track) => {
+      // 同一条轨只挂一次:重连时 TrackSubscribed 会再来一遍,
+      // 挂两次就是两份声音同时播
+      if (track.attachedElements?.length) return;
       const el = track.attach();
       if (track.kind === Track.Kind.Video) {
         el.className = "video";
@@ -265,6 +279,7 @@ $("leaveBtn").onclick = () => {
   state.room?.disconnect();
   state.es?.close();
   state.room = null;
+  $("videos").innerHTML = "";
   show("lobby");
   refreshMeetings().catch(() => {});
 };

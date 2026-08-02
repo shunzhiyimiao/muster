@@ -54,6 +54,9 @@ export function MeetingRoom({
 
     const attach = (track: RemoteTrack, who: string) => {
       if (!mediaRef.current) return;
+      // 同一条轨只挂一次:重连时 TrackSubscribed 会再来一遍,
+      // 挂两次就是两份声音同时播——听起来像回声,却会被误当成声学回授
+      if (track.attachedElements?.length) return;
       const el = track.attach();
       el.dataset.who = who;
       if (track.kind === Track.Kind.Video) {
