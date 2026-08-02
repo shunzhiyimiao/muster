@@ -172,12 +172,16 @@ async function joinMeeting(m) {
     await room.connect(info.url, info.token);
     renderPeers();
   } catch (e) {
-    // pc connection 类失败在这里显形,写清楚多半是什么原因
-    toast(
-      `进不去房间:${e}。多半是 LiveKit 广播的地址这台机器到不了,` +
-        `让管理员在服务器上查 rtc.node_ip。`,
-      true
-    );
+    // **信令失败和媒体失败是两回事,报错要分开说。**
+    // 之前统一归咎于 node_ip,结果信令层的问题被指到媒体配置上,查错了方向。
+    const msg = String(e);
+    const hint = /signal|Failed to fetch|WebSocket/i.test(msg)
+      ? `连不上 LiveKit 的信令(WebSocket)。多半是服务端发下来的地址 ${info.url} ` +
+        `这台机器到不了 —— 如果它是 localhost,那在你这台机器上指的是你自己。` +
+        `让管理员检查服务端的 LIVEKIT_URL。`
+      : `信令通了但媒体连不上。多半是 LiveKit 广播的 ICE 候选这台机器到不了 —— ` +
+        `让管理员检查服务端的 rtc.node_ip 和 UDP 7882 是否可达。`;
+    toast(`进不去房间:${msg}\n${hint}`, true);
   }
 
   await loadTranscript(m.id);

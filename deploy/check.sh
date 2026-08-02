@@ -34,6 +34,15 @@ else
   bad "服务端没在跑"
 fi
 
+# 发给客户端的信令地址:localhost 的话别的机器连的是它自己
+LKURL=$(grep -o 'LIVEKIT_URL=.*' /tmp/muster-dev.env 2>/dev/null | cut -d= -f2-)
+case "$LKURL" in
+  *localhost*|*127.0.0.1*)
+    bad "LIVEKIT_URL=$LKURL —— **别的机器会连到它自己**,报 could not establish signal connection。重跑 dev-up.sh" ;;
+  "") warn "取不到 LIVEKIT_URL(/tmp/muster-dev.env 在吗)" ;;
+  *)  ok "入会票信令地址 $LKURL(别的机器可达)" ;;
+esac
+
 CAND=$(docker logs deploy-livekit-1 2>&1 | grep -oE '"nodeIP": "[^"]*"' | tail -1 | cut -d'"' -f4)
 if [ "$CAND" = "127.0.0.1" ]; then
   bad "LiveKit 广播 127.0.0.1 —— 第二台会报 pc connection。重跑 ./deploy/dev-up.sh"

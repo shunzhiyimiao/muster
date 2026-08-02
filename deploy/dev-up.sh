@@ -56,7 +56,12 @@ say "2/5 环境变量"
 cat > /tmp/muster-dev.env <<'ENV'
 export DATABASE_URL=postgres://muster:muster@localhost:5433/muster
 export MUSTER_JWT_SECRET=devjwt_0123456789abcdef0123456789abcdef
-export LIVEKIT_URL=ws://localhost:7880
+# **必须是局域网地址,不能是 localhost。** 这个地址会**原样发给每一个客户端**
+# (入会票里的 url),而别的机器上的 localhost 是它自己 —— 症状是
+# "could not establish signal connection: Failed to fetch"。
+# 注意它和 node_ip 是两回事:这条是**信令**(WebSocket 到 7880),
+# node_ip 是**媒体**(ICE 候选)。两个都错过一次,报错长得完全不一样。
+export LIVEKIT_URL=ws://LAN_IP_PLACEHOLDER:7880
 export LIVEKIT_API_KEY=devkey
 export LIVEKIT_API_SECRET=devsecret_0123456789abcdef0123456789abcdef
 export MUSTER_SERVER_AUDIT_DB=/tmp/muster-dev-audit.db
@@ -64,6 +69,7 @@ export MUSTER_SERVER=http://localhost:8787
 # 监听 0.0.0.0:局域网里的第二台机器才连得上(默认只听 127.0.0.1)
 export MUSTER_BIND=0.0.0.0:8787
 ENV
+sed -i '' "s|LAN_IP_PLACEHOLDER|${LAN_IP}|" /tmp/muster-dev.env
 ok "写入 /tmp/muster-dev.env(密钥是开发用的,内网部署必须换)"
 # shellcheck disable=SC1091
 source /tmp/muster-dev.env
