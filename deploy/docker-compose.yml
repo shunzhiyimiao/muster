@@ -64,7 +64,8 @@ services:
   whisper:
     image: fedirz/faster-whisper-server:latest-cpu
     environment:
-      WHISPER__MODEL: Systran/faster-whisper-base
+      # 档位取舍见 dev-up.sh 的实测表:small 是 CPU 上的甜点,medium 断崖式变慢
+      WHISPER__MODEL: Systran/faster-whisper-small
     ports: ["9000:8000"]
 
 volumes:

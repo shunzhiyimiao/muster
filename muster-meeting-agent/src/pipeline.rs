@@ -77,6 +77,7 @@ impl Pipeline {
         let is_local = res.plan.primary_locality == Locality::Local;
 
         let wav = pcm16_to_wav(&u.pcm);
+        dump_audio(&u, &wav);
         let out = res
             .provider
             .transcribe(TranscribeRequest {
@@ -257,5 +258,79 @@ mod tests {
         p.handle(utt(), &OrgPolicy::new(Sensitivity::Internal).unwrap()).await;
         assert!(rec.texts.lock().unwrap().is_empty());
         assert!(rec.refusals.lock().unwrap().is_empty(), "空转写不是被拒");
+    }
+}
+
+/// 调优采样:把每一句的原始音频落盘,供离线比对不同转写引擎。
+///
+/// ## 为什么需要它
+///
+/// 拿合成语音(TTS)比模型是靠不住的——真实会议里有房间混响、笔记本内置麦、
+/// 两人交替说话,难度完全不同。**在合成样本上领先的模型,真实音频上可能反而更差。**
+/// 要判断"换个引擎值不值",就得有真实素材做 A/B。
+///
+/// ## 为什么默认关闭,而且必须显式开
+///
+/// 这个开关把**会议正文的原始音频**写到磁盘上——比转写出的文字更敏感,
+/// 声音本身就是身份。铁律三之所以让审计链只存哈希,就是为了不留正文;
+/// 这里开的是一个例外,所以:
+///
+/// - 只认环境变量,配置文件里设不了(免得跟着配置被提交、被分发);
+/// - 开着的时候**每次启动都告警**,不让它悄悄长期开着;
+/// - 落盘路径由开启者自己指定,由他负责清理。
+///
+/// ```bash
+/// MUSTER_DUMP_AUDIO=/tmp/muster-audio cargo run ... --example daemon
+/// ```
+fn dump_audio(u: &Utterance, wav: &[u8]) {
+    let Some(dir) = dump_dir() else { return };
+    let path = dir.join(format!("{}-{}.wav", u.started_ms, sanitize(&u.speaker)));
+    if let Err(e) = std::fs::write(&path, wav) {
+        // 采样失败不该影响开会:告警,继续转写
+        tracing::warn!(path = %path.display(), error = %e, "音频采样写入失败");
+    }
+}
+
+/// 目录只解析一次,并在第一次解析时告警——**开着采样是个需要被看见的状态**。
+fn dump_dir() -> Option<&'static std::path::Path> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::path::PathBuf::from(std::env::var("MUSTER_DUMP_AUDIO").ok()?);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::error!(dir = %dir.display(), error = %e, "音频采样目录建不了,采样未开启");
+            return None;
+        }
+        tracing::warn!(
+            dir = %dir.display(),
+            "⚠ 音频采样已开启:会议原始音频正在落盘。这是调优用的临时开关,\
+             用完请取消 MUSTER_DUMP_AUDIO 并清理该目录。"
+        );
+        Some(dir)
+    })
+    .as_deref()
+}
+
+/// 说话人名字进文件名:挡掉路径分隔符和 `..`,免得写到目录外面去。
+fn sanitize(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if s.is_empty() { "unknown".into() } else { s }
+}
+
+#[cfg(test)]
+mod dump_tests {
+    use super::sanitize;
+
+    #[test]
+    fn sanitize_keeps_names_inside_the_directory() {
+        // 说话人名字来自 LiveKit 参与者身份,是**外部输入**,不能直接进路径
+        assert_eq!(sanitize("../../etc/passwd"), "______etc_passwd");
+        assert_eq!(sanitize("a/b"), "a_b");
+        assert_eq!(sanitize(""), "unknown");
+        assert_eq!(sanitize("alice-1"), "alice-1");
+        // 中文名要留住:它是这个系统的常态,替换成下划线就分不出人了
+        assert_eq!(sanitize("小七"), "小七");
     }
 }

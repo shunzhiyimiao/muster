@@ -139,7 +139,13 @@ cat <<NEXT
   会议 Agent(先在桌面壳里发起会议,拿到会议 id 再跑):
     source /tmp/muster-dev.env
     export MUSTER_TOKEN=\$(cat /tmp/muster-agent-token)
-    export MUSTER_STT_MODEL=Systran/faster-whisper-base
+    # 模型档位实测(本机 CPU,6.2s 中文音频,均已预热):
+    #   base   0.9s(快 7 倍)  错字多:"周会"→"周慧",还冒繁体字
+    #   small  2.3s(快 2.7 倍)简体正常,"周会"对 ← 用它
+    #   medium 55.8s(**慢 9 倍**)不能用
+    # small 和 medium 之间是断崖,不是斜坡——别想着"再往上调一格试试"。
+    # 注:第一次跑要下载权重(small 约 500MB),那次的耗时不算数。
+    export MUSTER_STT_MODEL=Systran/faster-whisper-small
     export MUSTER_STT_PROMPT="以下是简体中文的技术周会记录。"
     export MUSTER_PROVIDER_CONFIG=<你的 provider.toml>   # 不配则只转写不作答
     cargo run -p muster-meeting-agent --features livekit --example agent -- <会议id>
