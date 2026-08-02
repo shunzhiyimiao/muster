@@ -267,8 +267,27 @@ fn session_path() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("MUSTER_SESSION_FILE") {
         return Some(std::path::PathBuf::from(p));
     }
-    let home = std::env::var("HOME").ok()?;
-    Some(std::path::PathBuf::from(home).join(".muster").join("desktop-session.json"))
+    Some(home_dir()?.join(".muster").join("desktop-session.json"))
+}
+
+/// 家目录。**Windows 上没有 `HOME`**,它叫 `USERPROFILE`。
+///
+/// 只读 `HOME` 的后果不是报错而是**静默失效**:`session_path()` 返回 `None`,
+/// 于是保存和读取都变成空操作——登录成功、界面正常,一重启就掉回未登录,
+/// 而日志里什么都没有。这类"看起来在工作、其实没存"的失败最难查。
+fn home_dir() -> Option<std::path::PathBuf> {
+    for k in ["HOME", "USERPROFILE"] {
+        if let Ok(v) = std::env::var(k) {
+            if !v.is_empty() {
+                return Some(std::path::PathBuf::from(v));
+            }
+        }
+    }
+    // Windows 上偶尔只有这一对(域账户、部分服务上下文)
+    match (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        (Ok(d), Ok(p)) if !d.is_empty() && !p.is_empty() => Some(std::path::PathBuf::from(d + &p)),
+        _ => None,
+    }
 }
 
 impl Remote {
@@ -366,5 +385,30 @@ mod tests {
     fn base_url_trailing_slash_is_normalised() {
         assert_eq!("http://x:8787/".trim_end_matches('/'), "http://x:8787");
         assert_eq!("http://x:8787".trim_end_matches('/'), "http://x:8787");
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    /// 家目录解析的**顺序**要固定,而且不能只认 `HOME`。
+    ///
+    /// 这个测试不动进程环境(那会波及并行跑的其他测试),只验纯逻辑:
+    /// 把 [`super::home_dir`] 的取值顺序照抄一份,验证 Windows 那套变量
+    /// 也能落到结果上。真正的防线是 `home_dir` 里的常量表,
+    /// 这里锁的是"表里必须有 USERPROFILE"这件事。
+    #[test]
+    fn windows_variables_are_in_the_lookup_table() {
+        let src = include_str!("remote.rs");
+        let table = src
+            .split("fn home_dir()")
+            .nth(1)
+            .expect("home_dir 还在吗");
+        for k in ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"] {
+            assert!(
+                table.contains(k),
+                "home_dir 里少了 {k}:Windows 上没有 HOME,漏掉它会让登录状态\
+                 静默存不住——不报错,只是重启后掉回未登录"
+            );
+        }
     }
 }

@@ -111,6 +111,22 @@ const ENV_KEEP: &[&str] = &[
     "JAVA_HOME", "PYENV_ROOT", "NVM_DIR", "VOLTA_HOME",
 ];
 
+/// Windows 上**额外**必须透传的环境。
+///
+/// 不是"顺手多留几个":`SYSTEMROOT` 缺了,子进程里大量 Win32 调用会失败——
+/// 最典型的是 winsock 初始化不了,于是 `cargo` 拉不了网、`git` 连不上,
+/// **而报错信息完全看不出是环境变量的问题**。剥环境本是安全动作,
+/// 剥过头就变成了"在 Windows 上什么都跑不起来,且查不出原因"。
+///
+/// `PATHEXT` 是 [`resolve_program`] 解析 `npm` → `npm.cmd` 的依据;
+/// `COMSPEC` 是执行 `.cmd` 所需。其余是工具链找配置的落点。
+#[cfg(windows)]
+const ENV_KEEP_WINDOWS: &[&str] = &[
+    "SYSTEMROOT", "windir", "SYSTEMDRIVE", "PATHEXT", "COMSPEC",
+    "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+];
+
 /// 强制注入的环境:关掉网络与交互,避免子进程在无人值守时卡在提示符上。
 const ENV_FORCE: &[(&str, &str)] = &[
     ("CARGO_NET_OFFLINE", "1"),
@@ -208,14 +224,83 @@ fn authorize(toks: &[String], policy: &CommandPolicy) -> Result<String, (String,
 
 /// 剥干净的环境:白名单透传 + 强制注入。
 fn clean_env() -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = ENV_KEEP
-        .iter()
+    #[cfg(windows)]
+    let keep = ENV_KEEP.iter().chain(ENV_KEEP_WINDOWS.iter());
+    #[cfg(not(windows))]
+    let keep = ENV_KEEP.iter();
+
+    let mut env: BTreeMap<String, String> = keep
         .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
         .collect();
     for (k, v) in ENV_FORCE {
         env.insert(k.to_string(), v.to_string());
     }
     env
+}
+
+/// 把程序名解析成可执行文件。
+///
+/// ## 为什么 Windows 上非做不可
+///
+/// Rust 的 `Command::new("npm")` 在 Windows 上只会补 `.exe`,**不查 `PATHEXT`**。
+/// 而 `npm` / `pnpm` / `yarn` 装出来是 `.cmd` 批处理——于是允许清单里那几条
+/// Node 命令在 Windows 上一律"找不到程序",清单看着有、其实是死的。
+///
+/// 解析不出来就原样返回,让 `spawn` 自己报错;这里不替它判断"存不存在"。
+fn resolve_program(prog: &str) -> std::path::PathBuf {
+    #[cfg(not(windows))]
+    {
+        std::path::PathBuf::from(prog)
+    }
+    #[cfg(windows)]
+    {
+        search_path(
+            prog,
+            &std::env::var("PATH").unwrap_or_default(),
+            &std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()),
+            |p| p.is_file(),
+        )
+        .unwrap_or_else(|| std::path::PathBuf::from(prog))
+    }
+}
+
+/// `PATH` × `PATHEXT` 搜索。抽成纯函数是为了**能在任何平台上测**——
+/// 下面那条"绝不查当前目录"的性质太容易在日后重构里丢掉,
+/// 而只有 Windows 跑得了的测试等于没有测试。
+///
+/// ## 绝不查当前目录
+///
+/// Windows 传统上会先在**当前工作目录**找可执行文件。这里刻意不这么做:
+/// cwd 是任务的隔离 worktree,里面全是模型刚写出来的文件。允许从那里取
+/// 可执行文件,等于让被测代码自己决定 `npm` 是什么——白名单就绕过去了。
+///
+/// 已带路径或已带扩展名的一律不碰:那是调用方明确指定的东西。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn search_path(
+    prog: &str,
+    path_var: &str,
+    pathext: &str,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(prog);
+    if p.extension().is_some() || p.components().count() > 1 {
+        return Some(p.to_path_buf());
+    }
+    for dir in path_var.split(';') {
+        // PATH 条目可能带引号;空条目在 Windows 上历史地被当作"当前目录",
+        // 跳过它正是上面那条性质要防的。
+        let dir = dir.trim().trim_matches('"');
+        if dir.is_empty() {
+            continue;
+        }
+        for ext in pathext.split(';') {
+            let cand = std::path::Path::new(dir).join(format!("{prog}{ext}"));
+            if exists(&cand) {
+                return Some(cand);
+            }
+        }
+    }
+    None
 }
 
 fn cap(out: &str) -> String {
@@ -264,7 +349,9 @@ pub fn run(line: &str, cwd: &Path, policy: &CommandPolicy) -> CommandOutcome {
     };
 
     let started = Instant::now();
-    let mut cmd = Command::new(&toks[0]);
+    // **在 authorize 之后才解析**:白名单认的是用户敲的那串词(`npm test`),
+    // 不是解析出来的绝对路径。顺序反了就等于让文件系统决定放行什么。
+    let mut cmd = Command::new(resolve_program(&toks[0]));
     cmd.args(&toks[1..])
         .current_dir(cwd)
         .env_clear()
@@ -500,5 +587,109 @@ mod tests {
         let c = cap(&out);
         assert!(c.contains("ERROR-FIRST") && c.contains("SUMMARY-LAST"), "两端都要留");
         assert!(c.len() < OUTPUT_CAP + 500);
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::search_path;
+    use std::path::{Path, PathBuf};
+
+    /// 期望值和被测代码用**同一种方式**拼路径。
+    /// 写死 `C:\dir\file` 的话,这些测试在 macOS 上会因为 `join` 用 `/`
+    /// 而全部失败——那是测试自己的问题,不是代码的。
+    fn at(dir: &str, file: &str) -> PathBuf {
+        Path::new(dir).join(file)
+    }
+
+    /// 断言"选中的是同一个文件"。不比大小写:`PATHEXT` 惯例是大写,
+    /// 于是拼出来的是 `git.EXE`,而盘上是 `git.exe`——在 Windows 上这是
+    /// **同一个文件**。测试要检的是"选中了哪个",不是"字面怎么写"。
+    #[track_caller]
+    fn assert_same(got: Option<PathBuf>, want: Option<PathBuf>) {
+        let norm = |o: &Option<PathBuf>| {
+            o.as_ref().map(|p| p.as_os_str().to_string_lossy().to_lowercase())
+        };
+        assert_eq!(norm(&got), norm(&want), "got {got:?}, want {want:?}");
+    }
+
+    /// 只认这几个"存在"的文件,别的都不存在。
+    ///
+    /// **大小写不敏感**——它替代的是 Windows 文件系统,而那里 `npm.CMD`
+    /// 就是 `npm.cmd`。`PATHEXT` 惯例是大写,真实盘上的文件却是小写;
+    /// mock 比真实系统更严格的话,测出来的失败是假的。
+    fn fake(files: Vec<PathBuf>) -> impl Fn(&Path) -> bool {
+        move |p: &Path| {
+            files.iter().any(|f| {
+                f.as_os_str().to_string_lossy().eq_ignore_ascii_case(&p.as_os_str().to_string_lossy())
+            })
+        }
+    }
+
+    #[test]
+    fn finds_cmd_because_rust_only_tries_exe() {
+        // Windows 上 npm 是 npm.cmd。Rust 自己只补 .exe,所以不做这一步,
+        // 允许清单里的 `npm test` 在 Windows 上是**死条目**。
+        let want = at(r"C:\node", "npm.cmd");
+        let got = search_path("npm", r"C:\tools;C:\node", ".EXE;.CMD", fake(vec![want.clone()]));
+        assert_same(got, Some(want));
+    }
+
+    #[test]
+    fn pathext_order_decides_which_wins() {
+        // 同名多扩展时按 PATHEXT 的顺序,不按目录里的顺序
+        let (cmd, exe) = (at(r"C:\b", "tool.cmd"), at(r"C:\b", "tool.exe"));
+        let files = vec![cmd.clone(), exe.clone()];
+        assert_same(search_path("tool", r"C:\b", ".EXE;.CMD", fake(files.clone())), Some(exe));
+        assert_same(search_path("tool", r"C:\b", ".CMD;.EXE", fake(files)), Some(cmd));
+    }
+
+    #[test]
+    fn never_resolves_from_the_working_directory() {
+        // **这条是安全性质,不是便利性。** cwd 是任务的隔离 worktree,
+        // 里面是模型刚写出来的文件;从那里取可执行文件,等于让被测代码
+        // 自己决定 `npm` 是什么,允许清单就形同虚设。
+        //
+        // Windows 上 PATH 里的**空条目**历史地表示当前目录——所以空条目
+        // 必须跳过,而不是当成 "."。
+        let files = vec![PathBuf::from("npm.cmd"), at(".", "npm.cmd"), at("", "npm.cmd")];
+        assert_eq!(
+            search_path("npm", ";;", ".CMD", fake(files.clone())),
+            None,
+            "PATH 里的空条目不得回落到当前目录"
+        );
+        assert_eq!(
+            search_path("npm", "", ".CMD", fake(files)),
+            None,
+            "PATH 为空时也不许找当前目录"
+        );
+    }
+
+    #[test]
+    fn leaves_explicit_paths_and_extensions_alone() {
+        // 调用方已经指名道姓的,不替他改;此时连"存不存在"都不查
+        let abs = at(r"C:\x", "my.exe");
+        assert_eq!(
+            search_path(abs.to_str().unwrap(), r"C:\b", ".EXE", fake(vec![])),
+            Some(abs)
+        );
+        assert_eq!(
+            search_path("tool.exe", r"C:\b", ".EXE", fake(vec![])),
+            Some(PathBuf::from("tool.exe"))
+        );
+    }
+
+    #[test]
+    fn quoted_path_entries_are_unwrapped() {
+        // Windows 的 PATH 里带引号的条目很常见
+        let want = at(r"C:\Program Files\Git\bin", "git.exe");
+        let got = search_path("git", "\"C:\\Program Files\\Git\\bin\"", ".EXE", fake(vec![want.clone()]));
+        assert_same(got, Some(want));
+    }
+
+    #[test]
+    fn unresolvable_falls_through_to_spawn() {
+        // 找不到就交给 spawn 报错,这里不自己判定"不存在"
+        assert_eq!(search_path("nope", r"C:\b", ".EXE", fake(vec![])), None);
     }
 }

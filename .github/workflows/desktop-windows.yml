@@ -1,0 +1,73 @@
+# 桌面壳的 Windows 安装包。
+#
+# ## 为什么走 CI 而不是本机构建
+#
+# 开发机是 macOS。Tauri 的 Windows 打包要 MSVC 工具链 + NSIS,交叉编译能不能成
+# 全看运气,**而"能不能装上、装上能不能跑"在 Mac 上根本验不了**。
+# 与其在本地凑一个半可信的产物,不如让 Windows runner 从头构建。
+#
+# 顺带解决另一件事:Windows 机器上不必装 Rust、Node、VS Build Tools——
+# 那台机器只负责装和用。
+#
+# ## 为什么先跑测试再打包
+#
+# 桌面壳依赖 muster-runner 等 crate,里面有一批带 `cfg(windows)` 的分支
+# (程序名 PATHEXT 解析、家目录、环境白名单)。**那些分支在 macOS 上一行都不会编译**,
+# 于是本地全绿也说明不了它们在 Windows 上成立。这个 job 是它们唯一的检验。
+name: 桌面壳 · Windows
+
+on:
+  workflow_dispatch: # 手动触发:平时不必每次推送都花十几分钟
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: # 只在可能影响 Windows 行为的改动上跑
+      - "apps/desktop/**"
+      - "muster-*/src/**"
+      - ".github/workflows/desktop-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+
+      # 先验 cfg(windows) 分支真的成立
+      - name: cargo test(工作区)
+        run: cargo test --workspace
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - name: 装前端依赖
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: cargo test(桌面壳自身工作区)
+        working-directory: apps/desktop/src-tauri
+        run: cargo test
+
+      # 显式指定 nsis:targets 里还有 app/dmg,那是 macOS 的
+      - name: 打安装包
+        working-directory: apps/desktop
+        run: pnpm tauri build --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muster-desktop-windows
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error # 没产物是失败,不是"跑完了"
+          retention-days: 30
