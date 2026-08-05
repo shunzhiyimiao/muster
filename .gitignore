@@ -3,3 +3,6 @@
 node_modules/
 apps/desktop/dist/
 apps/desktop/src-tauri/target/
+
+# 生产密钥只该在服务器上,不进仓库
+deploy/.env

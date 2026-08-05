@@ -52,6 +52,7 @@ pub mod livekit;
 pub mod meeting;
 pub mod message;
 pub mod org;
+pub mod ratelimit;
 pub mod routes;
 pub mod ws;
 
@@ -72,6 +73,8 @@ pub enum ServerError {
     NotFound(String),
     #[error("内部错误:{0}")]
     Internal(String),
+    #[error("请求过于频繁:{0}")]
+    TooManyRequests(String),
 }
 
 impl axum::response::IntoResponse for ServerError {
@@ -82,6 +85,7 @@ impl axum::response::IntoResponse for ServerError {
             ServerError::Forbidden(_) => StatusCode::FORBIDDEN,
             ServerError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ServerError::NotFound(_) => StatusCode::NOT_FOUND,
+            ServerError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             // 数据库与内部错误不把原文吐给客户端(可能含连接串、表结构)
             ServerError::Db(e) => {
                 tracing::error!("db error: {e}");

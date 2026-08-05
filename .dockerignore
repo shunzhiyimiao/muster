@@ -1,0 +1,10 @@
+# 构建上下文里不该有的东西。不排掉的话,target/ 几个 G 全传进 Docker,
+# 每次构建都慢上几分钟——而且里面是宿主机的构建产物,进了容器也不能用。
+target
+**/target
+node_modules
+**/node_modules
+apps/desktop
+apps/web/dist
+.git
+*.log

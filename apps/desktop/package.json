@@ -25,5 +25,6 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^5.5.3",
     "vite": "^5.4.0"
-  }
+  },
+  "packageManager": "pnpm@10.28.1"
 }

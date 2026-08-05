@@ -68,6 +68,9 @@ export MUSTER_SERVER_AUDIT_DB=/tmp/muster-dev-audit.db
 export MUSTER_SERVER=http://localhost:8787
 # 监听 0.0.0.0:局域网里的第二台机器才连得上(默认只听 127.0.0.1)
 export MUSTER_BIND=0.0.0.0:8787
+# 对外监听就必须给 CORS 白名单,否则服务端拒绝启动(见 routes.rs 的 cors_mode)。
+# 只有**网页参会端**需要它——桌面壳的请求走 Tauri 的 Rust 侧,不经浏览器 CORS。
+export MUSTER_ALLOWED_ORIGINS="http://LAN_IP_PLACEHOLDER:8787,http://localhost:8787,http://127.0.0.1:8787"
 ENV
 sed -i '' "s|LAN_IP_PLACEHOLDER|${LAN_IP}|" /tmp/muster-dev.env
 ok "写入 /tmp/muster-dev.env(密钥是开发用的,内网部署必须换)"

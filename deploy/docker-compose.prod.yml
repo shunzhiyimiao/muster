@@ -1,0 +1,120 @@
+# 公网部署。与 docker-compose.yml(开发)的区别不是"参数调了调",而是威胁模型变了:
+#
+#   开发:能碰到它的人本来就在楼里。
+#   公网:每天会被扫成千上万次,而且任何网站都能让访客的浏览器来调它。
+#
+# 所以这份文件里几处刻意的收紧:
+#   - **数据库不映射端口**。开发那份映射 5433 是为了让宿主机的 psql 能连;
+#     公网上那等于把 Postgres 直接挂在互联网上。要连就用 `docker compose exec`。
+#   - **whisper 不映射端口**。它是个无鉴权的转写接口,谁都能拿它白嫖算力。
+#   - **密钥一律来自 .env**,没有仓库里的默认值可用(开发那份的 devsecret
+#     是公开在仓库里的)。
+#   - **只有 Caddy 对外**,应用自己只在 compose 网络里听。
+#
+#   cp deploy/prod.env.example deploy/.env && 改好 && \
+#     docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml up -d
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80" # ACME HTTP-01 校验要它;顺便把 http 跳到 https
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      MUSTER_DOMAIN: ${MUSTER_DOMAIN:?需要 MUSTER_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # 证书在这。**删掉它就要重新签发**,会撞 Let's Encrypt 限频
+      - caddy_config:/config
+    depends_on: [muster-server, livekit]
+
+  muster-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # 不映射端口:只有 Caddy 需要够得着它
+    environment:
+      MUSTER_BIND: 0.0.0.0:8787
+      DATABASE_URL: postgres://muster:${POSTGRES_PASSWORD:?需要 POSTGRES_PASSWORD}@postgres:5432/muster
+      MUSTER_JWT_SECRET: ${MUSTER_JWT_SECRET:?需要 MUSTER_JWT_SECRET(≥32 字符)}
+      # 对外监听却不设这个,服务端会**拒绝启动**(见 routes.rs 的 cors_mode)
+      MUSTER_ALLOWED_ORIGINS: https://${MUSTER_DOMAIN}
+      # 站在 Caddy 后面,才该信 X-Forwarded-For。直连时信它等于把限流的键
+      # 交给攻击者控制——每次换一个假 IP 就永远限不到
+      MUSTER_TRUST_PROXY: "1"
+      # 客户端拿到的就是这个地址,**必须是 wss**:
+      # HTTPS 页面不许开 ws:// 连接(混合内容),会被浏览器直接拦掉
+      LIVEKIT_URL: wss://livekit.${MUSTER_DOMAIN}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?需要 LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?需要 LIVEKIT_API_SECRET(≥32 字符)}
+      RUST_LOG: ${RUST_LOG:-muster_server=info}
+    volumes:
+      # 服务端自己的审计链。**丢了就断链**——而断掉的链证明不了任何事,
+      # 服务端也会拒绝在坏账本上继续记账(启动即失败,不会默默新开一条)
+      - audit:/data
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # **没有 ports**。开发那份映射 5433 是为了本机 psql 方便;
+    # 公网上映射出去等于把库挂在互联网上,而弱口令扫描器最爱这个
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?需要 POSTGRES_PASSWORD}
+      POSTGRES_DB: muster
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muster"]
+      interval: 5s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --bind 0.0.0.0
+    environment:
+      # 引号不能省:值里带冒号,不引起来 YAML 会当成嵌套映射
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          # 公网部署与内网相反:这里要 LiveKit **自己去发现公网地址**
+          # (STUN 探测),因为云主机通常在 NAT 后面、拿的是弹性 IP。
+          # 写死容器内网 IP 的话,浏览器拿到的 ICE 候选路由不到,
+          # 报 "could not establish pc connection"——信令通、媒体断。
+          use_external_ip: true
+        turn:
+          # 对称 NAT、企业防火墙后面直连不通,要靠 TURN 中转。
+          # **只开了 UDP 3478**:TURN over TLS 要把证书喂给 LiveKit,
+          # 而 443 已经被 Caddy 占着,得用四层转发才拼得起来。
+          # 所以"全 UDP 被封的网络仍然进不来"是这份部署的已知缺口,
+          # 见 docs/公网部署.md,不在这里假装解决了。
+          enabled: true
+          udp_port: 3478
+          domain: livekit.${MUSTER_DOMAIN}
+    ports:
+      # 信令走 Caddy(wss),不在这里对外。媒体必须直连:
+      # 让 UDP 走反向代理没有意义,也做不到
+      - "7882:7882/udp" # WebRTC 媒体(单端口复用)
+      - "3478:3478/udp" # TURN。对称 NAT / 严格防火墙后面靠它中转
+
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    restart: unless-stopped
+    # **没有 ports**:它是个无鉴权的转写接口,暴露出去谁都能白嫖算力,
+    # 还能拿它当放大器。只有同一网络里的会议 Agent 需要它
+    environment:
+      WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
+
+volumes:
+  pgdata:
+  audit:
+  caddy_data:
+  caddy_config:

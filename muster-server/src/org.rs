@@ -421,7 +421,32 @@ pub struct LoginReq {
     pub password: String,
 }
 
-pub async fn login(State((db, _a)): State<OrgState>, Json(r): Json<LoginReq>) -> Result<Json<serde_json::Value>> {
+pub async fn login(
+    State((db, _a)): State<OrgState>,
+    axum::Extension(limiter): axum::Extension<std::sync::Arc<crate::ratelimit::LoginLimiter>>,
+    peer: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    headers: axum::http::HeaderMap,
+    Json(r): Json<LoginReq>,
+) -> Result<Json<serde_json::Value>> {
+    // 限流在**验口令之前**:Argon2 很贵,让没通过限流的请求也去算一遍哈希,
+    // 等于把防爆破的机制变成了拒绝服务的把手。
+    //
+    // 两个维度都查:按 IP 挡"一个来源喷一堆账号",按账号挡"一堆来源猜一个账号"。
+    // 只做前者换 IP 就绕过,只做后者一个 IP 能慢慢遍历所有账号。
+    // 两维额度不同:账号卡得紧(没人会 5 分钟输错 10 次自己的密码),
+    // IP 必须宽得多——**一间办公室共用一个出口 IP**
+    let ip = crate::ratelimit::client_ip(&headers, peer.map(|c| c.0));
+    use crate::ratelimit::{MAX_PER_ACCOUNT, MAX_PER_IP};
+    for (key, max) in [(format!("ip:{ip}"), MAX_PER_IP), (format!("acct:{}", r.id), MAX_PER_ACCOUNT)]
+    {
+        if let Err(wait) = limiter.check(&key, max) {
+            return Err(ServerError::TooManyRequests(format!(
+                "登录尝试过多,请 {} 秒后再试",
+                wait.as_secs() + 1
+            )));
+        }
+    }
+
     let row = sqlx::query_as::<_, (String, Option<String>, String)>(
         // 停用的账号连"账号或口令不对"都不必区分——统一走同一条拒绝路径
         "SELECT display_name, password_hash, kind FROM account WHERE id = $1 AND disabled = FALSE",

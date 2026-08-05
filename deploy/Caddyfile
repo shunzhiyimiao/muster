@@ -1,0 +1,45 @@
+# 公网入口。Caddy 自动申请并续期 Let's Encrypt 证书,不需要 certbot 定时任务。
+#
+# ## 为什么 HTTPS 不是"更安全一点",而是**能不能用**的前提
+#
+# 浏览器只在**安全上下文**里给 `getUserMedia`。`http://` 加域名不是安全上下文
+# ——于是麦克风根本打不开,而报错只会说权限被拒,看不出是协议的问题。
+# (`http://localhost` 是特例,所以本机开发一直没撞见这堵墙。)
+#
+# 连带的:HTTPS 页面不许开 `ws://` 连接(混合内容)。所以 LiveKit 的信令
+# 也必须是 `wss://`,这就是下面第二个站点存在的理由。
+#
+# ## 两个主机名,不是两条路径
+#
+# LiveKit 的客户端 SDK 要的是一个主机,不是路径前缀。给它一个子域最省事,
+# 也让媒体面和应用面在证书、日志、限流上彼此独立。
+
+{$MUSTER_DOMAIN} {
+	encode zstd gzip
+
+	# 反代到应用。Caddy 会带上 X-Forwarded-For,
+	# **服务端要设 MUSTER_TRUST_PROXY=1 才会信它**——
+	# 不设的话限流看到的全是 Caddy 容器的 IP,等于没限。
+	reverse_proxy muster-server:8787
+
+	header {
+		# 一年,且允许被预加载。上了公网就别留降级到 http 的口子
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# 这个应用没有任何理由被别人嵌进 iframe
+		X-Frame-Options "DENY"
+		-Server
+	}
+}
+
+livekit.{$MUSTER_DOMAIN} {
+	# WebSocket 升级 Caddy 自己会处理,不必特别声明。
+	# 媒体不走这里——媒体是 UDP 7882 直连,见 docker-compose.prod.yml。
+	reverse_proxy livekit:7880
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+}

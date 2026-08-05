@@ -6,8 +6,9 @@
 
 use axum::routing::{get, post};
 use axum::Router;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
+use crate::ratelimit::LoginLimiter;
 use crate::{action, events, meeting, message, org, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
@@ -57,8 +58,62 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .merge(auth_routes)
         .merge(chan_routes)
         .merge(action_routes)
-        // 桌面壳与浏览器都要连,开发期放开;上线前收敛到白名单(已登记)
-        .layer(CorsLayer::permissive())
+        .layer(axum::Extension(std::sync::Arc::new(LoginLimiter::new())))
+        .layer(cors())
+}
+
+/// CORS 策略。
+///
+/// ## 为什么这里必须**显式**配置才能对外开放
+///
+/// 放开 CORS 的意思是"任何网站都能拿着浏览器去调这个 API 并读到结果"。
+/// 在局域网里这只是方便;暴露到公网上,它把每一个 XSS、每一个恶意页面
+/// 都变成了对本服务的通道。
+///
+/// 所以规则是:**要么设白名单,要么只能监听回环**。判定放在
+/// [`cors_mode`] 里,是个纯函数,好测——启动时拒绝比上线后补救便宜得多。
+fn cors() -> CorsLayer {
+    let origins = std::env::var("MUSTER_ALLOWED_ORIGINS").ok();
+    let bind = std::env::var("MUSTER_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
+    match cors_mode(origins.as_deref(), &bind) {
+        Ok(None) => CorsLayer::permissive(),
+        Ok(Some(list)) => CorsLayer::new()
+            .allow_origin(AllowOrigin::list(
+                list.iter().filter_map(|o| o.parse().ok()).collect::<Vec<_>>(),
+            ))
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any),
+        Err(e) => {
+            eprintln!("启动失败:{e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `Ok(None)` = 可以放开(只监听回环);`Ok(Some(白名单))` = 按名单;
+/// `Err` = 对外监听却没给名单,**不许启动**。
+pub fn cors_mode(origins: Option<&str>, bind: &str) -> Result<Option<Vec<String>>, String> {
+    let list: Vec<String> = origins
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !list.is_empty() {
+        return Ok(Some(list));
+    }
+    // 只看主机部分:回环地址上没有"别的网站"能碰到它
+    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
+    let loopback = matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]");
+    if loopback {
+        Ok(None)
+    } else {
+        Err(format!(
+            "监听 {bind}(非回环)却没有设 MUSTER_ALLOWED_ORIGINS。\n  \
+             放开 CORS 等于让任何网站都能拿着浏览器调这个 API。\n  \
+             设成你的站点来源,例如:MUSTER_ALLOWED_ORIGINS=https://muster.example.com"
+        ))
+    }
 }
 
 /// 网页参会端。**嵌进二进制**,不读磁盘也不依赖 CDN——
@@ -87,4 +142,45 @@ async fn health() -> axum::Json<serde_json::Value> {
         "service": "muster-server",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::cors_mode;
+
+    /// 对外监听却没给白名单 ⇒ **不许启动**。
+    ///
+    /// 这条是这次上公网加的最要紧的一道闸。放开 CORS 在局域网里只是方便,
+    /// 暴露到公网上,它把每一个 XSS、每一个恶意页面都变成对本服务的通道。
+    /// 而这种事故不会有任何症状——一切正常工作,直到出事。
+    #[test]
+    fn refuses_to_start_when_public_without_an_allowlist() {
+        for bind in ["0.0.0.0:8787", "192.168.3.59:8787", "[::]:8787"] {
+            assert!(cors_mode(None, bind).is_err(), "{bind} 没有白名单不该放行");
+            assert!(cors_mode(Some(""), bind).is_err(), "空白名单等同于没设");
+            assert!(cors_mode(Some("  , ,"), bind).is_err(), "只有分隔符也等同于没设");
+        }
+    }
+
+    /// 回环地址不必设:那上面没有"别的网站"能碰到它,
+    /// 强制配置只会让本机开发平白多一步。
+    #[test]
+    fn loopback_may_stay_open() {
+        for bind in ["127.0.0.1:8787", "localhost:8787", "[::1]:8787"] {
+            assert_eq!(cors_mode(None, bind), Ok(None), "{bind}");
+        }
+    }
+
+    #[test]
+    fn allowlist_is_parsed_and_trimmed() {
+        assert_eq!(
+            cors_mode(Some("https://a.example.com, https://b.example.com"), "0.0.0.0:8787"),
+            Ok(Some(vec!["https://a.example.com".into(), "https://b.example.com".into()]))
+        );
+        // 给了名单,回环也照名单来——显式配置优先于推断
+        assert_eq!(
+            cors_mode(Some("https://a.example.com"), "127.0.0.1:8787"),
+            Ok(Some(vec!["https://a.example.com".into()]))
+        );
+    }
 }
