@@ -139,7 +139,7 @@ async function joinMeeting(m) {
     }
     state.room = null;
   }
-  $("videos").innerHTML = "";
+  clearStage();
   state.meeting = m;
   $("mTitle").textContent = m.title;
   $("mLevel").textContent = m.level;
@@ -165,26 +165,44 @@ async function joinMeeting(m) {
     .on(RoomEvent.ConnectionStateChanged, (s) => {
       $("mState").textContent = s === ConnectionState.Connected ? "已入房间" : String(s);
     })
-    .on(RoomEvent.TrackSubscribed, (track) => {
+    .on(RoomEvent.TrackSubscribed, (track, _pub, who) => {
       // 同一条轨只挂一次:重连时 TrackSubscribed 会再来一遍,
       // 挂两次就是两份声音同时播
       if (track.attachedElements?.length) return;
       const el = track.attach();
       if (track.kind === Track.Kind.Video) {
-        el.className = "video";
-        $("videos").appendChild(el);
+        seatFor(who).querySelector(".media").appendChild(el);
       } else {
+        // 音频要在 DOM 里才播,但它不属于任何一个可见格子
         el.style.display = "none";
-        $("videos").appendChild(el);
+        $("audioSink").appendChild(el);
       }
+      syncStage();
     })
-    .on(RoomEvent.TrackUnsubscribed, (t) => t.detach().forEach((e) => e.remove()))
-    .on(RoomEvent.ParticipantConnected, renderPeers)
-    .on(RoomEvent.ParticipantDisconnected, renderPeers);
+    .on(RoomEvent.TrackUnsubscribed, (t) => {
+      t.detach().forEach((e) => e.remove());
+      syncStage();
+    })
+    // 自己的画面 LiveKit 不会"订阅"给自己,得单独接
+    .on(RoomEvent.LocalTrackPublished, (pub) => {
+      if (pub.track?.kind === Track.Kind.Video) {
+        seatFor(room.localParticipant).querySelector(".media").appendChild(pub.track.attach());
+      }
+      syncStage();
+    })
+    .on(RoomEvent.LocalTrackUnpublished, (pub) => {
+      pub.track?.detach().forEach((e) => e.remove());
+      syncStage();
+    })
+    .on(RoomEvent.ActiveSpeakersChanged, syncSpeaking)
+    .on(RoomEvent.TrackMuted, syncStage)
+    .on(RoomEvent.TrackUnmuted, syncStage)
+    .on(RoomEvent.ParticipantConnected, syncStage)
+    .on(RoomEvent.ParticipantDisconnected, syncStage);
 
   try {
     await room.connect(info.url, info.token);
-    renderPeers();
+    syncStage();
   } catch (e) {
     // **信令失败和媒体失败是两回事,报错要分开说。**
     // 之前统一归咎于 node_ip,结果信令层的问题被指到媒体配置上,查错了方向。
@@ -202,13 +220,87 @@ async function joinMeeting(m) {
   openStream();
 }
 
-function renderPeers() {
-  const room = state.room;
-  if (!room) return;
-  const names = [...room.remoteParticipants.values()].map((p) => p.name || p.identity);
-  $("peers").textContent = `${names.length + 1} 人在场` + (names.length ? `:${names.join("、")}` : "");
+/* ---------------------------------------------------------------- 席位
+ *
+ * 每个参会者一个**持久**的格子,按事件打补丁而不是整体重建——
+ * 重建会把已经挂上去的 <video> 从 DOM 上扯下来,画面就断了。
+ *
+ * 发言时描边变绿,数据来自 LiveKit 的 ActiveSpeakersChanged。
+ * 这一点值得说清楚:概念稿里那个绿框是写死的 `<Seat speaking />`,
+ * 这里的是真的——**界面上的东西要么是真的,要么明说自己不是。**
+ */
+const seats = new Map(); // identity → 格子元素
+
+const nameOf = (p) => p.name || p.identity;
+const everyone = () =>
+  state.room ? [state.room.localParticipant, ...state.room.remoteParticipants.values()] : [];
+
+function clearStage() {
+  seats.clear();
+  $("stage").innerHTML = "";
+  $("audioSink").innerHTML = "";
+  $("stageHint").textContent = "";
+}
+
+function seatFor(p) {
+  let el = seats.get(p.identity);
+  if (el) return el;
+  el = document.createElement("div");
+  el.className = "seat";
+  el.innerHTML =
+    '<div class="media"><div class="initial"></div></div>' +
+    '<div class="bar2"><span class="nm"></span><span class="you"></span><span class="mic"></span></div>';
+  seats.set(p.identity, el);
+  $("stage").appendChild(el);
+  return el;
+}
+
+function updateSeat(p) {
+  const el = seatFor(p);
+  const name = nameOf(p);
+  el.querySelector(".nm").textContent = name;
+  el.querySelector(".nm").title = name;
+  el.querySelector(".you").textContent = p.isLocal ? "(你)" : "";
+  el.querySelector(".initial").textContent = [...name][0] || "?";
+  // 有画面就不显示首字母占位
+  el.querySelector(".initial").style.display = el.querySelector("video") ? "none" : "";
+
+  const on = p.isMicrophoneEnabled;
+  const mic = el.querySelector(".mic");
+  mic.textContent = on ? "麦克风开" : "静音";
+  mic.className = on ? "mic" : "mic off";
+  el.classList.toggle("speaking", p.isSpeaking);
+}
+
+/** 只改绿框。说话状态变化很频繁,不必为它重排整个席位。 */
+function syncSpeaking() {
+  for (const p of everyone()) {
+    seats.get(p.identity)?.classList.toggle("speaking", p.isSpeaking);
+  }
+}
+
+function syncStage() {
+  const all = everyone();
+  const live = new Set(all.map((p) => p.identity));
+  for (const [id, el] of seats) {
+    if (!live.has(id)) {
+      el.remove();
+      seats.delete(id);
+    }
+  }
+  all.forEach(updateSeat);
+
+  $("peers").textContent = `${all.length} 人在场`;
+  // 没人开摄像头时别留一片空白格子而不解释
+  const anyVideo = all.some((p) => seats.get(p.identity)?.querySelector("video"));
+  $("stageHint").textContent = !state.room
+    ? ""
+    : anyVideo
+      ? ""
+      : "没有人开摄像头。语音是通的——谁在说话,格子的描边会变绿。";
+
   // Agent 在不在必须看得见——它不在时说话不会被转写
-  const here = names.some((n) => n === "A-007" || n === "小七");
+  const here = all.some((p) => nameOf(p) === "A-007" || nameOf(p) === "小七");
   $("agentState").textContent = here ? "Agent 在会中" : "Agent 不在会中";
   $("agentState").className = "badge " + (here ? "on" : "off");
 }
@@ -256,6 +348,8 @@ $("micBtn").onclick = async () => {
     await state.room.localParticipant.setMicrophoneEnabled(!on);
     $("micBtn").textContent = !on ? "麦克风开" : "开麦";
     $("micBtn").classList.toggle("active", !on);
+    syncStage(); // 自己的格子也要跟着变
+
   } catch (e) {
     toast(`打不开麦克风:${e}。浏览器需要在地址栏放行麦克风权限。`, true);
   }
@@ -279,7 +373,7 @@ $("leaveBtn").onclick = () => {
   state.room?.disconnect();
   state.es?.close();
   state.room = null;
-  $("videos").innerHTML = "";
+  clearStage();
   show("lobby");
   refreshMeetings().catch(() => {});
 };

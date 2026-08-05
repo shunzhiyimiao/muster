@@ -11,11 +11,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ConnectionState,
-  RemoteTrack,
   Room,
   RoomEvent,
   Track,
-  type RemoteParticipant,
+  type LocalTrack,
+  type RemoteTrack,
 } from "livekit-client";
 import { Bot, Mic, MicOff, PhoneOff, Radio, Users, Video, VideoOff } from "lucide-react";
 import { T } from "../theme";
@@ -44,38 +44,75 @@ export function MeetingRoom({
   const [canPublish, setCanPublish] = useState(false);
   const [micOn, setMicOn] = useState(false);
   const [camOn, setCamOn] = useState(false);
-  const [peers, setPeers] = useState<string[]>([]);
+  const [roster, setRoster] = useState<Seat[]>([]);
   const [wantsAgent, setWantsAgent] = useState(meeting.wants_agent);
   const [agentBusy, setAgentBusy] = useState(false);
-  const mediaRef = useRef<HTMLDivElement>(null);
+  /** 谁的画面。视频轨由 LiveKit 给的是 DOM 元素,只能命令式挂;
+   *  席位本身仍归 React 管——两者放在不同节点上,互不打架。 */
+  const videoTracks = useRef(new Map<string, RemoteTrack | LocalTrack>());
+  const hosts = useRef(new Map<string, HTMLDivElement>());
+  const audioSink = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    const attach = (track: RemoteTrack, who: string) => {
-      if (!mediaRef.current) return;
+    const refresh = () =>
+      setRoster(
+        [room.localParticipant, ...room.remoteParticipants.values()].map((p) => ({
+          id: p.identity,
+          name: p.name || p.identity,
+          isLocal: p.isLocal,
+          micOn: p.isMicrophoneEnabled,
+          speaking: p.isSpeaking,
+          hasVideo: videoTracks.current.has(p.identity),
+        }))
+      );
+
+    const place = (id: string) => {
+      const [host, track] = [hosts.current.get(id), videoTracks.current.get(id)];
+      if (host && track && !host.querySelector("video")) host.appendChild(track.attach());
+    };
+
+    const attach = (track: RemoteTrack | LocalTrack, who: string) => {
       // 同一条轨只挂一次:重连时 TrackSubscribed 会再来一遍,
       // 挂两次就是两份声音同时播——听起来像回声,却会被误当成声学回授
       if (track.attachedElements?.length) return;
-      const el = track.attach();
-      el.dataset.who = who;
       if (track.kind === Track.Kind.Video) {
-        (el as HTMLVideoElement).className = "rounded-xl w-full";
-        mediaRef.current.appendChild(el);
-      } else {
-        // 音频元素不进布局:它只是让声音出来
+        videoTracks.current.set(who, track);
+        place(who);
+      } else if (audioSink.current) {
+        // 音频元素不进布局:它只是让声音出来,不属于任何一个可见席位
+        const el = track.attach();
         el.style.display = "none";
-        mediaRef.current.appendChild(el);
+        audioSink.current.appendChild(el);
       }
+      refresh();
+    };
+
+    const drop = (track: RemoteTrack | LocalTrack, who?: string) => {
+      track.detach().forEach((e) => e.remove());
+      if (who) videoTracks.current.delete(who);
+      refresh();
     };
 
     room
       .on(RoomEvent.ConnectionStateChanged, (s) => setState(s))
       .on(RoomEvent.TrackSubscribed, (track, _pub, p) => attach(track, p.identity))
-      .on(RoomEvent.TrackUnsubscribed, (track) => track.detach().forEach((e) => e.remove()))
-      .on(RoomEvent.ParticipantConnected, () => setPeers(names(room)))
-      .on(RoomEvent.ParticipantDisconnected, () => setPeers(names(room)))
-      .on(RoomEvent.Disconnected, () => setPeers([]));
+      .on(RoomEvent.TrackUnsubscribed, (track, _pub, p) => drop(track, p.identity))
+      .on(RoomEvent.LocalTrackPublished, (pub) => {
+        // 自己的画面 LiveKit 不会"订阅"给自己
+        if (pub.track) attach(pub.track, room.localParticipant.identity);
+      })
+      .on(RoomEvent.LocalTrackUnpublished, (pub) => {
+        if (pub.track) drop(pub.track, room.localParticipant.identity);
+      })
+      // 说话人高亮的唯一数据来源。概念稿里那个绿框是写死的,这个是真的
+      .on(RoomEvent.ActiveSpeakersChanged, refresh)
+      .on(RoomEvent.TrackMuted, refresh)
+      .on(RoomEvent.TrackUnmuted, refresh)
+      .on(RoomEvent.ParticipantConnected, refresh)
+      .on(RoomEvent.ParticipantDisconnected, refresh)
+      .on(RoomEvent.Disconnected, () => setRoster([]));
 
     api
       .remoteMeetingJoin(meeting.id)
@@ -84,7 +121,7 @@ export function MeetingRoom({
         setCanPublish(info.can_publish);
         await room.connect(info.url, info.token);
         if (cancelled) return;
-        setPeers(names(room));
+        refresh();
       })
       .catch((e) => setErr(String(e)));
 
@@ -113,10 +150,22 @@ export function MeetingRoom({
     }
   };
 
+  /** 把某个席位的画面容器登记下来,并在轨已就绪时立刻挂上。
+   *
+   *  ref 回调每次渲染都是新函数,React 会先用 null 调一次、再用元素调一次——
+   *  所以必须靠"已经有 <video> 就不再挂"来防重复,不能假设只会调用一次。
+   *  `track.attach()` 每调一次就新建一个元素,挂两次就是两份画面。 */
+  const mountHost = (id: string, el: HTMLDivElement | null) => {
+    if (!el) return;
+    hosts.current.set(id, el);
+    const t = videoTracks.current.get(id);
+    if (t && !el.querySelector("video")) el.appendChild(t.attach());
+  };
+
   const connected = state === ConnectionState.Connected;
   // Agent 是不是一个在场的参会者。名字来自它的账号 id / 显示名,
   // 两者都认——部署方可能改过显示名。
-  const agentHere = peers.some((p) => p === "A-007" || p === "小七");
+  const agentHere = roster.some((p) => p.name === "A-007" || p.name === "小七");
   const levelTone = meeting.level === "restricted" ? "red" : meeting.level === "internal" ? "amb" : undefined;
 
   return (
@@ -133,7 +182,7 @@ export function MeetingRoom({
               </span>
             )}
             <span className="ml-auto flex items-center gap-1.5 text-[11px]" style={{ color: T.sub }}>
-              <Users size={13} /> {peers.length + 1} 人在场
+              <Users size={13} /> {roster.length} 人在场
             </span>
           </div>
 
@@ -147,11 +196,56 @@ export function MeetingRoom({
             </div>
           )}
 
-          {/* 视频区:没人开摄像头时不留一片空白,如实说明 */}
-          <div ref={mediaRef} className="mt-3.5 grid grid-cols-2 gap-3 min-h-[80px]" />
-          {connected && (
+          {/* 席位。发言时描边变绿,数据来自 LiveKit 的 ActiveSpeakersChanged。
+              放画面的那个 div **没有 React 子节点**——LiveKit 往里 appendChild,
+              React 管别处,两边不会互相拆台。 */}
+          <div className="mt-3.5 grid grid-cols-2 gap-3">
+            {roster.map((p) => (
+              <div
+                key={p.id}
+                className="rounded-2xl overflow-hidden"
+                style={{
+                  background: T.panel,
+                  border: `2px solid ${p.speaking ? T.green : "transparent"}`,
+                  boxShadow: p.speaking ? `0 0 0 3px ${T.green}22` : undefined,
+                  transition: "border-color .12s, box-shadow .12s",
+                }}
+              >
+                <div className="relative" style={{ aspectRatio: "4 / 3" }}>
+                  <div ref={(el) => mountHost(p.id, el)} className="absolute inset-0" />
+                  {!p.hasVideo && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div
+                        className="w-11 h-11 rounded-full flex items-center justify-center text-[17px] font-bold text-white"
+                        style={{ background: T.indigo }}
+                      >
+                        {[...p.name][0] ?? "?"}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div
+                  className="flex items-center gap-1.5 px-2.5 py-1.5"
+                  style={{ background: "#fff", borderTop: `1px solid ${T.line}` }}
+                >
+                  <span className="text-[11.5px] font-semibold truncate" title={p.name}>
+                    {p.name}
+                  </span>
+                  {p.isLocal && <span className="text-[9.5px]" style={{ color: T.faint }}>(你)</span>}
+                  <span className="ml-auto">
+                    {p.micOn ? (
+                      <Mic size={11} style={{ color: T.green }} />
+                    ) : (
+                      <MicOff size={11} style={{ color: T.faint }} />
+                    )}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+          {connected && !roster.some((p) => p.hasVideo) && (
             <div className="text-[10.5px] mt-2" style={{ color: T.faint }}>
-              视频画面在上方;没人开摄像头时这里是空的——语音仍然是通的。
+              没有人开摄像头。语音是通的——谁在说话,席位的描边会变绿。
             </div>
           )}
 
@@ -200,18 +294,8 @@ export function MeetingRoom({
           )}
         </Card>
 
-        {peers.length > 0 && (
-          <Card className="px-5 pt-4 pb-3">
-            <b className="text-[13px]">在场</b>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {peers.map((p) => (
-                <span key={p} className="text-[11px] px-2.5 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>
-                  {p}
-                </span>
-              ))}
-            </div>
-          </Card>
-        )}
+        {/* 音频元素要在 DOM 里才播,但它不属于任何一个可见席位 */}
+        <div ref={audioSink} hidden />
       </div>
 
       {/* 实时纪要:由会议 Agent 转写后落库,再经 SSE 推来 */}
@@ -296,8 +380,11 @@ export function MeetingRoom({
   );
 }
 
-function names(room: Room): string[] {
-  return Array.from(room.remoteParticipants.values()).map(
-    (p: RemoteParticipant) => p.name || p.identity
-  );
+interface Seat {
+  id: string;
+  name: string;
+  isLocal: boolean;
+  micOn: boolean;
+  speaking: boolean;
+  hasVideo: boolean;
 }
