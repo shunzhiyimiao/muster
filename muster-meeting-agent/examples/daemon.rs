@@ -223,7 +223,7 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
                     level,
                     meeting,
                 ))),
-                Some(Extractor::new(router, level, meeting)),
+                Some(Arc::new(Extractor::new(router, level, meeting))),
             )
         }
         None => (None, None),
@@ -253,16 +253,55 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
     let pipeline = Arc::new(pipeline);
     let (ctx2, sink2, name2) = (ctx.clone(), sink.clone(), cfg.agent_name.clone());
     let name = cfg.agent_name.clone();
+    let ex_live = extractor.clone();
 
     room::run(&lk_url, &lk_token, ChunkConfig::default(), EnergyGate::default(), move |u| {
-        let (p, pol, ctx, ans, sink, name) =
-            (pipeline.clone(), policy.clone(), ctx.clone(), answerer.clone(), sink.clone(), name.clone());
+        let (p, pol, ctx, ans, sink, name, ex) = (
+            pipeline.clone(),
+            policy.clone(),
+            ctx.clone(),
+            answerer.clone(),
+            sink.clone(),
+            name.clone(),
+            ex_live.clone(),
+        );
         async move {
             let speaker = u.speaker.clone();
             let Some(text) = p.handle(u, &pol).await else { return };
             ctx.lock().await.push(&speaker, &text);
 
             let Some(ans) = ans else { return };
+
+            // 会中即时派活:叫了它、并且是在派活 ⇒ 提一条待批任务,而不是回答。
+            //
+            // **提出来仍然只是提案**:确认必须由人做,而且服务端不许 Agent
+            // 确认自己提的(见 muster-server/src/action.rs)。
+            if let (Some(_), Some(ex)) = (ans.task_request_in(&text), ex.as_ref()) {
+                match ex.from_utterance(&speaker, &text).await {
+                    ExtractOutcome::Items(items) if !items.is_empty() => {
+                        for it in &items {
+                            sink.propose_action(it).await;
+                        }
+                        // **必须说出来。** 不吭声的话人不知道它记没记,
+                        // 会再说一遍,于是多出一条重复的待批项。
+                        let line =
+                            format!("已记下一条待批任务:{}(请在任务面板批准)", items[0].text);
+                        sink.say(&name, &line).await;
+                        ctx.lock().await.push(&name, &line);
+                    }
+                    ExtractOutcome::Items(_) => {
+                        // 听出是在派活,但没提炼出内容——说清楚,别装作没听见
+                        let line = "我听出你在派活,但没听清具体要做什么,能再说一遍吗?".to_string();
+                        sink.say(&name, &line).await;
+                        ctx.lock().await.push(&name, &line);
+                    }
+                    ExtractOutcome::Unavailable(why) => {
+                        sink.say(&name, &format!("[这条任务没能记下:{why}]")).await;
+                    }
+                }
+                return;
+            }
+
             let Some(q) = ans.question_in(&text).map(str::to_owned) else { return };
             let snapshot = { ctx.lock().await.transcript() };
             let mut c = Context::new(64);

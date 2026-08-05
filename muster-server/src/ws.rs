@@ -34,6 +34,11 @@ pub enum Push {
     Transcript { meeting_id: String, speaker_id: String, text: String, ts_ms: i64 },
     /// 在场状态(P3-07 的最小形态:只有进出,没有 TTL 聚合)。
     Presence { channel_id: String, account_id: String, online: bool },
+    /// 行动项有了新状态(被提出 / 被裁决)。
+    ///
+    /// 提案不广播的话,**会上说完那句话,界面上什么都不会发生**——
+    /// 人会以为 Agent 没听见,于是再说一遍,于是多出一条重复的待批项。
+    ActionItem(crate::action::ActionItemOut),
 }
 
 #[derive(Clone, Default)]

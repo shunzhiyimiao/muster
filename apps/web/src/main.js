@@ -145,6 +145,8 @@ async function joinMeeting(m) {
   $("mLevel").textContent = m.level;
   $("mLevel").className = "tag " + m.level;
   $("lines").innerHTML = "";
+  $("tasks").innerHTML = "";
+  $("tasksCard").hidden = true;
   $("agentBtn").textContent = m.wants_agent ? "请 Agent 离开" : "请 Agent 来记录";
   show("meeting");
 
@@ -217,6 +219,7 @@ async function joinMeeting(m) {
   }
 
   await loadTranscript(m.id);
+  await loadTasks(m.id);
   openStream();
 }
 
@@ -334,12 +337,93 @@ function openStream() {
       const ev = JSON.parse(e.data);
       if (ev.type === "transcript" && ev.meeting_id === state.meeting?.id) {
         addLine(ev.speaker_id, ev.text, ev.ts_ms);
+      } else if (ev.type === "action_item" && ev.meeting_id === state.meeting?.id) {
+        upsertTask(ev);
       }
     } catch {
       /* 单条坏了不该拖垮整条流 */
     }
   };
   state.es = es;
+}
+
+/* ---------------------------------------------------------------- 待批任务
+ *
+ * Agent 提,人批。**这个中间步骤不是流程负担,是授权边界**——
+ * 服务端那边写得更清楚:转写会出错、会上一句话的意图强度低于在任务框里
+ * 写下的需求,而 Runner 跑在开发者自己的机器上。
+ *
+ * 所以这里的按钮是"批准 / 驳回",不是"执行"。批准之后由持有那份代码的
+ * 节点去跑,服务端只记号。
+ */
+const taskEls = new Map(); // action item id → 元素
+
+async function loadTasks(mid) {
+  try {
+    (await api(`/meetings/${mid}/action-items`)).forEach(upsertTask);
+  } catch {
+    /* 拉不到就从现在开始收 */
+  }
+}
+
+function upsertTask(it) {
+  let el = taskEls.get(it.id);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "task";
+    taskEls.set(it.id, el);
+    $("tasks").appendChild(el);
+  }
+  const pending = it.status === "proposed";
+  el.classList.toggle("done", !pending);
+  el.innerHTML =
+    `<div class="t"></div>` +
+    (it.source_quote ? `<div class="q">原话:<span class="sq"></span></div>` : "") +
+    `<div class="acts"></div>`;
+  el.querySelector(".t").textContent = it.text + (it.owner_hint ? ` — ${it.owner_hint}` : "");
+  if (it.source_quote) el.querySelector(".sq").textContent = it.source_quote;
+
+  const acts = el.querySelector(".acts");
+  if (pending) {
+    const ok = document.createElement("button");
+    ok.className = "ok";
+    ok.textContent = "批准";
+    ok.onclick = () => decide(it.id, true, ok);
+    const no = document.createElement("button");
+    no.textContent = "驳回";
+    no.onclick = () => decide(it.id, false, no);
+    acts.append(ok, no);
+  } else {
+    const v = document.createElement("span");
+    v.className = "verdict";
+    v.style.color = it.status === "confirmed" ? "var(--green)" : "var(--faint)";
+    v.textContent =
+      (it.status === "confirmed" ? "已批准" : "已驳回") +
+      (it.decided_by ? ` · ${it.decided_by}` : "");
+    acts.append(v);
+  }
+  refreshTaskCount();
+}
+
+function refreshTaskCount() {
+  const n = [...taskEls.values()].filter((e) => !e.classList.contains("done")).length;
+  $("tasksCard").hidden = taskEls.size === 0;
+  $("taskCount").textContent = n ? `${n} 条待批` : "无待批";
+  $("taskCount").className = "badge " + (n ? "off" : "on");
+}
+
+async function decide(id, confirm, btn) {
+  btn.disabled = true;
+  try {
+    upsertTask(await api(`/action-items/${id}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ confirm }),
+    }));
+  } catch (e) {
+    btn.disabled = false;
+    // 403 多半是没有 CreateTask 权限,或者你是 Agent 账号——两种都要说清
+    toast(`没能裁决:${e.message || e}`, true);
+  }
 }
 
 $("micBtn").onclick = async () => {

@@ -202,6 +202,20 @@ export interface RemoteMeeting {
   /** 是否请了 Agent。**只是意愿**——它到没到看参会者列表 */
   wants_agent: boolean;
 }
+/** 会议行动项:**提案,不是任务**。见 muster-server/src/action.rs。 */
+export interface ActionItem {
+  id: string;
+  meeting_id: string;
+  text: string;
+  owner_hint: string | null;
+  /** 出处原话——人要能核对"它是不是听岔了" */
+  source_quote: string | null;
+  status: "proposed" | "confirmed" | "rejected";
+  decided_by: string | null;
+  run_id: string | null;
+  created_ms: number;
+}
+
 export interface JoinInfo {
   url: string;
   token: string;
@@ -289,6 +303,11 @@ export const api = {
   remoteMeetingStart: (channelId: string, title: string) =>
     invoke<RemoteMeeting>("remote_meeting_start", { channelId, title }),
   remoteMeetingJoin: (meetingId: string) => invoke<JoinInfo>("remote_meeting_join", { meetingId }),
+  remoteActionItems: (meetingId: string) =>
+    invoke<ActionItem[]>("remote_action_items", { meetingId }),
+  /** 批准 / 驳回。**判定在服务端**:它要 CreateTask 权限,且不许 Agent 裁决自己提的。 */
+  remoteDecideAction: (id: string, confirm: boolean) =>
+    invoke<ActionItem>("remote_decide_action", { id, confirm }),
   remoteMeetingEnd: (meetingId: string) => invoke<void>("remote_meeting_end", { meetingId }),
   /** 请 Agent 来 / 请它离开;认领由服务器上的 agent-daemon 完成 */
   remoteMeetingAgent: (meetingId: string, want: boolean) =>

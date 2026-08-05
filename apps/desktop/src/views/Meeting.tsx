@@ -17,10 +17,10 @@ import {
   type LocalTrack,
   type RemoteTrack,
 } from "livekit-client";
-import { Bot, Mic, MicOff, PhoneOff, Radio, Users, Video, VideoOff } from "lucide-react";
+import { Bot, Check, Mic, MicOff, PhoneOff, Radio, Users, Video, VideoOff, X } from "lucide-react";
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
-import { api, RemoteMeeting, fmtTime } from "../api";
+import { api, ActionItem, RemoteMeeting, fmtTime } from "../api";
 
 export interface TranscriptLine {
   speaker: string;
@@ -47,6 +47,8 @@ export function MeetingRoom({
   const [roster, setRoster] = useState<Seat[]>([]);
   const [wantsAgent, setWantsAgent] = useState(meeting.wants_agent);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [tasks, setTasks] = useState<ActionItem[]>([]);
+  const [taskErr, setTaskErr] = useState<string | null>(null);
   /** 谁的画面。视频轨由 LiveKit 给的是 DOM 元素,只能命令式挂;
    *  席位本身仍归 React 管——两者放在不同节点上,互不打架。 */
   const videoTracks = useRef(new Map<string, RemoteTrack | LocalTrack>());
@@ -131,6 +133,34 @@ export function MeetingRoom({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting.id]);
+
+  // 行动项:进会时拉一次。会中新增靠轮询——**服务端已经有 SSE**,
+  // 桌面壳这一侧还没接上,所以这里如实用轮询,而不是假装是推送。
+  useEffect(() => {
+    let stop = false;
+    const pull = () =>
+      api
+        .remoteActionItems(meeting.id)
+        .then((v) => !stop && setTasks(v))
+        .catch(() => {});
+    pull();
+    const t = setInterval(pull, 4000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [meeting.id]);
+
+  const decide = async (id: string, confirm: boolean) => {
+    setTaskErr(null);
+    try {
+      const updated = await api.remoteDecideAction(id, confirm);
+      setTasks((v) => v.map((t) => (t.id === id ? updated : t)));
+    } catch (e) {
+      // 多半是没有 CreateTask 权限。**照服务端说的显示**,不自己编理由
+      setTaskErr(String(e));
+    }
+  };
 
   const toggleMic = async () => {
     try {
@@ -299,6 +329,90 @@ export function MeetingRoom({
       </div>
 
       {/* 实时纪要:由会议 Agent 转写后落库,再经 SSE 推来 */}
+      <div className="flex flex-col gap-4" style={{ minWidth: 0 }}>
+      {tasks.length > 0 && (
+        <Card className="px-5 pt-4 pb-3">
+          <div className="flex items-center gap-2">
+            <b className="text-[13px]">待批任务</b>
+            <span
+              className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
+              style={{
+                background: tasks.some((t) => t.status === "proposed") ? T.redSoft : T.soft,
+                color: tasks.some((t) => t.status === "proposed") ? T.red : T.sub,
+              }}
+            >
+              {tasks.filter((t) => t.status === "proposed").length || "无"} 条待批
+            </span>
+            <span className="ml-auto text-[10px]" style={{ color: T.faint }}>
+              Agent 提案 · 需人确认
+            </span>
+          </div>
+
+          {taskErr && (
+            <div
+              className="mt-2 px-3 py-2 rounded-xl text-[11px]"
+              style={{ background: T.redSoft, color: T.red }}
+            >
+              {taskErr}
+            </div>
+          )}
+
+          <div className="mt-2.5 flex flex-col gap-2">
+            {tasks.map((t) => {
+              const pending = t.status === "proposed";
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-xl px-3 py-2.5"
+                  style={{ border: `1px solid ${T.line}`, opacity: pending ? 1 : 0.6 }}
+                >
+                  <div className="text-[12px] leading-relaxed">
+                    {t.text}
+                    {t.owner_hint && (
+                      <span style={{ color: T.sub }}> — {t.owner_hint}</span>
+                    )}
+                  </div>
+                  {/* 出处原话:人要能核对它是不是听岔了 */}
+                  {t.source_quote && (
+                    <div className="text-[10.5px] mt-1 leading-relaxed" style={{ color: T.faint }}>
+                      原话:{t.source_quote}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1.5 mt-2">
+                    {pending ? (
+                      <>
+                        <button
+                          onClick={() => decide(t.id, true)}
+                          className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1 rounded-lg"
+                          style={{ background: T.green, color: "#fff" }}
+                        >
+                          <Check size={11} /> 批准
+                        </button>
+                        <button
+                          onClick={() => decide(t.id, false)}
+                          className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1 rounded-lg"
+                          style={{ background: T.soft, color: T.sub }}
+                        >
+                          <X size={11} /> 驳回
+                        </button>
+                      </>
+                    ) : (
+                      <span
+                        className="text-[10.5px] font-semibold"
+                        style={{ color: t.status === "confirmed" ? T.green : T.faint }}
+                      >
+                        {t.status === "confirmed" ? "已批准" : "已驳回"}
+                        {t.decided_by ? ` · ${t.decided_by}` : ""}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       <Card className="px-5 pt-4 pb-2 flex flex-col" style={{ maxHeight: 560 }}>
         <div className="flex items-center gap-2">
           <Radio size={13} style={{ color: agentHere ? T.indigo : T.faint }} />
@@ -376,6 +490,7 @@ export function MeetingRoom({
           )}
         </div>
       </Card>
+      </div>
     </div>
   );
 }

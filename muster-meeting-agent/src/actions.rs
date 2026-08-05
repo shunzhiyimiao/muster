@@ -59,6 +59,24 @@ const SYSTEM: &str = "\
 输出格式:
 [{\"text\":\"...\",\"owner_hint\":\"...\"|null,\"source_quote\":\"...\"}]";
 
+/// 会中即时建任务用的提示词。与散会提炼**不是同一件事**:
+///
+/// 散会提炼要在一大篇记录里筛出"谁承诺了什么",默认宁可少提;
+/// 这里则是有人**当面点名要求**记一条,意图已经明确,任务是把口语整理成
+/// 一句能读懂的任务描述。所以规则相反:这里不必怀疑意图,但要**只记这一句**,
+/// 不能顺手把上下文里别的事也捎上。
+const SYSTEM_ONE: &str = "\
+有人在会上点名要求你记一条任务。把他这句话整理成一条清晰的任务。规则:
+1. **只处理这一句**,不要引申,也不要把没提到的事补进去。
+2. text 写成一句能独立读懂的任务描述,去掉称呼和口语赘词。
+3. owner_hint:这句话里指派给谁就填谁;没指派就填 null。
+4. 如果这句话其实**没有在派活**(只是提问、闲聊、或说不清要做什么),返回空数组。
+5. source_quote 照抄原话。
+6. 只输出 JSON 数组,不要任何解释文字。
+
+输出格式:
+[{\"text\":\"...\",\"owner_hint\":\"...\"|null,\"source_quote\":\"...\"}]";
+
 impl Extractor {
     pub fn new(router: Arc<Router>, level: Sensitivity, meeting_id: impl Into<String>) -> Self {
         Self { router, level, meeting_id: meeting_id.into() }
@@ -90,6 +108,52 @@ impl Extractor {
         match res.provider.chat(chat).await {
             Ok(r) => match r.message.content {
                 Some(t) => ExtractOutcome::Items(parse_items(&t)),
+                None => ExtractOutcome::Items(vec![]),
+            },
+            Err(e) => ExtractOutcome::Unavailable(e.to_string()),
+        }
+    }
+}
+
+impl Extractor {
+    /// 从**一句话**里建一条任务(会中即时,不等散会)。
+    ///
+    /// ## 为什么不复用 `extract`
+    ///
+    /// 散会提炼的提示词写着"宁可少提,不可乱提"——它面对的是一整篇记录,
+    /// 里面绝大多数话不是行动项。而这里的输入是**有人当面点名要求记一条**,
+    /// 意图已经明确;拿"宁可少提"的提示词去处理,它会把明确的指派也滤掉。
+    ///
+    /// ## 仍然只是提案
+    ///
+    /// 会上一句话不能直接变成任务——转写会错、口头意图强度低(见
+    /// `muster-server/src/action.rs`)。这里产出的东西一样要人确认。
+    pub async fn from_utterance(&self, speaker: &str, text: &str) -> ExtractOutcome {
+        if text.trim().is_empty() {
+            return ExtractOutcome::Items(vec![]);
+        }
+        let sources = vec![LabelSource::new(
+            LabelOrigin::Channel,
+            self.level,
+            format!("meeting:{}", self.meeting_id),
+        )];
+        let req = RouteRequest { sources: &sources, requested_provider: None, default_provider: None };
+        let res = match self.router.resolve(&req).await {
+            Ok(r) => r,
+            Err(e) => return ExtractOutcome::Unavailable(e.to_string()),
+        };
+
+        let chat = ChatRequest {
+            messages: vec![
+                ChatMessage::system(SYSTEM_ONE.to_string()),
+                ChatMessage::user(format!("{speaker} 说:{text}")),
+            ],
+            ..Default::default()
+        };
+        match res.provider.chat(chat).await {
+            Ok(r) => match r.message.content {
+                // **只取一条。** 一句话派出三条任务,多半是模型在发挥。
+                Some(t) => ExtractOutcome::Items(parse_items(&t).into_iter().take(1).collect()),
                 None => ExtractOutcome::Items(vec![]),
             },
             Err(e) => ExtractOutcome::Unavailable(e.to_string()),

@@ -36,7 +36,7 @@ use crate::{Db, Result, ServerError};
 
 pub type ActionState = (Db, Hub, Audit);
 
-#[derive(Serialize, sqlx::FromRow)]
+#[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub struct ActionItemOut {
     pub id: Uuid,
     pub meeting_id: Uuid,
@@ -77,13 +77,13 @@ async fn meeting_channel(db: &Db, mid: Uuid) -> Result<String> {
 
 /// Agent 落一条提案。只需要"能在这个频道说话"的权限——**提议不是授权**。
 pub async fn propose(
-    State((db, _hub, _a)): State<ActionState>,
+    State((db, hub, _a)): State<ActionState>,
     id: Identity,
     Path(mid): Path<Uuid>,
     Json(item): Json<NewActionItem>,
 ) -> Result<Json<ActionItemOut>> {
     let cid = meeting_channel(&db, mid).await?;
-    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid)).await?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid.clone())).await?;
     if item.text.trim().is_empty() {
         return Err(ServerError::BadRequest("行动项不能为空".into()));
     }
@@ -103,7 +103,7 @@ pub async fn propose(
     .execute(&db.pool)
     .await?;
 
-    Ok(Json(ActionItemOut {
+    let out = ActionItemOut {
         id: aid,
         meeting_id: mid,
         text: item.text.trim().to_string(),
@@ -113,7 +113,10 @@ pub async fn propose(
         decided_by: None,
         run_id: None,
         created_ms: created,
-    }))
+    };
+    // 广播:不推的话,会上说完那句话界面上什么都不会发生
+    hub.push(&cid, &crate::ws::Push::ActionItem(out.clone()));
+    Ok(Json(out))
 }
 
 pub async fn list(
@@ -122,7 +125,7 @@ pub async fn list(
     Path(mid): Path<Uuid>,
 ) -> Result<Json<Vec<ActionItemOut>>> {
     let cid = meeting_channel(&db, mid).await?;
-    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid)).await?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid.clone())).await?;
     let rows = sqlx::query_as::<_, ActionItemOut>(
         "SELECT id, meeting_id, text, owner_hint, source_quote, status, decided_by, run_id, created_ms
          FROM meeting_action_item WHERE meeting_id = $1 ORDER BY created_ms",
@@ -141,7 +144,7 @@ pub async fn list(
 ///   让 Agent 自己确认自己提的行动项,等于中间那个人没有了;
 /// - 确认与驳回**都进审计链**:驳回不是"什么都没发生"。
 pub async fn decide(
-    State((db, _hub, audit)): State<ActionState>,
+    State((db, hub, audit)): State<ActionState>,
     id: Identity,
     Path(aid): Path<Uuid>,
     Json(d): Json<Decision>,
@@ -188,7 +191,7 @@ pub async fn decide(
         .append(NewEvent {
             ts_ms: None,
             actor: Actor::human(&id.account_id),
-            scope: AuditScope { team: None, channel: Some(cid) },
+            scope: AuditScope { team: None, channel: Some(cid.clone()) },
             run_id: None,
             session_id: Some(format!("meeting:{mid}")),
             policy_version: Some("policy-v1".into()),
@@ -204,7 +207,7 @@ pub async fn decide(
         })
         .await?;
 
-    Ok(Json(ActionItemOut {
+    let out = ActionItemOut {
         id: aid,
         meeting_id: mid,
         text,
@@ -214,7 +217,10 @@ pub async fn decide(
         decided_by: Some(id.account_id),
         run_id: None,
         created_ms: now,
-    }))
+    };
+    // 裁决也要广播:同一场会里别人正看着这条待批项
+    hub.push(&cid, &crate::ws::Push::ActionItem(out.clone()));
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

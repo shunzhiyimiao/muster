@@ -33,6 +33,15 @@
   .badge { font-size:11px; font-weight:700; padding:3px 9px; border-radius:8px; }
   .badge.on { background:#E7F7EE; color:var(--green); }
   .badge.off { background:#FEEBEC; color:var(--red); }
+  /* 待批任务。它是**提案**——所以按钮是"批准/驳回",不是"执行"。 */
+  .task { border:1px solid var(--line); border-radius:12px; padding:10px 11px; margin-bottom:8px; }
+  .task .t { font-size:12.5px; line-height:1.5; }
+  .task .q { font-size:10.5px; color:var(--faint); margin-top:5px; line-height:1.45; }
+  .task .acts { display:flex; gap:7px; margin-top:9px; align-items:center; }
+  .task button { font-size:11px; padding:4px 11px; border-radius:8px; }
+  .task .ok { background:var(--green); color:#fff; border-color:var(--green); }
+  .task.done { opacity:.6; }
+  .task .verdict { font-size:10.5px; font-weight:700; }
   .grid { display:grid; grid-template-columns:1.4fr 1fr; gap:16px; }
   @media (max-width:820px) { .grid { grid-template-columns:1fr; } }
   /* 参会者格子。发言时描边变绿——数据来自 LiveKit 的 ActiveSpeakersChanged,
@@ -123,6 +132,16 @@
           </div>
         </div>
       </div>
+      <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="card" id="tasksCard" hidden>
+        <div class="bar">
+          <b style="font-size:13px">待批任务</b>
+          <span id="taskCount" class="badge off"></span>
+          <span class="dim" style="margin-left:auto;font-size:10.5px">Agent 提案 · 需人确认</span>
+        </div>
+        <div id="tasks" style="margin-top:8px"></div>
+      </div>
+
       <div class="card">
         <div class="bar">
           <b style="font-size:13px">实时纪要</b>
@@ -130,6 +149,7 @@
           <span class="dim" style="margin-left:auto">本地转写</span>
         </div>
         <div id="lines" style="margin-top:8px"></div>
+      </div>
       </div>
     </div>
   </section>

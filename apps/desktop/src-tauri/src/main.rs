@@ -2156,6 +2156,27 @@ async fn remote_meeting_end(state: State<'_, AppState>, meeting_id: String) -> R
     r.end_meeting(&meeting_id).await
 }
 
+#[tauri::command]
+async fn remote_action_items(
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Vec<remote::ActionItem>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.action_items(&meeting_id).await
+}
+
+/// 批准 / 驳回一条行动项。**判定在服务端**——这里不自己判权限,
+/// 前端更不判:界面只照着服务端的答复显示。
+#[tauri::command]
+async fn remote_decide_action(
+    state: State<'_, AppState>,
+    id: String,
+    confirm: bool,
+) -> Result<remote::ActionItem, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.decide_action(&id, confirm).await
+}
+
 /// 团队频道的消息从服务端拉;**个人频道永不走这条路**(见 remote.rs 模块文档)。
 #[tauri::command]
 async fn remote_history(
@@ -2307,6 +2328,8 @@ fn main() {
             remote_meetings,
             remote_meeting_start,
             remote_meeting_join,
+            remote_action_items,
+            remote_decide_action,
             remote_meeting_end,
             remote_meeting_agent,
             approvals_pending,

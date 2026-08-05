@@ -101,6 +101,19 @@ impl Answerer {
         Some(q)
     }
 
+    /// 这句是不是在**派活**(而不是提问)?
+    ///
+    /// 要求叫了 Agent **并且**句中带派活词。两个条件都要,是因为:
+    /// 只看派活词的话,「这个任务谁来做」这种讨论会被当成派给 Agent;
+    /// 只看提及的话,一切提问都会被当成建任务。
+    ///
+    /// 判定为派活也**不代表就建任务**——后面还要模型提取,提取不出来就作罢。
+    /// 这里只决定走哪条路。
+    pub fn task_request_in<'a>(&self, text: &'a str) -> Option<&'a str> {
+        let q = self.question_in(text)?;
+        self.rules.task_words.iter().any(|w| text.contains(w.as_str())).then_some(q)
+    }
+
     /// 回答。`ctx` 是会议上下文,会随问题一起发出去——**所以密级要跟着走**。
     pub async fn answer(&self, question: &str, ctx: &Context) -> Answer {
         // 会议密级作为标签来源进入决策:restricted 的会内容不上云
@@ -238,5 +251,48 @@ mod tests {
         let t = c.transcript();
         assert!(t.contains("第9句") && t.contains("第7句"));
         assert!(!t.contains("第6句"), "最旧的应被淘汰");
+    }
+}
+
+#[cfg(test)]
+mod task_trigger_tests {
+    use super::*;
+    use muster_provider::{MockProvider, ModelProvider};
+    use muster_route::OrgPolicy;
+
+    fn answerer() -> Answerer {
+        let p: Vec<Arc<dyn ModelProvider>> =
+            vec![Arc::new(MockProvider::local("local").with_text("[]"))];
+        Answerer::new(
+            Arc::new(Router::new(p, OrgPolicy::new(Sensitivity::Internal).unwrap())),
+            MentionRules::default(),
+            Sensitivity::Internal,
+            "m1",
+        )
+    }
+
+    /// 派活要**两个条件同时成立**:叫了它,而且句里有派活词。
+    #[test]
+    fn task_needs_both_the_name_and_a_task_word() {
+        let a = answerer();
+
+        // 两个都有 ⇒ 派活
+        assert!(a.task_request_in("小七,建个任务:把网关的重试改成指数退避").is_some());
+        assert!(a.task_request_in("小七记一下,周一之前把部署脚本补上").is_some());
+
+        // 只有派活词、没叫它 ⇒ 不是派给它的。
+        // 「这个任务谁来做」是会上的正常讨论,不该变成一条待批项。
+        assert!(a.task_request_in("这个任务谁来做比较合适").is_none());
+
+        // 只叫了它、没有派活词 ⇒ 走提问,不走建任务
+        assert!(a.task_request_in("小七,网关的密级放在哪一层").is_none());
+        assert!(a.question_in("小七,网关的密级放在哪一层").is_some());
+    }
+
+    /// 转写会把标点吃掉——派活的判定不能依赖标点。
+    #[test]
+    fn works_without_punctuation() {
+        // 真机上撞到过:whisper 把逗号吃掉,「小七,记一下」变成「小七记一下」
+        assert!(answerer().task_request_in("小七记一下下周一做服务器部署测试").is_some());
     }
 }

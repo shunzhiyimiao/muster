@@ -32,6 +32,18 @@ pub struct MentionRules {
     pub aliases: Vec<String>,
     /// 只在句首这么多**字符**内匹配才算数。0 表示不限制。
     pub head_chars: usize,
+    /// 派活词:叫了 Agent **并且**句里有这些词,才当成"建任务"而不是提问。
+    ///
+    /// ## 为什么用确定性的词表,而不是让模型判断意图
+    ///
+    /// 让模型先分类一次再回答,等于把会中每次问答的延迟都翻倍——而绝大多数
+    /// 提及是提问,不是派活。词表是免费的、可解释的:漏了人再说一遍就行,
+    /// 而**多等一轮模型的代价是每一次提问都要付**。
+    ///
+    /// 列这么多同义词是因为转写不可靠:"建个任务"可能转成"见个任务"。
+    /// 命中之后仍由模型做结构化提取,所以说法不必精确——
+    /// 词表只负责**决定走哪条路**,不负责理解内容。
+    pub task_words: Vec<String>,
 }
 
 impl Default for MentionRules {
@@ -39,6 +51,10 @@ impl Default for MentionRules {
         Self {
             aliases: vec!["小七".into(), "@小七".into(), "A-007".into()],
             head_chars: 12,
+            task_words: ["任务", "待办", "行动项", "派个活", "记一下", "记个", "建个"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }

@@ -209,6 +209,18 @@ impl Remote {
         Ok(())
     }
 
+    /// 会议的行动项。**它们是提案**——Agent 提出、人确认,
+    /// 服务端不许 Agent 确认自己提的(见 muster-server/src/action.rs)。
+    pub async fn action_items(&self, meeting_id: &str) -> Result<Vec<ActionItem>, String> {
+        self.get(&format!("/meetings/{meeting_id}/action-items")).await
+    }
+
+    /// 批准或驳回一条行动项。服务端会验 CreateTask 权限,并把裁决写进审计链。
+    pub async fn decide_action(&self, id: &str, confirm: bool) -> Result<ActionItem, String> {
+        self.post_json(&format!("/action-items/{id}/decide"), &serde_json::json!({ "confirm": confirm }))
+            .await
+    }
+
     /// 拉某频道的消息。`after_seq` 为 `None` 时从头拉。
     pub async fn messages(&self, channel: &str, after_seq: Option<i64>) -> Result<Vec<RemoteMessage>, String> {
         let q = after_seq.map(|s| format!("?after_seq={s}")).unwrap_or_default();
@@ -253,6 +265,22 @@ impl Remote {
 ///
 /// **只存服务器地址与账号,不存口令。** 令牌 12 小时过期,过期就要求重新登录
 /// ——把口令留在盘上换取"永不掉线"是笔坏买卖。
+/// 一条会议行动项(与服务端 `ActionItemOut` 对齐)。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActionItem {
+    pub id: String,
+    pub meeting_id: String,
+    pub text: String,
+    pub owner_hint: Option<String>,
+    /// 出处原话——人要能核对"它是不是听岔了"。
+    pub source_quote: Option<String>,
+    /// proposed / confirmed / rejected
+    pub status: String,
+    pub decided_by: Option<String>,
+    pub run_id: Option<String>,
+    pub created_ms: i64,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub base: String,
