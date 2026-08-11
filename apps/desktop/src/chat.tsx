@@ -206,8 +206,33 @@ export function ChatPane({
     setDraft("");
   };
 
+  /// 这条用户消息是第几条**用户**消息。分叉切的是用户消息边界,
+  /// 不是行号——切在助手回合中间会留下有调用没结果的工具调用。
+  const nthUserBefore = (all: typeof list, idx: number) =>
+    all.slice(0, idx).filter((x) => x.role === "user").length;
+
+  const [forkNote, setForkNote] = useState<string | null>(null);
+
+  const forkAt = async (nth: number, prompt: string) => {
+    try {
+      const r = await api.forkConversation(channel.id, null, nth, "copied");
+      // 把被切掉的那条提问放回输入框——codex 的 Esc Esc 就是干这个的
+      setDraft(r.reopened_prompt ?? prompt);
+      setForkNote(`已分叉:继承 ${r.inherited} 条,原会话未改动。改完这句再发。`);
+      setTimeout(() => setForkNote(null), 6000);
+    } catch (e) {
+      setForkNote(`分叉失败:${e}`);
+      setTimeout(() => setForkNote(null), 6000);
+    }
+  };
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {forkNote && (
+        <div className="mx-5 mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+          {forkNote}
+        </div>
+      )}
       <div ref={scroller} className="flex-1 overflow-y-auto p-5 space-y-4">
         {header}
         {list.length === 0 && !header && (
@@ -219,14 +244,27 @@ export function ChatPane({
             </div>
           </div>
         )}
-        {list.map((m) =>
+        {list.map((m, i) =>
           m.role === "user" ? (
-            <div key={m.key} className="flex gap-2.5 max-w-2xl">
+            <div key={m.key} className="flex gap-2.5 max-w-2xl group">
               <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold" style={{ background: `${T.indigo}18`, color: T.indigo }}>
                 A
               </div>
               <div className="min-w-0">
-                <div className="text-[13px] font-bold">Alice</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-[13px] font-bold">Alice</div>
+                  {/* 从这一问之前分叉。**父线程不动**——所以是分支不是改写。
+                      分叉后这条提问回到输入框里等你改,那才是这个功能的意义,
+                      不是"复制一份对话"。 */}
+                  <button
+                    onClick={() => forkAt(nthUserBefore(list, i), m.text)}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
+                    style={{ background: T.soft, color: T.sub }}
+                    title="从这一问之前分叉出一条新会话,并把它放回输入框重写"
+                  >
+                    从这里分叉
+                  </button>
+                </div>
                 <div className="text-[13px] mt-0.5 leading-relaxed whitespace-pre-wrap break-words" style={{ color: "#454A5C" }}>
                   {m.text}
                 </div>

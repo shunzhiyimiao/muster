@@ -216,6 +216,23 @@ export interface ActionItem {
   created_ms: number;
 }
 
+export interface ForkResult {
+  thread_id: string;
+  forked_from: string;
+  inherited: number;
+  /** 被切掉的那条提问,回到输入框等你改 */
+  reopened_prompt: string | null;
+}
+
+export interface ThreadInfo {
+  id: string;
+  title: string;
+  forked_from: string | null;
+  inherited_count: number;
+  persistence: string;
+  created_ms: number;
+}
+
 export interface JoinInfo {
   url: string;
   token: string;
@@ -303,6 +320,12 @@ export const api = {
   remoteMeetingStart: (channelId: string, title: string) =>
     invoke<RemoteMeeting>("remote_meeting_start", { channelId, title }),
   remoteMeetingJoin: (meetingId: string) => invoke<JoinInfo>("remote_meeting_join", { meetingId }),
+  /** 从第 nth 条用户提问**之前**分叉。父会话不动,新会话新 id(照抄 codex)。 */
+  forkConversation: (channelId: string, threadId: string | null, nthUserMessage: number, persistence: "copied" | "referenced") =>
+    invoke<ForkResult>("fork_conversation", { channelId, threadId, nthUserMessage, persistence }),
+  listThreads: (channelId: string) => invoke<ThreadInfo[]>("list_threads", { channelId }),
+  threadHistory: (threadId: string) => invoke<StoredMsg[]>("thread_history", { threadId }),
+
   remoteActionItems: (meetingId: string) =>
     invoke<ActionItem[]>("remote_action_items", { meetingId }),
   /** 批准 / 驳回。**判定在服务端**:它要 CreateTask 权限,且不许 Agent 裁决自己提的。 */

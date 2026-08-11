@@ -133,14 +133,58 @@ fn label_sources(channel: &ChannelInfo) -> Vec<LabelSource> {
 // 桌面本地状态库,与审计库**刻意分离**:审计是证据层(只存哈希,append-only,
 // 防篡改);这里是会话正文的 run 存储侧,带自己的密级语义,可清除。
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct StoredMsg {
     channel_id: String,
+    /// 所属线程。老库回填成 `main:<channel_id>`
+    #[serde(default)]
+    thread_id: String,
     role: String,
     text: String,
     run_id: Option<String>,
     status: String,
     ts_ms: i64,
+}
+
+/// 主线程的 id。老库回填用的也是这个式子——**只此一处**,
+/// 散着写就会有一天两边算出不同的字符串。
+#[derive(Serialize)]
+struct ForkResult {
+    thread_id: String,
+    forked_from: String,
+    /// 继承了多少条
+    inherited: usize,
+    /// 被切掉的那条提问,原样交回输入框等你改。
+    /// **这才是这个功能好用的地方**——不是"复制一份对话"。
+    reopened_prompt: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ThreadInfo {
+    id: String,
+    title: String,
+    forked_from: Option<String>,
+    inherited_count: usize,
+    persistence: String,
+    created_ms: i64,
+}
+
+/// 够用的唯一 id。不引 uuid crate:这个值只在本机 state.db 里做主键,
+/// 时间戳 + 计数器足够,而多一个依赖要多验一次供应链。
+fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!("{}-{}", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+fn main_thread(channel_id: &str) -> String {
+    format!("main:{channel_id}")
+}
+
+impl fork::ForkItem for StoredMsg {
+    fn is_user(&self) -> bool {
+        self.role == "user"
+    }
 }
 
 struct StateStore {
@@ -160,34 +204,189 @@ impl StateStore {
                 status TEXT NOT NULL,
                 ts_ms INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_msg_chan ON messages(channel_id, id);",
+            CREATE INDEX IF NOT EXISTS idx_msg_chan ON messages(channel_id, id);
+
+            -- 会话线程(照抄 codex 的 thread)。每个频道默认有一条主线程,
+            -- 分叉出来的是**新线程,新 id**——父线程一个字节都不动。
+            CREATE TABLE IF NOT EXISTS thread(
+                id              TEXT PRIMARY KEY,
+                channel_id      TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                -- 从哪条线程分出来的。NULL = 主线程
+                forked_from     TEXT,
+                -- 从父线程继承了多少条(仅 referenced 用)
+                inherited_count INTEGER NOT NULL DEFAULT 0,
+                -- 'copied' | 'referenced',见 fork::Persistence
+                persistence     TEXT NOT NULL DEFAULT 'copied',
+                created_ms      INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_chan ON thread(channel_id, created_ms);",
         )?;
+        // 老库没有 thread_id 列。**加列 + 回填,不是重建表**——
+        // 重建会丢掉 rowid 顺序,而消息的先后全靠它
+        let has = conn
+            .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='thread_id'")?
+            .exists([])?;
+        if !has {
+            conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN thread_id TEXT;
+                 UPDATE messages SET thread_id = 'main:' || channel_id WHERE thread_id IS NULL;
+                 CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id, id);",
+            )?;
+        }
         Ok(Self { conn })
     }
 
     /// 状态库是便利层,写失败降级为日志,不阻断任务(与审计的 fail-closed 相反,刻意)。
     fn insert(&self, channel_id: &str, role: &str, text: &str, run_id: Option<&str>, status: &str) {
+        self.insert_in(&main_thread(channel_id), channel_id, role, text, run_id, status)
+    }
+
+    /// 写进指定线程。分叉出来的线程走这条。
+    fn insert_in(
+        &self,
+        thread_id: &str,
+        channel_id: &str,
+        role: &str,
+        text: &str,
+        run_id: Option<&str>,
+        status: &str,
+    ) {
         if let Err(e) = self.conn.execute(
-            "INSERT INTO messages(channel_id, role, text, run_id, status, ts_ms) VALUES(?1,?2,?3,?4,?5,?6)",
-            rusqlite::params![channel_id, role, text, run_id, status, now_ms() as i64],
+            "INSERT INTO messages(channel_id, thread_id, role, text, run_id, status, ts_ms)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![channel_id, thread_id, role, text, run_id, status, now_ms() as i64],
         ) {
             eprintln!("state 持久化失败(忽略):{e}");
         }
     }
 
+    /// 某条线程的完整历史,**含从父线程继承的部分**。
+    ///
+    /// `referenced` 模式下前缀不在自己表里,要顺着 `forked_from` 往上拼。
+    /// 递归有上限:分叉链坏掉(父被清、或有环)时不能把栈吃穿——
+    /// 状态库是便利层,它坏了不该拖垮应用。
+    fn thread_history(&self, thread_id: &str) -> rusqlite::Result<Vec<StoredMsg>> {
+        self.thread_history_depth(thread_id, 0)
+    }
+
+    fn thread_history_depth(&self, thread_id: &str, depth: u32) -> rusqlite::Result<Vec<StoredMsg>> {
+        const MAX_DEPTH: u32 = 32;
+        let mut out = Vec::new();
+        if depth < MAX_DEPTH {
+            let parent: Option<(String, i64, String)> = self
+                .conn
+                .query_row(
+                    "SELECT forked_from, inherited_count, persistence FROM thread WHERE id = ?1",
+                    rusqlite::params![thread_id],
+                    |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?, r.get(2)?)),
+                )
+                .ok()
+                .filter(|(f, _, p)| !f.is_empty() && p == "referenced");
+            if let Some((from, n, _)) = parent {
+                let mut inherited = self.thread_history_depth(&from, depth + 1)?;
+                inherited.truncate(n as usize);
+                out = inherited;
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms
+             FROM messages WHERE thread_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![thread_id], |r| {
+            Ok(StoredMsg {
+                channel_id: r.get(0)?,
+                thread_id: r.get(1)?,
+                role: r.get(2)?,
+                text: r.get(3)?,
+                run_id: r.get(4)?,
+                status: r.get(5)?,
+                ts_ms: r.get(6)?,
+            })
+        })?;
+        for m in rows {
+            out.push(m?);
+        }
+        Ok(out)
+    }
+
+    /// 分叉。返回 (新线程 id, 继承条数, 被切掉那条提问的正文)。
+    ///
+    /// 照抄 codex:新线程**新 id**,父线程一个字节都不动;切点只能落在
+    /// 用户消息边界上;越界时的三种行为见 [`fork::truncate_before_nth_user_message`]。
+    ///
+    /// 被切掉的那条提问要**原样带回给调用方**——codex 那边 Esc Esc 之后
+    /// 提问会重新出现在输入框里等你改,那才是这个功能好用的地方,
+    /// 而不是"复制一份对话"。
+    fn fork_thread(
+        &self,
+        src_thread: &str,
+        channel_id: &str,
+        nth_user_message: usize,
+        persistence: fork::Persistence,
+    ) -> rusqlite::Result<(String, usize, Option<String>)> {
+        let history = self.thread_history(src_thread)?;
+        let keep = fork::truncate_before_nth_user_message(&history, nth_user_message);
+        let reopened = history.get(keep).filter(|m| m.role == "user").map(|m| m.text.clone());
+
+        let new_id = format!("fork:{}", uuid_like());
+        let title = format!("分叉自 {} 第 {} 问", src_thread, nth_user_message + 1);
+        self.conn.execute(
+            "INSERT INTO thread(id, channel_id, title, forked_from, inherited_count, persistence, created_ms)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                &new_id, channel_id, title, src_thread, keep as i64,
+                persistence.as_str(), now_ms() as i64
+            ],
+        )?;
+
+        // Copied:把前缀抄进新线程。Referenced:什么都不抄,读的时候拼。
+        if persistence == fork::Persistence::Copied {
+            for m in history.iter().take(keep) {
+                self.conn.execute(
+                    "INSERT INTO messages(channel_id, thread_id, role, text, run_id, status, ts_ms)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    rusqlite::params![
+                        &m.channel_id, &new_id, &m.role, &m.text, &m.run_id, &m.status, m.ts_ms
+                    ],
+                )?;
+            }
+        }
+        Ok((new_id, keep, reopened))
+    }
+
+    fn threads_of(&self, channel_id: &str) -> rusqlite::Result<Vec<ThreadInfo>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, forked_from, inherited_count, persistence, created_ms
+             FROM thread WHERE channel_id = ?1 ORDER BY created_ms ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![channel_id], |r| {
+            Ok(ThreadInfo {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                forked_from: r.get(2)?,
+                inherited_count: r.get::<_, i64>(3)? as usize,
+                persistence: r.get(4)?,
+                created_ms: r.get(5)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     fn bulk(&self, limit: u32) -> rusqlite::Result<Vec<StoredMsg>> {
         let mut stmt = self.conn.prepare(
-            "SELECT channel_id, role, text, run_id, status, ts_ms FROM messages
-             ORDER BY id DESC LIMIT ?1",
+            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms
+             FROM messages ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit], |r| {
             Ok(StoredMsg {
                 channel_id: r.get(0)?,
-                role: r.get(1)?,
-                text: r.get(2)?,
-                run_id: r.get(3)?,
-                status: r.get(4)?,
-                ts_ms: r.get(5)?,
+                thread_id: r.get(1)?,
+                role: r.get(2)?,
+                text: r.get(3)?,
+                run_id: r.get(4)?,
+                status: r.get(5)?,
+                ts_ms: r.get(6)?,
             })
         })?;
         let mut out: Vec<StoredMsg> = rows.collect::<Result<_, _>>()?;
@@ -218,18 +417,19 @@ impl StateStore {
             Selector::OlderThan(ms) => ("ts_ms < ?1", Some(ms.to_string())),
         };
         let sql = format!(
-            "SELECT channel_id, role, text, run_id, status, ts_ms FROM messages
-             WHERE {where_sql} ORDER BY id ASC"
+            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms
+             FROM messages WHERE {where_sql} ORDER BY id ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let map = |r: &rusqlite::Row<'_>| {
             Ok(StoredMsg {
                 channel_id: r.get(0)?,
-                role: r.get(1)?,
-                text: r.get(2)?,
-                run_id: r.get(3)?,
-                status: r.get(4)?,
-                ts_ms: r.get(5)?,
+                thread_id: r.get(1)?,
+                role: r.get(2)?,
+                text: r.get(3)?,
+                run_id: r.get(4)?,
+                status: r.get(5)?,
+                ts_ms: r.get(6)?,
             })
         };
         let rows: Vec<StoredMsg> = match (&arg, sel) {
@@ -440,6 +640,7 @@ struct Backend {
     remote: Arc<Mutex<Option<remote::Remote>>>,
 }
 
+mod fork;
 mod remote;
 
 /// 桌面壳自带的那份 provider 表。**只在单机模式下用。**
@@ -1315,6 +1516,52 @@ async fn run_workspace_task(
 }
 
 /// C1:启动时取回全部频道的历史消息(时间正序,总量截断)。
+/// 分叉当前会话。**照抄 codex 的 Esc Esc**:选中一条早先的提问,
+/// 从它之前分叉,并把那条提问原样交回给输入框等你改。
+///
+/// 父线程一个字节都不动——所以是分支不是移动。
+#[tauri::command]
+fn fork_conversation(
+    state: State<'_, AppState>,
+    channel_id: String,
+    thread_id: Option<String>,
+    nth_user_message: usize,
+    persistence: Option<String>,
+) -> Result<ForkResult, String> {
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let src = thread_id.unwrap_or_else(|| main_thread(&channel_id));
+    let mode = fork::Persistence::parse(persistence.as_deref().unwrap_or("copied"));
+    let (id, inherited, reopened) = store
+        .lock()
+        .unwrap()
+        .fork_thread(&src, &channel_id, nth_user_message, mode)
+        .map_err(|e| format!("分叉失败:{e}"))?;
+    Ok(ForkResult { thread_id: id, forked_from: src, inherited, reopened_prompt: reopened })
+}
+
+#[tauri::command]
+fn list_threads(state: State<'_, AppState>, channel_id: String) -> Result<Vec<ThreadInfo>, String> {
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let v = store.lock().unwrap().threads_of(&channel_id).map_err(|e| e.to_string())?;
+    Ok(v)
+}
+
+#[tauri::command]
+fn thread_history(state: State<'_, AppState>, thread_id: String) -> Result<Vec<StoredMsg>, String> {
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let v = store.lock().unwrap().thread_history(&thread_id).map_err(|e| e.to_string())?;
+    Ok(v)
+}
+
 #[tauri::command]
 fn history_bulk(state: State<'_, AppState>, limit: u32) -> Result<Vec<StoredMsg>, String> {
     let guard = state.0.lock().unwrap();
@@ -2279,6 +2526,9 @@ async fn remote_history(
         .into_iter()
         .map(|m| StoredMsg {
             channel_id: channel_id.clone(),
+            // 服务端来的消息属于该频道的主线程:分叉是本地会话的概念,
+            // 团队频道的历史不由某台机器分叉
+            thread_id: main_thread(&channel_id),
             role: m.role,
             text: m.body,
             run_id: m.run_id,
@@ -2415,6 +2665,9 @@ fn main() {
             remote_meetings,
             remote_meeting_start,
             remote_meeting_join,
+            fork_conversation,
+            list_threads,
+            thread_history,
             remote_action_items,
             remote_decide_action,
             remote_meeting_end,
@@ -2561,5 +2814,131 @@ mod transcript_tests {
         assert_eq!(Selector::Channel("platform".into()).tag(None), "channel:platform");
         assert_eq!(Selector::Run("RUN-9".into()).tag(None), "run:RUN-9");
         assert_eq!(Selector::OlderThan(0).tag(Some(90)), "retention:90d");
+    }
+}
+
+#[cfg(test)]
+mod fork_store_tests {
+    use super::*;
+    use crate::fork::Persistence;
+
+    /// 一轮问答。`u` 进去,`a` 跟一条。
+    fn conversation(s: &StateStore, chan: &str, turns: &[(&str, Option<&str>)]) {
+        for (q, a) in turns {
+            s.insert(chan, "user", q, None, "done");
+            if let Some(a) = a {
+                s.insert(chan, "agent", a, None, "done");
+            }
+        }
+    }
+
+    fn store() -> (tempfile::TempDir, StateStore) {
+        let d = tempfile::tempdir().unwrap();
+        let s = StateStore::open(d.path().join("state.db").to_str().unwrap()).unwrap();
+        (d, s)
+    }
+
+    /// 分叉出来的是**新线程**,父线程一个字节都不动。
+    #[test]
+    fn fork_leaves_the_parent_untouched() {
+        let (_d, s) = store();
+        conversation(&s, "c1", &[("问一", Some("答一")), ("问二", Some("答二")), ("问三", None)]);
+        let parent = main_thread("c1");
+        let before = s.thread_history(&parent).unwrap().len();
+
+        let (child, _, _) = s.fork_thread(&parent, "c1", 1, Persistence::Copied).unwrap();
+
+        assert_eq!(s.thread_history(&parent).unwrap().len(), before, "父线程被动过了");
+        assert_ne!(child, parent, "分叉必须是新 id,不是重命名");
+    }
+
+    /// 切在第 n 条提问之前,并把那条提问**原样交回**。
+    ///
+    /// 交回这件事是 codex 那个功能好用的全部理由:Esc Esc 之后提问重新出现在
+    /// 输入框里等你改。少了它就只是"复制一份对话"。
+    #[test]
+    fn the_cut_prompt_comes_back_for_editing() {
+        let (_d, s) = store();
+        conversation(&s, "c1", &[("问一", Some("答一")), ("问二", Some("答二"))]);
+        let (_, inherited, reopened) =
+            s.fork_thread(&main_thread("c1"), "c1", 1, Persistence::Copied).unwrap();
+        assert_eq!(inherited, 2, "第 1 条提问之前有两条(问一 + 答一)");
+        assert_eq!(reopened.as_deref(), Some("问二"));
+    }
+
+    /// 两种 persistence **读出来必须一样**。
+    ///
+    /// 它们的差别只该在"历史存在哪":copied 抄一份,referenced 读时拼。
+    /// 一旦读出来不同,那就不是两种存法,是两种语义。
+    #[test]
+    fn both_persistence_modes_read_back_identically() {
+        let (_d, s) = store();
+        conversation(&s, "c1", &[("问一", Some("答一")), ("问二", Some("答二")), ("问三", Some("答三"))]);
+        let parent = main_thread("c1");
+
+        let (copied, _, _) = s.fork_thread(&parent, "c1", 2, Persistence::Copied).unwrap();
+        let (referenced, _, _) = s.fork_thread(&parent, "c1", 2, Persistence::Referenced).unwrap();
+
+        let a: Vec<_> = s.thread_history(&copied).unwrap().into_iter().map(|m| m.text).collect();
+        let b: Vec<_> = s.thread_history(&referenced).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(a, b, "两种存法读出来的历史不一致");
+        assert_eq!(a, vec!["问一", "答一", "问二", "答二"]);
+    }
+
+    /// referenced 模式下,**新线程后来写的内容不会污染父线程**。
+    #[test]
+    fn referenced_child_writes_do_not_leak_into_the_parent() {
+        let (_d, s) = store();
+        conversation(&s, "c1", &[("问一", Some("答一")), ("问二", Some("答二"))]);
+        let parent = main_thread("c1");
+        let (child, _, _) = s.fork_thread(&parent, "c1", 1, Persistence::Referenced).unwrap();
+
+        s.insert_in(&child, "c1", "user", "分叉后的新问题", None, "done");
+
+        let p: Vec<_> = s.thread_history(&parent).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(p, vec!["问一", "答一", "问二", "答二"], "父线程被污染了");
+        let c: Vec<_> = s.thread_history(&child).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(c, vec!["问一", "答一", "分叉后的新问题"]);
+    }
+
+    /// 分叉的分叉。referenced 要能一路往上拼。
+    #[test]
+    fn forks_of_forks_resolve_the_whole_chain() {
+        let (_d, s) = store();
+        conversation(&s, "c1", &[("问一", Some("答一")), ("问二", Some("答二"))]);
+        let (a, _, _) = s.fork_thread(&main_thread("c1"), "c1", 1, Persistence::Referenced).unwrap();
+        s.insert_in(&a, "c1", "user", "问二改", None, "done");
+        s.insert_in(&a, "c1", "agent", "答二改", None, "done");
+        let (b, _, _) = s.fork_thread(&a, "c1", 1, Persistence::Referenced).unwrap();
+
+        let got: Vec<_> = s.thread_history(&b).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(got, vec!["问一", "答一"], "二级分叉应当只继承到第 1 条提问之前");
+    }
+
+    /// 老库(没有 thread_id 列)打开后仍读得出历史。
+    ///
+    /// 迁移是**加列 + 回填**,不是重建表——重建会丢掉 rowid 顺序,
+    /// 而消息的先后全靠它。
+    #[test]
+    fn an_old_database_without_thread_id_still_reads() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state.db");
+        {
+            // 手工造一个"老库":没有 thread_id 列
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE messages(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL,
+                    role TEXT NOT NULL, text TEXT NOT NULL, run_id TEXT,
+                    status TEXT NOT NULL, ts_ms INTEGER NOT NULL);
+                 INSERT INTO messages(channel_id, role, text, status, ts_ms)
+                   VALUES('c1','user','老消息一','done',1),('c1','agent','老回复一','done',2);",
+            )
+            .unwrap();
+        }
+        let s = StateStore::open(path.to_str().unwrap()).unwrap();
+        let got: Vec<_> =
+            s.thread_history(&main_thread("c1")).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(got, vec!["老消息一", "老回复一"], "老库的消息没有被回填到主线程");
     }
 }
