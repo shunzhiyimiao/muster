@@ -300,10 +300,14 @@ fn session_path() -> Option<std::path::PathBuf> {
 
 /// 家目录。**Windows 上没有 `HOME`**,它叫 `USERPROFILE`。
 ///
+/// 全 crate 只此一处解析家目录。散在各处直接读那个环境变量的后果不是
+/// "有几处漏了",而是**在 Windows 上整个应用起不来**——而每一处的报错都长得
+/// 像个独立的小问题("HOME 未设置"),看不出是同一个根因。
+///
 /// 只读 `HOME` 的后果不是报错而是**静默失效**:`session_path()` 返回 `None`,
 /// 于是保存和读取都变成空操作——登录成功、界面正常,一重启就掉回未登录,
 /// 而日志里什么都没有。这类"看起来在工作、其实没存"的失败最难查。
-fn home_dir() -> Option<std::path::PathBuf> {
+pub fn home_dir() -> Option<std::path::PathBuf> {
     for k in ["HOME", "USERPROFILE"] {
         if let Ok(v) = std::env::var(k) {
             if !v.is_empty() {
@@ -418,6 +422,33 @@ mod tests {
 
 #[cfg(test)]
 mod home_tests {
+    /// **全 crate 只许有一处解析家目录。**
+    ///
+    /// 这条不是洁癖。直接去读那个环境变量,在 macOS 上永远对,在 Windows 上
+    /// 永远错——而它散在十几个地方时,表现是应用起不来,每一处的报错还都
+    /// 长得像个独立的小问题("HOME 未设置"),根本看不出是同一个根因。
+    ///
+    /// 实际发生过:Windows 客户端那一轮只修了 session_path,漏掉 main.rs 里
+    /// 的十处,做出来的安装包连初始化都过不去。
+    #[test]
+    fn home_is_resolved_in_exactly_one_place() {
+        for (name, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("remote.rs", include_str!("remote.rs")),
+        ] {
+            // 模式**拼出来**,不能写成字面量:否则这段代码本身会被自己数进去,
+            // 而 include_str! 读的正是这个文件。
+            let pat = format!("env::var({q}HOME{q})", q = '"');
+            let raw = src.matches(&pat).count();
+            let allowed = 0;
+            assert_eq!(
+                raw, allowed,
+                "{name} 里有 {raw} 处直接读 HOME(只有 remote.rs::home_dir 可以)。\
+                 Windows 上没有这个变量,用 remote::home_dir() 代替。"
+            );
+        }
+    }
+
     /// 家目录解析的**顺序**要固定,而且不能只认 `HOME`。
     ///
     /// 这个测试不动进程环境(那会波及并行跑的其他测试),只验纯逻辑:

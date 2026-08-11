@@ -744,7 +744,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
         let policy = OrgPolicy::new(Sensitivity::Internal).map_err(|e| format!("组织策略非法:{e:?}"))?;
         let router = Arc::new(Router::from_registry(&registry, policy));
 
-        let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+        let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
         let dir = format!("{home}/.muster");
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {dir} 失败:{e}"))?;
         let db = format!("{dir}/desktop-audit.db");
@@ -790,7 +790,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
             locality: format!("{:?}", m.locality).to_lowercase(),
         })
         .collect();
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = remote::home_dir().map(|p| p.display().to_string()).unwrap_or_default();
     Ok(BootstrapInfo {
         channels: demo_channels(),
         providers,
@@ -1177,7 +1177,7 @@ async fn run_workspace_task(
         muster_identity::Scope::Channel(channel.id.clone()),
     )?;
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
     store.lock().unwrap().insert(&channel.id, "user", &format!("▶ 任务:{text}"), None, "done");
     // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
@@ -1513,7 +1513,7 @@ async fn capsule_run(
         (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
     };
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
     let root = std::env::var("MUSTER_WORKSPACE_ROOT")
         .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
@@ -1595,7 +1595,7 @@ fn capsule_adopt(
 }
 
 fn capsule_store() -> Result<muster_runner::CapsuleStore, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     muster_runner::CapsuleStore::open(format!("{home}/.muster/capsules"))
         .map_err(|e| format!("Capsule 存储打开失败:{e}"))
 }
@@ -1613,7 +1613,7 @@ async fn capsule_verify(
         let b = guard.as_ref().ok_or("后端未初始化")?;
         (b.router.clone(), b.audit.clone())
     };
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
     let root = std::env::var("MUSTER_WORKSPACE_ROOT")
         .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
@@ -1671,7 +1671,7 @@ fn approvals_pending(state: State<'_, AppState>) -> Result<Vec<PendingApprovalOu
     let guard = state.0.lock().unwrap();
     let b = guard.as_ref().ok_or("后端未初始化")?;
     let store = b.audit.lock().unwrap();
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = remote::home_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let root = std::env::var("MUSTER_WORKSPACE_ROOT")
         .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
 
@@ -1715,7 +1715,7 @@ fn approvals_decide(
         let b = guard.as_ref().ok_or("后端未初始化")?;
         (b.audit.clone(), Scope::default())
     };
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let base = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
     let root = std::env::var("MUSTER_WORKSPACE_ROOT")
         .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
@@ -1812,7 +1812,7 @@ fn verify_or_refuse(audit: &AuditStore) -> Result<(), String> {
 /// 封存断链并重开一条。**封存不是删除**:坏掉的那份改名留在原目录。
 #[tauri::command]
 fn audit_archive_broken(state: State<'_, AppState>) -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let db = format!("{home}/.muster/desktop-audit.db");
     let stamp = now_ms();
     let archived = format!("{db}.broken-{stamp}");
@@ -1877,7 +1877,7 @@ fn transcript_stats(state: State<'_, AppState>) -> Result<TranscriptStats, Strin
     let b = guard.as_ref().ok_or("后端未初始化")?;
     let (messages, text_bytes, oldest_ts_ms) =
         b.state.lock().unwrap().stats().map_err(|e| e.to_string())?;
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = remote::home_dir().map(|p| p.display().to_string()).unwrap_or_default();
     Ok(TranscriptStats {
         messages,
         text_bytes,
@@ -1925,7 +1925,7 @@ fn transcript_export(
         jsonl.push_str(&serde_json::to_string(m).map_err(|e| e.to_string())?);
         jsonl.push('\n');
     }
-    let home = std::env::var("HOME").map_err(|_| "HOME 未设置".to_string())?;
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let dir = format!("{home}/.muster/exports");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {dir} 失败:{e}"))?;
     let path = format!("{dir}/transcript-{}.jsonl", now_ms());
