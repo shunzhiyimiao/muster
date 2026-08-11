@@ -211,6 +211,59 @@ fn main() {
                 );
             }
         }
+        // ---------------------------------------------------------- provider 目录
+        //
+        // **只填环境变量名,不填密钥。** 服务端会挡住看起来像真钥匙的值——
+        // 那不是安全边界(拦不住所有写法),是防手滑:真正的边界是
+        // 那张表从设计上就不存值。
+        "provider-add" => {
+            need(rest, 4, "provider-add <id> <base_url> <模型> <local|cloud> [环境变量名] [--default]");
+            let is_default = rest.iter().any(|a| a == "--default");
+            let env_name = rest.get(4).filter(|v| !v.starts_with("--")).cloned();
+            let mut body = serde_json::json!({
+                "id": rest[0], "base_url": rest[1], "model": rest[2],
+                "locality": rest[3], "is_default": is_default,
+            });
+            if let Some(e) = &env_name {
+                body["api_key_env"] = serde_json::json!(e);
+            }
+            call("POST", "/providers", Some(body), true);
+            println!(
+                "✓ {} → {}({}){}",
+                rest[0],
+                rest[1],
+                rest[3],
+                if is_default { " · 默认" } else { "" }
+            );
+            match env_name {
+                Some(e) => println!("  各节点需要 export {e}=<你的密钥>——服务端不存它"),
+                None => println!("  未指定密钥变量(本地通道通常不需要)"),
+            }
+        }
+        "providers" => {
+            let v = call("GET", "/providers", None, true);
+            println!("{:<16} {:<8} {:<38} {:<14} {:<16} {}", "ID", "位置", "BASE_URL", "模型", "密钥变量", "状态");
+            for r in v.as_array().cloned().unwrap_or_default() {
+                let mut state = String::new();
+                if !r["enabled"].as_bool().unwrap_or(true) { state.push_str("已停用 "); }
+                if r["is_default"].as_bool().unwrap_or(false) { state.push_str("默认"); }
+                println!(
+                    "{:<16} {:<8} {:<38} {:<14} {:<16} {}",
+                    r["id"].as_str().unwrap_or("?"),
+                    r["locality"].as_str().unwrap_or("?"),
+                    r["base_url"].as_str().unwrap_or("?"),
+                    r["model"].as_str().unwrap_or("?"),
+                    r["api_key_env"].as_str().unwrap_or("—"),
+                    state.trim()
+                );
+            }
+        }
+        "provider-rm" => {
+            need(rest, 1, "provider-rm <id>");
+            call("DELETE", &format!("/providers/{}", rest[0]), None, true);
+            // 说清楚是停用不是删除:否则下次看 providers 列表会以为没删掉
+            println!("✓ 已停用 {}(保留记录:删了就查不出上周那次任务用的是哪条通道)", rest[0]);
+        }
         "health" => {
             let v = call("GET", "/health", None, false);
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -230,6 +283,13 @@ fn main() {
                  revoke <账号> <角色> [作用域类型] [作用域id]\n\
                  teams? 用 team-add <id> <名称>\n\
                  channels / channel-add <id> <团队id> <名称> [密级]\n\n\
+                 providers                      列 provider 目录\n\
+                 provider-add <id> <base_url> <模型> <local|cloud> [环境变量名] [--default]\n\
+                 provider-rm <id>               停用一条\n\
+                 \n\
+                 **目录由服务端下发,节点不再自己声明 locality**——\n\
+                 决定 restricted 内容能不能出门的那个字段,不该由被路由的机器自己说。\n\
+                 密钥仍只在各节点的环境变量里,服务端一个都不存。\n\n\
                  角色:owner admin group_admin publisher approver member guest\n\
                  作用域类型:org(默认) group channel\n\n\
                  注:所有权限变更都会写进服务端审计链(badge.update)。"

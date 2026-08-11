@@ -127,6 +127,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// 向服务端要 provider 目录。
+///
+/// 拿不到就返回 `None`,由调用方回落到本地 TOML **并告警**——
+/// 会议 Agent 是常驻服务,不该因为服务端抖一下就整个停摆;但"此刻用的是
+/// 本机声明的 locality"这件事必须说出来,不能悄悄发生。
+///
+/// (桌面壳那边更严:拿不到就不算连上。区别在于桌面壳前面坐着一个人,
+/// 他能立刻看见并决定重试;守护进程没有。)
+async fn fetch_catalog(http: &reqwest::Client, cfg: &Cfg) -> Option<serde_json::Value> {
+    let r = http
+        .get(format!("{}/providers/catalog", cfg.server))
+        .bearer_auth(&cfg.token)
+        .send()
+        .await
+        .ok()?;
+    if !r.status().is_success() {
+        tracing::warn!(status = %r.status(), "拿不到 provider 目录,回落到本地配置");
+        return None;
+    }
+    let v: serde_json::Value = r.json().await.ok()?;
+    let n = v.get("providers").and_then(|p| p.as_object()).map(|o| o.len()).unwrap_or(0);
+    if n == 0 {
+        tracing::warn!("服务端的 provider 目录是空的,回落到本地配置");
+        return None;
+    }
+    tracing::info!(n, "已采用服务端下发的 provider 目录");
+    Some(v)
+}
+
 async fn login(
     http: &reqwest::Client,
     server: &str,
@@ -211,9 +240,19 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
         policy.set_egress_locked(true);
     }
 
-    let (answerer, extractor) = match &cfg.provider_config {
-        Some(path) => {
-            let reg = ProviderRegistry::from_toml_str(&std::fs::read_to_string(path)?)?;
+    // Provider 目录**优先向服务端要**。
+    //
+    // 本地那份 TOML 只在服务端没有目录时兜底,而且会告警:决定 restricted
+    // 内容能不能出门的 `locality`,不该由跑模型的这台机器自己声明。
+    let toml_from_server = fetch_catalog(&http, &cfg).await;
+    let (answerer, extractor) = match (&toml_from_server, &cfg.provider_config) {
+        (Some(_), _) | (None, Some(_)) => {
+            let reg = match &toml_from_server {
+                Some(json) => ProviderRegistry::from_config(serde_json::from_value(json.clone())?)?,
+                None => ProviderRegistry::from_toml_str(&std::fs::read_to_string(
+                    cfg.provider_config.as_ref().expect("上面的 match 保证了它是 Some"),
+                )?)?,
+            };
             let providers: Vec<_> = reg.ids().iter().filter_map(|id| reg.get(id)).collect();
             let router = Arc::new(Router::new(providers, policy.clone()));
             (
@@ -226,7 +265,7 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
                 Some(Arc::new(Extractor::new(router, level, meeting))),
             )
         }
-        None => (None, None),
+        (None, None) => (None, None),
     };
 
     // 中途入会补上下文——晚到、重连、崩溃重启都是常态

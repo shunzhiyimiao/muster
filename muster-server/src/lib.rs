@@ -52,6 +52,7 @@ pub mod livekit;
 pub mod meeting;
 pub mod message;
 pub mod org;
+pub mod provider;
 pub mod ratelimit;
 pub mod routes;
 pub mod ws;

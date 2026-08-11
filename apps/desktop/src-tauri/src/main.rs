@@ -428,6 +428,9 @@ struct DrillState {
 
 struct Backend {
     router: Arc<Router>,
+    /// 组织策略。重建路由器时要沿用它——provider 目录换的是"有哪些通道",
+    /// 不是"什么密级能上云"
+    policy: OrgPolicy,
     audit: Arc<Mutex<AuditStore>>,
     state: Arc<Mutex<StateStore>>,
     run_seq: Arc<AtomicU64>,
@@ -438,6 +441,57 @@ struct Backend {
 }
 
 mod remote;
+
+/// 桌面壳自带的那份 provider 表。**只在单机模式下用。**
+///
+/// 连上服务端之后一律改用下发的目录:决定 restricted 内容能不能出门的
+/// `locality`,不该由被路由的这台机器自己声明。
+const BUILTIN_PROVIDERS: &str = include_str!("../../providers.toml");
+
+/// 用一份 provider 配置重建路由器。
+///
+/// `policy` 从现有 router 继承——目录换的是"有哪些通道",不是"什么密级能上云",
+/// 后者是另一件事(`cloud_max`),不该被 provider 目录顺手改掉。
+fn router_from_config(
+    cfg: muster_provider::RegistryConfig,
+    policy: OrgPolicy,
+) -> Result<Arc<Router>, String> {
+    let registry = ProviderRegistry::from_config(cfg).map_err(|e| {
+        // 最常见的失败是环境变量没设。原样带出变量名——
+        // "provider 加载失败"这种话让人无从下手
+        format!("provider 目录加载失败:{e}")
+    })?;
+    Ok(Arc::new(Router::from_registry(&registry, policy)))
+}
+
+/// 连上服务端后把路由器换成**服务端下发的目录**。
+///
+/// ## 拿不到目录就不算连上
+///
+/// 不回退到本地那份。回退看着体贴,实际是给出一条**降级路径**:
+/// 谁能让节点连不上服务端,谁就能让它改用本机声明的 locality——
+/// 而那正是这次要堵的洞。所以拿不到就报错,由人决定是重试还是断开。
+///
+/// 目录为空是允许的(组织还没配),但那意味着一个通道都没有,
+/// 跑任务会被路由拒绝——那是如实的结果,不是故障。
+async fn adopt_remote_catalog(
+    state: &State<'_, AppState>,
+    r: &remote::Remote,
+) -> Result<usize, String> {
+    let raw = r.provider_catalog().await?;
+    let n = raw.get("providers").and_then(|p| p.as_object()).map(|o| o.len()).unwrap_or(0);
+    let cfg: muster_provider::RegistryConfig = serde_json::from_value(raw)
+        .map_err(|e| format!("服务端下发的 provider 目录解析失败:{e}"))?;
+
+    let policy = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.policy.clone()
+    };
+    let router = router_from_config(cfg, policy)?;
+    let mut guard = state.0.lock().unwrap();
+    guard.as_mut().ok_or("后端未初始化")?.router = router;
+    Ok(n)
+}
 
 /// 解析频道。**连着服务端时向服务端要,不查本地那份 demo 清单。**
 ///
@@ -739,10 +793,12 @@ fn home_stats(state: State<'_, AppState>) -> Result<HomeStats, String> {
 fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
     let mut guard = state.0.lock().unwrap();
     if guard.is_none() {
-        let registry = ProviderRegistry::from_toml_str(include_str!("../../providers.toml"))
+        // 启动时先用自带那份(单机模式)。连上服务端后会被下发的目录整个换掉,
+        // 见 adopt_remote_catalog——**连着服务端时,locality 由服务端说了算**。
+        let registry = ProviderRegistry::from_toml_str(BUILTIN_PROVIDERS)
             .map_err(|e| format!("provider 注册表加载失败:{e}"))?;
         let policy = OrgPolicy::new(Sensitivity::Internal).map_err(|e| format!("组织策略非法:{e:?}"))?;
-        let router = Arc::new(Router::from_registry(&registry, policy));
+        let router = Arc::new(Router::from_registry(&registry, policy.clone()));
 
         let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
         let dir = format!("{home}/.muster");
@@ -758,6 +814,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
 
         *guard = Some(Backend {
             router,
+            policy,
             audit: Arc::new(Mutex::new(audit)),
             state: Arc::new(Mutex::new(state)),
             run_seq: Arc::new(AtomicU64::new(0)),
@@ -2001,16 +2058,33 @@ async fn remote_login(
         account_id: Some(r.account_id.clone()),
         display_name: Some(r.display_name.clone()),
     };
+    // **先换目录,再算连上。** 拿不到目录就不该进入"已连接"——
+    // 那种状态下用的是本机声明的 locality,正是这次要堵的洞。
+    let n = adopt_remote_catalog(&state, &r).await?;
+    if n == 0 {
+        tracing_warn("服务端还没配任何 provider:能连上,但跑任务会被路由拒绝");
+    }
     r.save_session();
     *handle.lock().unwrap() = Some(r);
     Ok(st)
 }
 
+/// 没引 tracing,又不想为一句话引。stderr 足够——这行是给运维看的。
+fn tracing_warn(msg: &str) {
+    eprintln!("[warn] {msg}");
+}
+
 #[tauri::command]
 fn remote_logout(state: State<'_, AppState>) -> Result<(), String> {
-    let guard = state.0.lock().unwrap();
-    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let mut guard = state.0.lock().unwrap();
+    let b = guard.as_mut().ok_or("后端未初始化")?;
     *b.remote.lock().unwrap() = None;
+    // 退回自带那份:回到单机模式,行为与从未连过一致。
+    // 留着服务端下发的目录会更"省事",但那份目录是组织的策略,
+    // 断开之后它凭什么还管着这台机器
+    let registry = ProviderRegistry::from_toml_str(BUILTIN_PROVIDERS)
+        .map_err(|e| format!("provider 注册表加载失败:{e}"))?;
+    b.router = Arc::new(Router::from_registry(&registry, b.policy.clone()));
     remote::Remote::clear_session();
     Ok(())
 }
@@ -2025,6 +2099,19 @@ async fn remote_restore(state: State<'_, AppState>) -> Result<RemoteStatus, Stri
     };
     match remote::Remote::restore().await {
         Some(r) => {
+            // 恢复连接同样要换目录。漏掉这一步的后果很隐蔽:**重启一次就
+            // 悄悄退回本机声明的 locality**,而界面照常显示"已连接"。
+            if let Err(e) = adopt_remote_catalog(&state, &r).await {
+                // 拿不到目录就不算连上,与 remote_login 同一条规矩
+                tracing_warn(&format!("恢复连接失败(拿不到 provider 目录):{e}"));
+                remote::Remote::clear_session();
+                return Ok(RemoteStatus {
+                    connected: false,
+                    base: None,
+                    account_id: None,
+                    display_name: None,
+                });
+            }
             let st = RemoteStatus {
                 connected: true,
                 base: Some(r.base.clone()),

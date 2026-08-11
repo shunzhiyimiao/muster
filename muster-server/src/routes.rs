@@ -9,13 +9,18 @@ use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::ratelimit::LoginLimiter;
-use crate::{action, events, meeting, message, org, ws, Db};
+use crate::{action, events, meeting, message, org, provider, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
 
     let auth_routes = Router::new()
         .route("/auth/login", post(org::login))
+        // Provider 目录:读只要已认证(每个跑模型的节点都要),
+        // 写要 ChangePolicy(见 provider.rs 模块文档)
+        .route("/providers/catalog", get(provider::catalog))
+        .route("/providers", get(provider::list_all).post(provider::upsert))
+        .route("/providers/:pid", axum::routing::delete(provider::disable))
         .route("/whoami", get(org::whoami))
         .route("/teams", get(org::list_teams).post(org::create_team))
         .route("/channels", get(org::list_channels).post(org::create_channel))

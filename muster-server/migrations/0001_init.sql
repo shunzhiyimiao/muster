@@ -162,3 +162,39 @@ CREATE INDEX IF NOT EXISTS idx_message_stream ON message(stream_seq);
 -- 所以这里只记一个**意愿**,由常驻的 agent-daemon 去认领。
 ALTER TABLE meeting ADD COLUMN IF NOT EXISTS wants_agent BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_meeting_wants_agent ON meeting(wants_agent) WHERE wants_agent;
+
+-- ---------------------------------------------------------------- provider 目录
+--
+-- **只存目录,不存密钥。** `api_key_env` 是环境变量的**名字**,值永远只在
+-- 各节点自己的环境里——服务端被攻破也拿不到任何模型凭据,与"服务端不持有
+-- 源码"是同一条姿态。
+--
+-- 为什么要集中:`locality` 决定 restricted 密级的内容能不能出门,而在此之前
+-- 它由**各节点自己的配置文件声明**。谁在自己机器上把一个云端 base_url 标成
+-- local,restricted 的会议内容就照常发出去,而系统会报告"本地"。
+-- 铁律二说"绝不静默升云"——代码严格执行了它,但判断依据的来源方位不对。
+--
+-- 写这张表要 ChangePolicy 权限:它和 cloud_max 是同一个授权面,
+-- 一个定"什么密级能上云",一个定"什么算云"。
+CREATE TABLE IF NOT EXISTS provider (
+    id            TEXT PRIMARY KEY,
+    kind          TEXT NOT NULL DEFAULT 'openai_compat',
+    base_url      TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    -- 'local' | 'cloud'
+    locality      TEXT NOT NULL,
+    display_name  TEXT,
+    -- 环境变量**名**,不是值。留空表示该通道不需要密钥(如本机 Ollama)
+    api_key_env   TEXT,
+    timeout_secs  BIGINT NOT NULL DEFAULT 120,
+    -- 停用而不删除:删掉就查不出"上周那次任务用的是哪条通道"
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    is_default    BOOLEAN NOT NULL DEFAULT FALSE,
+    created_ms    BIGINT NOT NULL,
+    updated_ms    BIGINT NOT NULL,
+    CHECK (locality IN ('local', 'cloud'))
+);
+
+-- 默认通道只能有一个。靠唯一索引而不是应用层检查:两个并发的
+-- "设为默认"请求都读到"当前没有默认",然后都写进去——应用层挡不住
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_single_default ON provider(is_default) WHERE is_default;

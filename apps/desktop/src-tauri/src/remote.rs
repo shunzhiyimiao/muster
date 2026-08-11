@@ -209,6 +209,17 @@ impl Remote {
         Ok(())
     }
 
+    /// Provider 目录。**服务端下发,节点不自己声明 locality。**
+    ///
+    /// 返回的 JSON 形状就是 `muster_provider::RegistryConfig`,可以直接喂给
+    /// `ProviderRegistry::from_config`——中间没有翻译层,因为翻译层会漂,
+    /// 而漂了的表现是"服务端说 cloud、节点解析成 local"。
+    ///
+    /// 里面**没有密钥**,只有环境变量的名字。值仍只在本机环境里。
+    pub async fn provider_catalog(&self) -> Result<serde_json::Value, String> {
+        self.get("/providers/catalog").await
+    }
+
     /// 会议的行动项。**它们是提案**——Agent 提出、人确认,
     /// 服务端不许 Agent 确认自己提的(见 muster-server/src/action.rs)。
     pub async fn action_items(&self, meeting_id: &str) -> Result<Vec<ActionItem>, String> {
