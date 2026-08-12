@@ -727,6 +727,94 @@ async fn resolve_channel(
 }
 
 
+/// 随提问一起发给模型的历史条数与字符上限。
+///
+/// 两个上限都要:只限条数,几条长回复就能把上下文撑爆;只限字符,
+/// 一百条碎消息又会把提示词稀释成噪音。
+const CTX_MAX_MSGS: usize = 24;
+const CTX_MAX_CHARS: usize = 12_000;
+
+/// 挑出要随提问发出去的历史。**取最近的**,同时受条数与字符两个上限约束。
+///
+/// ## 为什么滤掉 failed
+///
+/// 那些是「⚠️ 开流失败」「路由拒绝」这类**系统错误文本**,不是助手说过的话。
+/// 把它们喂回去,模型会当成自己上一轮的输出,然后一本正经地接着往下编。
+///
+/// ## 为什么从后往前取
+///
+/// 上下文放不下时该丢的是**最早的**。从前往后取会出现"聊了一小时,
+/// 模型只记得开头那几句"——比没有上下文更让人困惑。
+fn context_window(history: &[StoredMsg], max_msgs: usize, max_chars: usize) -> Vec<&StoredMsg> {
+    let mut picked: Vec<&StoredMsg> = Vec::new();
+    let mut chars = 0usize;
+    for m in history.iter().rev() {
+        if m.status == "failed" || m.text.trim().is_empty() {
+            continue;
+        }
+        if picked.len() >= max_msgs {
+            break;
+        }
+        let n = m.text.chars().count();
+        if chars + n > max_chars && !picked.is_empty() {
+            break;
+        }
+        chars += n;
+        picked.push(m);
+    }
+    picked.reverse(); // 发出去要时间正序
+    picked
+}
+
+/// 取某频道的对话历史。**团队频道连着服务端时向服务端要**——
+/// 那才是所有人共同看到的那份;只读本地的话,Bob 提问时模型看不见
+/// Alice 刚才聊的,"多人共用"就是空话。
+async fn channel_history(
+    remote: Option<&remote::Remote>,
+    store: &Arc<Mutex<StateStore>>,
+    channel_id: &str,
+) -> Vec<StoredMsg> {
+    match remote {
+        Some(r) if !remote::is_personal(channel_id) => r
+            .messages(channel_id, None)
+            .await
+            .map(|v| {
+                v.into_iter()
+                    .map(|m| StoredMsg {
+                        channel_id: channel_id.to_string(),
+                        thread_id: main_thread(channel_id),
+                        role: m.role,
+                        text: m.body,
+                        run_id: m.run_id,
+                        status: "done".into(),
+                        ts_ms: m.ts_ms,
+                    })
+                    .collect()
+            })
+            // 拉不到历史不该让提问发不出去:退化成无上下文,与从前一致
+            .unwrap_or_default(),
+        _ => store
+            .lock()
+            .unwrap()
+            .thread_history(&main_thread(channel_id))
+            .unwrap_or_default(),
+    }
+}
+
+/// `record_msg` 的别名,参数顺序与 `StateStore::insert` 一致,
+/// 便于把原地的本地写换成"本地或服务端"而不动参数。
+async fn record_msg_body(
+    remote: Option<&remote::Remote>,
+    store: &Arc<Mutex<StateStore>>,
+    channel_id: &str,
+    role: &str,
+    text: &str,
+    run_id: Option<&str>,
+    status: &str,
+) -> Result<(), String> {
+    record_msg(remote, store, channel_id, role, text, run_id, status).await
+}
+
 /// 一条消息该记在哪:**个人频道永远本地,团队频道连着服务端时走服务端**。
 ///
 /// 服务端写失败**不静默降级到本地**:那会让人以为发到了团队、其实只存在自己
@@ -1104,7 +1192,11 @@ async fn send_message(
                 })
                 .map_err(|er| format!("审计写入失败:{er}"))?;
             let msg = e.to_string();
-            store.lock().unwrap().insert(
+            // 路由拒绝也广播:队友该知道这个频道的密级挡下了什么,
+            // 而不是只看见一个没人回答的问题
+            let _ = record_msg_body(
+                remote_of(&state).as_ref(),
+                &store,
                 &channel.id,
                 "agent",
                 &format!("⛔ 路由拒绝(fail-closed,绝不静默升云)\n{msg}"),
@@ -1178,8 +1270,27 @@ async fn send_message(
     .to_string();
     let request_bytes = request_repr.len() as u64;
 
+    // 带上本频道的历史。**在 record_msg 之后取**——刚写进去的那条提问
+    // 已经在里面了,所以下面要把它排除,否则模型会看到同一句问两遍。
+    let history = channel_history(rmt.as_ref(), &store, &channel.id).await;
+    let ctx = context_window(&history, CTX_MAX_MSGS, CTX_MAX_CHARS);
+    let mut messages = Vec::with_capacity(ctx.len() + 2);
+    messages.push(ChatMessage::system(SYSTEM_PROMPT));
+    for m in &ctx {
+        // 刚写进去的这一问不重复放
+        if m.role == "user" && m.text == text {
+            continue;
+        }
+        messages.push(if m.role == "user" {
+            ChatMessage::user(m.text.clone())
+        } else {
+            ChatMessage::assistant(m.text.clone())
+        });
+    }
+    messages.push(ChatMessage::user(text.clone()));
+
     let req = ChatRequest {
-        messages: vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(text.clone())],
+        messages,
         run_id: Some(run_id.clone()),
         ..Default::default()
     };
@@ -1188,7 +1299,18 @@ async fn send_message(
     let mut stream = match resolution.provider.chat_stream(req).await {
         Ok(s) => s,
         Err(e) => {
-            store.lock().unwrap().insert(&channel.id, "agent", &format!("⚠️ 开流失败:{e}"), Some(&run_id), "failed");
+            // 失败也广播:被路由拒绝 / 开流失败时,队友只看到你的问题挂在那儿
+            // 没有回答,完全看不出发生了什么
+            let _ = record_msg(
+                rmt.as_ref(),
+                &store,
+                &channel.id,
+                "agent",
+                &format!("⚠️ 开流失败:{e}"),
+                Some(&run_id),
+                "failed",
+            )
+            .await;
             app.emit(
                 "task-failed",
                 FailPayload { run_id: run_id.clone(), channel_id: channel.id.clone(), message: format!("开流失败:{e}") },
@@ -1261,7 +1383,9 @@ async fn send_message(
 
     match stream_err {
         Some(msg) => {
-            store.lock().unwrap().insert(
+            let _ = record_msg_body(
+                rmt.as_ref(),
+                &store,
                 &channel.id,
                 "agent",
                 &format!("{full}\n\n⚠️ 中流失败:{msg}"),
@@ -1437,7 +1561,11 @@ async fn run_workspace_task(
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
-    store.lock().unwrap().insert(&channel.id, "user", &format!("▶ 任务:{text}"), None, "done");
+    // **上服务端。** 只写本地的话,队友完全看不见你在这个频道跑了什么任务
+    // ——而团队频道存在的理由就是彼此看得见
+    let rmt = remote_of(&state);
+    record_msg(rmt.as_ref(), &store, &channel.id, "user", &format!("▶ 任务:{text}"), None, "done")
+        .await?;
     // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
     let transcript = Arc::new(Mutex::new(String::new()));
 
@@ -1474,12 +1602,18 @@ async fn run_workspace_task(
         Ok(s) => {
             let status = if s.outcome == "success" { "done" } else { "failed" };
             let text = if saved.is_empty() { s.final_text.clone() } else { saved };
-            store.lock().unwrap().insert(&channel.id, "agent", &text, Some(&run_id), status);
+            // 结果同样要广播。失败也广播——**失败对队友一样是信息**,
+            // 而且比"问题挂在那儿没有回答"清楚得多
+            let _ =
+                record_msg(rmt.as_ref(), &store, &channel.id, "agent", &text, Some(&run_id), status)
+                    .await;
             Ok(s.run_id)
         }
         // Model 错误的 UI 反馈已由 Finished(failed:stream) 事件完成,不重复发。
         Err(RunnerError::Model(msg)) => {
-            store.lock().unwrap().insert(
+            let _ = record_msg_body(
+                rmt.as_ref(),
+                &store,
                 &channel.id,
                 "agent",
                 &format!("{saved}\n\n⚠️ 中流失败(已重试一次):{msg}"),
@@ -1504,7 +1638,16 @@ async fn run_workspace_task(
             Ok(run_id)
         }
         Err(e) => {
-            store.lock().unwrap().insert(&channel.id, "agent", &format!("⚠️ {e}"), Some(&run_id), "failed");
+            let _ = record_msg(
+                rmt.as_ref(),
+                &store,
+                &channel.id,
+                "agent",
+                &format!("⚠️ {e}"),
+                Some(&run_id),
+                "failed",
+            )
+            .await;
             app.emit(
                 "task-failed",
                 FailPayload { run_id: run_id.clone(), channel_id: channel.id, message: e.to_string() },
@@ -2940,5 +3083,67 @@ mod fork_store_tests {
         let got: Vec<_> =
             s.thread_history(&main_thread("c1")).unwrap().into_iter().map(|m| m.text).collect();
         assert_eq!(got, vec!["老消息一", "老回复一"], "老库的消息没有被回填到主线程");
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    fn msg(role: &str, text: &str, status: &str) -> StoredMsg {
+        StoredMsg {
+            channel_id: "c1".into(),
+            thread_id: main_thread("c1"),
+            role: role.into(),
+            text: text.into(),
+            run_id: None,
+            status: status.into(),
+            ts_ms: 0,
+        }
+    }
+
+    /// 放不下时丢的是**最早的**。
+    ///
+    /// 从前往后取会出现"聊了一小时,模型只记得开头那几句"——
+    /// 比完全没有上下文更让人困惑,因为它看起来在记事,记的却是错的那头。
+    #[test]
+    fn keeps_the_most_recent_and_stays_in_order() {
+        let h: Vec<_> = (1..=6).map(|i| msg("user", &format!("第{i}问"), "done")).collect();
+        let got: Vec<_> = context_window(&h, 3, 9999).iter().map(|m| m.text.clone()).collect();
+        assert_eq!(got, vec!["第4问", "第5问", "第6问"], "该留最近三条,且时间正序");
+    }
+
+    /// 失败的系统文本不进上下文。
+    ///
+    /// 「⚠️ 开流失败」不是助手说过的话。喂回去,模型会当成自己上一轮的输出,
+    /// 然后一本正经地接着往下编。
+    #[test]
+    fn failed_system_text_is_not_context() {
+        let h = vec![
+            msg("user", "问一", "done"),
+            msg("agent", "⚠️ 开流失败:连接超时", "failed"),
+            msg("user", "问二", "done"),
+        ];
+        let got: Vec<_> = context_window(&h, 10, 9999).iter().map(|m| m.text.clone()).collect();
+        assert_eq!(got, vec!["问一", "问二"]);
+    }
+
+    /// 两个上限都生效,而且字符上限不该把结果清空。
+    #[test]
+    fn both_caps_apply_and_one_message_always_survives() {
+        let h = vec![msg("user", &"甲".repeat(50), "done"), msg("user", &"乙".repeat(50), "done")];
+        let got = context_window(&h, 10, 60);
+        assert_eq!(got.len(), 1, "字符上限只放得下一条");
+        assert!(got[0].text.starts_with('乙'), "留下的该是最近那条");
+
+        // 单条就超上限时也不能返回空:那等于悄悄退化成无上下文
+        let big = vec![msg("user", &"丙".repeat(500), "done")];
+        assert_eq!(context_window(&big, 10, 10).len(), 1, "单条超限也要保留,否则等于没有上下文");
+    }
+
+    #[test]
+    fn empty_text_is_skipped() {
+        let h = vec![msg("agent", "   ", "done"), msg("user", "问", "done")];
+        assert_eq!(context_window(&h, 10, 9999).len(), 1);
     }
 }
