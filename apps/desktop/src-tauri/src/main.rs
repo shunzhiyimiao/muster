@@ -1855,27 +1855,35 @@ async fn fork_to_personal(
     }
 
     let src = thread_id.unwrap_or_else(|| main_thread(&channel_id));
-    let new_id = format!("fork:{}", uuid_like());
+    let personal_main = main_thread("personal");
     {
         let st = store.lock().unwrap();
-        st.create_thread(
-            &new_id,
+        // **追加到个人主线程,不新建线程。**
+        //
+        // 同频道分叉要新线程(那是"另一条走法");但拉到个人空间的意图是
+        // "带过来接着聊",而"接着聊"发生在主线程上。落进一条界面不显示的
+        // 分支里,等于什么都没发生——实测就是这个结果。
+        //
+        // 来源不靠线程行记录,靠下面这条分隔线 + 审计链里的 session.lock.raise
+        // (它记着是哪个频道把密级抬上去的)。
+        st.insert_in(
+            &personal_main,
             "personal",
-            &format!("来自 #{} 的 {} 条", src_channel.name, keep),
-            Some(&src),
-            keep,
-            // 跨频道只能 copied:referenced 要顺着 forked_from 回读父线程,
-            // 而父线程的历史在**服务端**,个人空间读不到它
-            fork::Persistence::Copied,
-        )
-        .map_err(|e| format!("建线程失败:{e}"))?;
+            "system",
+            &format!(
+                "↘ 以下 {keep} 条来自 #{}(密级 {}),不是在这里说的",
+                src_channel.name, format!("{:?}", src_channel.level).to_lowercase()
+            ),
+            None,
+            "done",
+        );
         for m in history.iter().take(keep) {
-            st.insert_in(&new_id, "personal", &m.role, &m.text, m.run_id.as_deref(), &m.status);
+            st.insert_in(&personal_main, "personal", &m.role, &m.text, m.run_id.as_deref(), &m.status);
         }
     }
 
     Ok(ForkResult {
-        thread_id: new_id,
+        thread_id: personal_main,
         forked_from: src,
         inherited: keep,
         reopened_prompt: reopened,

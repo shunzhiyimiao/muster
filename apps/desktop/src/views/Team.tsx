@@ -50,28 +50,29 @@ export function ChannelView({
           <div className="p-4">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: T.indigo }}>
               <Cast size={12} /> 个人会话串流
-              <span className="flex items-center gap-1 ml-1 px-1.5 py-0.5 rounded-md text-[10px]" style={{ background: T.red, color: "#fff" }}>
-                <span className="w-1.5 h-1.5 rounded-full lv" style={{ background: "#fff" }} />LIVE
+              <span className="ml-1 px-1.5 py-0.5 rounded-md text-[10px]" style={{ background: T.soft, color: T.sub }}>
+                未实现
               </span>
             </div>
-            <div className="text-sm font-bold mt-1.5">Alice 正在串流 · 与小七的私有会话</div>
+            {/* 原来这里是「LIVE」红标 + 闪烁点 + 「Alice 正在串流」+「12 人围观中」
+                + 一句正在打字的小七发言(还带波形动画)。**全部是假的**——
+                串流后端一行都没有,那句发言是写死的字符串,12 是个常数。
+                看的人会以为此刻真有人在围观自己的私有会话。 */}
+            <div className="text-sm font-bold mt-1.5">串流通道尚未实现</div>
             <div className="flex items-center gap-2 mt-1.5 text-[10.5px] flex-wrap" style={{ color: T.sub }}>
-              与小七(A-007) · <RouteTag /> · <Tag tone="amb">internal</Tag> · 串流通道 v1.x(演示)
+              下面是**做出来之后**的样子,不是此刻正在发生的事
             </div>
-            <div className="mt-2.5 rounded-xl px-3 py-2 text-[11.5px] leading-relaxed" style={{ background: "#fff", color: "#454A5C" }}>
-              <b style={{ color: T.indigo }}>小七:</b> 兼容层 diff 已备好,灰度期双写…
-              <span className="ml-1.5 inline-flex gap-0.5 align-middle">
-                {[0, 1, 2].map((i) => (
-                  <span key={i} className="wv rounded-full" style={{ width: 3, height: 9, background: T.indigo, animationDelay: `${i * 0.14}s` }} />
-                ))}
-              </span>
+            <div className="mt-2.5 rounded-xl px-3 py-2 text-[11.5px] leading-relaxed" style={{ background: "#fff", color: T.faint }}>
+              队友会在这里看到你与小七的对话(只读),接手需你授权,全程计入审计。
             </div>
           </div>
           <div className="flex items-center gap-2 px-4 py-2.5" style={{ borderTop: "1px solid rgba(91,91,245,.25)" }}>
             <button disabled title="串流通道为 v1.x 演示,尚未实现" className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: T.indigo, color: "#fff" , opacity: 0.45, cursor: "not-allowed"}}>
               <Eye size={12} /> 加入围观
             </button>
-            <span className="text-[10.5px]" style={{ color: T.sub }}>12 人围观中 · 只读投屏,接手需 Alice 授权</span>
+            {/* 围观人数需要多端在线状态(P3),单机部署下没有这个数。
+                写一个 12 出来,比不写糟得多。 */}
+            <span className="text-[10.5px]" style={{ color: T.faint }}>围观人数需要多端在线状态,尚无</span>
           </div>
         </div>
       )}

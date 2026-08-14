@@ -8,7 +8,7 @@ import { T } from "./theme";
 
 export interface Msg {
   key: string;
-  role: "user" | "agent";
+  role: "user" | "agent" | "system";
   text: string;
   runId?: string;
   status: "streaming" | "done" | "failed" | "refused";
@@ -134,7 +134,8 @@ export function useChat(onActivity: () => void): ChatState {
       rows.forEach((r, i) => {
         (grouped[r.channel_id] ??= []).push({
           key: `db-${i}-${r.ts_ms}`,
-          role: r.role === "user" ? "user" : "agent",
+          // system 要保住:它是来源分隔线,归成 agent 就成了小七说的话
+          role: r.role === "user" ? "user" : r.role === "system" ? "system" : "agent",
           text: r.text,
           runId: r.run_id ?? undefined,
           status: (["done", "failed", "refused"].includes(r.status) ? r.status : "done") as Msg["status"],
@@ -274,7 +275,18 @@ export function ChatPane({
           </div>
         )}
         {list.map((m, i) =>
-          m.role === "user" ? (
+          /* 来源分隔线。**必须单独渲染**——落到 agent 分支的话,
+             "以下 N 条来自 #platform" 会显示成小七说的话,那是伪造来源。 */
+          m.role === "system" ? (
+            <div key={m.key} className="flex items-center gap-2.5 py-1">
+              <div className="flex-1 h-px" style={{ background: T.line }} />
+              <span className="text-[10.5px] px-2 py-0.5 rounded-md whitespace-nowrap"
+                    style={{ background: T.soft, color: T.sub }}>
+                {m.text}
+              </span>
+              <div className="flex-1 h-px" style={{ background: T.line }} />
+            </div>
+          ) : m.role === "user" ? (
             <div key={m.key} className="flex gap-2.5 max-w-2xl group">
               <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold" style={{ background: `${T.indigo}18`, color: T.indigo }}>
                 A
