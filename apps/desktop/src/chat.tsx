@@ -1,8 +1,8 @@
 /* 真实聊天/任务状态机:与后端事件通道对接(task-start/delta/done/refused/failed) */
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Bot, Play, Send } from "lucide-react";
-import { api, Channel, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
+import { Bot, Play, Plus, Send } from "lucide-react";
+import { api, Channel, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg, ThreadInfo } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -23,11 +23,11 @@ export interface ChatState {
   lastFail: FailPayload | null;
   /// P1-04:最近一次任务的真实代码变更(worktree 模式)。
   lastDiff: DiffPayload | null;
-  send: (channelId: string, text: string, asTask: boolean) => void;
+  send: (channelId: string, text: string, asTask: boolean, threadId?: string | null) => void;
   /// C1:把持久化历史灌进尚未有内容的频道(避免与本次会话消息重复)。
   hydrate: (rows: StoredMsg[]) => void;
   /** 强制重读某个频道(hydrate 只填空频道,刷新不了已有内容的) */
-  reload: (channelId: string) => Promise<void>;
+  reload: (channelId: string, threadId?: string | null) => Promise<void>;
   /** C2:服务端推来的一条(别人发的,或自己在别的客户端发的) */
   pushRemote: (channelId: string, role: string, text: string, ts: number) => void;
 }
@@ -105,7 +105,7 @@ export function useChat(onActivity: () => void): ChatState {
     };
   }, []);
 
-  const send = (channelId: string, text: string, asTask: boolean) => {
+  const send = (channelId: string, text: string, asTask: boolean, threadId?: string | null) => {
     const t = text.trim();
     if (!t || busy[channelId]) return;
     const userKey = `u-${Date.now()}`;
@@ -120,7 +120,7 @@ export function useChat(onActivity: () => void): ChatState {
     }));
     pending.current[channelId] = [...(pending.current[channelId] ?? []), agentKey];
     setBusy((b) => ({ ...b, [channelId]: true }));
-    (asTask ? api.runTask(channelId, t) : api.send(channelId, t)).catch((e) => {
+    (asTask ? api.runTask(channelId, t, threadId) : api.send(channelId, t, threadId)).catch((e) => {
       setMsgs((prev) => ({
         ...prev,
         [channelId]: (prev[channelId] ?? []).map((m) => (m.key === agentKey ? { ...m, status: "failed", text: `⚠️ ${e}` } : m)),
@@ -159,10 +159,12 @@ export function useChat(onActivity: () => void): ChatState {
   /// hydrate 只填空频道(见上),于是一个已有内容的频道没有任何路径能刷新——
   /// "拉到个人空间"写进了库,界面却永远看不见,要重启应用才出现。
   /// 这条是那个缺口的补丁,所以它必须是替换而不是合并。
-  const reload = async (channelId: string) => {
-    const rows = await api.historyBulk(600);
-    const list = rows.filter((r) => r.channel_id === channelId).map(toMsg);
-    setMsgs((prev) => ({ ...prev, [channelId]: list }));
+  const reload = async (channelId: string, threadId?: string | null) => {
+    // 指定了对话就读那一条;否则读整个频道(启动与团队频道走这条)
+    const rows = threadId
+      ? await api.threadHistory(threadId)
+      : (await api.historyBulk(600)).filter((r) => r.channel_id === channelId);
+    setMsgs((prev) => ({ ...prev, [channelId]: rows.map(toMsg) }));
   };
 
   /// 服务端推来的消息。**按 (ts, text) 去重**:自己发的那条既走了 HTTP 响应
@@ -219,7 +221,7 @@ export function ChatPane({
       return;
     }
     setHint(null);
-    chat.send(channel.id, draft, asTask);
+    chat.send(channel.id, draft, asTask, active);
     setDraft("");
   };
 
@@ -229,6 +231,47 @@ export function ChatPane({
     all.slice(0, idx).filter((x) => x.role === "user").length;
 
   const [forkNote, setForkNote] = useState<string | null>(null);
+
+  /* ---------------------------------------------------------------- 多对话
+   *
+   * **只在个人空间。** 团队频道的历史在服务端,一个频道就是一条流——
+   * 本地再分几条对话,只会与所有人看到的那份分岔,而别人永远看不到你的分支。
+   */
+  const [threads, setThreads] = useState<ThreadInfo[]>([]);
+  const [active, setActive] = useState<string | null>(null);
+  const multi = channel.personal;
+
+  const refreshThreads = async () => {
+    if (!multi) return;
+    try {
+      setThreads(await api.listThreads(channel.id));
+    } catch {
+      /* 列不出来就只用主对话,不该因此发不出消息 */
+    }
+  };
+  useEffect(() => {
+    setActive(null);
+    void refreshThreads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel.id]);
+
+  const switchTo = async (id: string | null) => {
+    setActive(id);
+    await chat.reload(channel.id, id);
+  };
+
+  const addConversation = async () => {
+    try {
+      const t = await api.newConversation(channel.id);
+      await refreshThreads();
+      await switchTo(t.id);
+      setForkNote("已开一条新对话。它是空的,与其他对话互不影响。");
+      setTimeout(() => setForkNote(null), 5000);
+    } catch (e) {
+      setForkNote(`新建失败:${e}`);
+      setTimeout(() => setForkNote(null), 6000);
+    }
+  };
 
   /// 拉到个人空间。
   ///
@@ -243,6 +286,7 @@ export function ChatPane({
       const r = await api.forkToPersonal(channel.id, null, nth);
       // 写进库不等于看得见:个人频道已有内容,hydrate 填不进去
       await chat.reload("personal");
+      await refreshThreads();
       // **抬升必须说出来。** 悄悄把个人空间锁到 restricted,人下次发现是
       // "为什么我的私人会话突然不能用云模型了",而那时已经找不到原因
       const raised =
@@ -263,7 +307,9 @@ export function ChatPane({
 
   const forkAt = async (nth: number, prompt: string) => {
     try {
-      const r = await api.forkConversation(channel.id, null, nth, "copied");
+      const r = await api.forkConversation(channel.id, active, nth, "copied");
+      await refreshThreads();
+      await switchTo(r.thread_id);
       // 把被切掉的那条提问放回输入框——codex 的 Esc Esc 就是干这个的
       setDraft(r.reopened_prompt ?? prompt);
       setForkNote(`已分叉:继承 ${r.inherited} 条,原会话未改动。改完这句再发。`);
@@ -276,6 +322,48 @@ export function ChatPane({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {/* 对话切换条。分叉出来的、拉过来的、新建的,在使用者眼里是同一种东西
+          ——**左边列表里的一行**,所以放在一起。 */}
+      {multi && threads.length > 0 && (
+        <div className="flex items-center gap-1.5 px-5 pt-3 flex-wrap">
+          {threads.map((t) => {
+            const id = t.id.startsWith("main:") ? null : t.id;
+            const on = active === id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => switchTo(id)}
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-lg whitespace-nowrap"
+                style={{
+                  background: on ? T.indigo : T.soft,
+                  color: on ? "#fff" : T.sub,
+                }}
+                title={
+                  t.forked_from
+                    ? `继承 ${t.inherited_count} 条,来自 ${t.forked_from}`
+                    : t.id.startsWith("main:")
+                      ? "这个频道原本的那条对话"
+                      : "新开的空对话"
+                }
+              >
+                {t.title}
+                {t.inherited_count > 0 && (
+                  <span style={{ opacity: 0.7 }}> ·{t.inherited_count}</span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            onClick={addConversation}
+            className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg"
+            style={{ border: `1px dashed ${T.line}`, color: T.faint }}
+            title="开一条空对话,与其他对话互不影响"
+          >
+            <Plus size={11} /> 新对话
+          </button>
+        </div>
+      )}
+
       {forkNote && (
         <div className="mx-5 mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
           {forkNote}
@@ -315,14 +403,19 @@ export function ChatPane({
                   {/* 从这一问之前分叉。**父线程不动**——所以是分支不是改写。
                       分叉后这条提问回到输入框里等你改,那才是这个功能的意义,
                       不是"复制一份对话"。 */}
-                  <button
-                    onClick={() => forkAt(nthUserBefore(list, i), m.text)}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
-                    style={{ background: T.soft, color: T.sub }}
-                    title="从这一问之前分叉出一条新会话,并把它放回输入框重写"
-                  >
-                    从这里分叉
-                  </button>
+                  {/* 分叉只在个人空间。团队频道里分叉会建一条**只有你看得见的
+                      本地分支**,而团队频道的意义就是彼此看得见——
+                      那边要的是「拉到个人空间」。 */}
+                  {multi && (
+                    <button
+                      onClick={() => forkAt(nthUserBefore(list, i), m.text)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
+                      style={{ background: T.soft, color: T.sub }}
+                      title="从这一问之前分叉出一条新对话,并把它放回输入框重写"
+                    >
+                      从这里分叉
+                    </button>
+                  )}
                   {/* 团队 → 个人。个人空间里没有这个按钮:它已经是终点了。
                       密级会跟着搬过去(E3 棘轮),下面的提示条会说清楚。 */}
                   {!channel.personal && (

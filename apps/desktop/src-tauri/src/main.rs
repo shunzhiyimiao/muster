@@ -916,13 +916,14 @@ async fn turn_sources_and_persist(
 async fn record_msg_body(
     remote: Option<&remote::Remote>,
     store: &Arc<Mutex<StateStore>>,
+    thread_id: &str,
     channel_id: &str,
     role: &str,
     text: &str,
     run_id: Option<&str>,
     status: &str,
 ) -> Result<(), String> {
-    record_msg(remote, store, channel_id, role, text, run_id, status).await
+    record_msg(remote, store, thread_id, channel_id, role, text, run_id, status).await
 }
 
 /// 一条消息该记在哪:**个人频道永远本地,团队频道连着服务端时走服务端**。
@@ -932,6 +933,9 @@ async fn record_msg_body(
 async fn record_msg(
     remote: Option<&remote::Remote>,
     store: &Arc<Mutex<StateStore>>,
+    // 写进哪条本地对话。**团队频道忽略它**——那边的历史在服务端,
+    // 一个频道就是一条流,本地再分线程只会与所有人看到的那份分岔。
+    thread_id: &str,
     channel_id: &str,
     role: &str,
     text: &str,
@@ -943,7 +947,7 @@ async fn record_msg(
             r.send(channel_id, text, role, run_id).await.map(|_| ())
         }
         _ => {
-            store.lock().unwrap().insert(channel_id, role, text, run_id, status);
+            store.lock().unwrap().insert_in(thread_id, channel_id, role, text, run_id, status);
             Ok(())
         }
     }
@@ -1262,6 +1266,8 @@ async fn send_message(
     state: State<'_, AppState>,
     channel_id: String,
     text: String,
+    // 写进哪条对话。None = 主对话(团队频道永远是它)。
+    thread_id: Option<String>,
 ) -> Result<String, String> {
     let (router, audit, store, run_seq) = {
         let guard = state.0.lock().unwrap();
@@ -1272,6 +1278,7 @@ async fn send_message(
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let session_id = format!("session:{}", channel.id);
     let rmt = remote_of(&state);
+    let thread = thread_id.clone().unwrap_or_else(|| main_thread(&channel.id));
 
     // ---- E3 会话棘轮:密级只升不降
     //
@@ -1281,7 +1288,7 @@ async fn send_message(
     // "为什么是这个级别"始终指向信息量最大的肇因。
     let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_sources(&channel))
         .await?;
-    record_msg(rmt.as_ref(), &store, &channel.id, "user", &text, None, "done").await?;
+    record_msg(rmt.as_ref(), &store, &thread, &channel.id, "user", &text, None, "done").await?;
 
     // ---- E2 路由决策(含探活,fail-closed)
     let route_req = RouteRequest {
@@ -1315,6 +1322,7 @@ async fn send_message(
             let _ = record_msg_body(
                 remote_of(&state).as_ref(),
                 &store,
+                &thread,
                 &channel.id,
                 "agent",
                 &format!("⛔ 路由拒绝(fail-closed,绝不静默升云)\n{msg}"),
@@ -1422,6 +1430,7 @@ async fn send_message(
             let _ = record_msg(
                 rmt.as_ref(),
                 &store,
+                &thread,
                 &channel.id,
                 "agent",
                 &format!("⚠️ 开流失败:{e}"),
@@ -1504,6 +1513,7 @@ async fn send_message(
             let _ = record_msg_body(
                 rmt.as_ref(),
                 &store,
+                &thread,
                 &channel.id,
                 "agent",
                 &format!("{full}\n\n⚠️ 中流失败:{msg}"),
@@ -1521,7 +1531,7 @@ async fn send_message(
             .ok();
         }
         None => {
-            let _ = record_msg(rmt.as_ref(), &store, &channel.id, "agent", &full, Some(&run_id), "done").await;
+            let _ = record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &full, Some(&run_id), "done").await;
             app.emit(
                 "task-done",
                 DonePayload {
@@ -1664,6 +1674,7 @@ async fn run_workspace_task(
     state: State<'_, AppState>,
     channel_id: String,
     text: String,
+    thread_id: Option<String>,
 ) -> Result<String, String> {
     let (router, audit, store, run_seq) = {
         let guard = state.0.lock().unwrap();
@@ -1682,7 +1693,8 @@ async fn run_workspace_task(
     // **上服务端。** 只写本地的话,队友完全看不见你在这个频道跑了什么任务
     // ——而团队频道存在的理由就是彼此看得见
     let rmt = remote_of(&state);
-    record_msg(rmt.as_ref(), &store, &channel.id, "user", &format!("▶ 任务:{text}"), None, "done")
+    let thread = thread_id.clone().unwrap_or_else(|| main_thread(&channel.id));
+    record_msg(rmt.as_ref(), &store, &thread, &channel.id, "user", &format!("▶ 任务:{text}"), None, "done")
         .await?;
     // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
     let transcript = Arc::new(Mutex::new(String::new()));
@@ -1728,7 +1740,7 @@ async fn run_workspace_task(
             // 结果同样要广播。失败也广播——**失败对队友一样是信息**,
             // 而且比"问题挂在那儿没有回答"清楚得多
             let _ =
-                record_msg(rmt.as_ref(), &store, &channel.id, "agent", &text, Some(&run_id), status)
+                record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status)
                     .await;
             Ok(s.run_id)
         }
@@ -1737,6 +1749,7 @@ async fn run_workspace_task(
             let _ = record_msg_body(
                 rmt.as_ref(),
                 &store,
+                &thread,
                 &channel.id,
                 "agent",
                 &format!("{saved}\n\n⚠️ 中流失败(已重试一次):{msg}"),
@@ -1764,6 +1777,7 @@ async fn run_workspace_task(
             let _ = record_msg(
                 rmt.as_ref(),
                 &store,
+                &thread,
                 &channel.id,
                 "agent",
                 &format!("⚠️ {e}"),
@@ -1890,13 +1904,56 @@ async fn fork_to_personal(
     })
 }
 
+/// 开一条空对话。
+///
+/// 与 fork 的区别:fork 继承一段历史,这个从零开始。都落在同一张 thread 表上,
+/// 因为对使用者来说它们是同一种东西——**左边列表里的一行**。
+#[tauri::command]
+fn new_conversation(
+    state: State<'_, AppState>,
+    channel_id: String,
+    title: Option<String>,
+) -> Result<ThreadInfo, String> {
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let id = format!("conv:{}", uuid_like());
+    let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "新对话".into());
+    store
+        .lock()
+        .unwrap()
+        .create_thread(&id, &channel_id, &title, None, 0, fork::Persistence::Copied)
+        .map_err(|e| format!("新建对话失败:{e}"))?;
+    Ok(ThreadInfo {
+        id,
+        title,
+        forked_from: None,
+        inherited_count: 0,
+        persistence: "copied".into(),
+        created_ms: now_ms() as i64,
+    })
+}
+
+/// 某频道的全部对话,**含主对话**。
+///
+/// 主对话不在 thread 表里(它是老库回填出来的隐式概念),但列表里必须有它
+/// ——不然界面上"当前这条"没有名字,而它恰恰是绝大多数人一直待着的那条。
 #[tauri::command]
 fn list_threads(state: State<'_, AppState>, channel_id: String) -> Result<Vec<ThreadInfo>, String> {
     let store = {
         let guard = state.0.lock().unwrap();
         guard.as_ref().ok_or("后端未初始化")?.state.clone()
     };
-    let v = store.lock().unwrap().threads_of(&channel_id).map_err(|e| e.to_string())?;
+    let mut v = vec![ThreadInfo {
+        id: main_thread(&channel_id),
+        title: "主对话".into(),
+        forked_from: None,
+        inherited_count: 0,
+        persistence: "copied".into(),
+        created_ms: 0,
+    }];
+    v.extend(store.lock().unwrap().threads_of(&channel_id).map_err(|e| e.to_string())?);
     Ok(v)
 }
 
@@ -3022,6 +3079,7 @@ fn main() {
             fork_conversation,
             fork_to_personal,
             list_threads,
+            new_conversation,
             thread_history,
             remote_action_items,
             remote_decide_action,

@@ -296,9 +296,13 @@ export interface StoredMsg {
 
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
-  send: (channelId: string, text: string) => invoke<string>("send_message", { channelId, text }),
-  runTask: (channelId: string, text: string) =>
-    invoke<string>("run_workspace_task", { channelId, text }),
+  /** `threadId` 为空 = 主对话。团队频道永远是主对话:那边的历史在服务端。 */
+  send: (channelId: string, text: string, threadId?: string | null) =>
+    invoke<string>("send_message", { channelId, text, threadId: threadId ?? null }),
+  runTask: (channelId: string, text: string, threadId?: string | null) =>
+    invoke<string>("run_workspace_task", { channelId, text, threadId: threadId ?? null }),
+  newConversation: (channelId: string, title?: string) =>
+    invoke<ThreadInfo>("new_conversation", { channelId, title: title ?? null }),
   auditTail: (limit: number) => invoke<AuditRow[]>("audit_tail", { limit }),
   verifyChain: () => invoke<ChainStatus>("verify_chain"),
   toggleDrill: (on: boolean) => invoke<DrillStatus>("toggle_drill", { on }),
