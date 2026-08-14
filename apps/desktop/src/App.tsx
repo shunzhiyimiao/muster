@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Clock, Hash, Home,
   LayoutDashboard, Library, LineChart, Link2, Lock, MessageSquare, Network, Puzzle, Search,
-  Plus, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, User, Users, Video, X,
+  Pencil, Plus, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X,
 } from "lucide-react";
 import { T } from "./theme";
 import {
@@ -242,6 +242,32 @@ export default function App() {
     if (goTo) await goThread(goTo);
   };
 
+  const renameConversation = async (id: string, old: string) => {
+    const t = window.prompt("对话名称", old);
+    if (t === null || t.trim() === "" || t === old) return;
+    try {
+      await api.renameConversation(id, t.trim());
+      await refreshThreads();
+    } catch (e) {
+      setNotice(`改名失败:${e}`);
+    }
+  };
+
+  /// 删对话。**要确认**:它连消息一起删,而且删了就没了(会 VACUUM)。
+  const removeConversation = async (id: string, title: string) => {
+    if (!window.confirm(`删除「${title}」?\n\n这条对话和它的全部消息都会被删掉,不可恢复。`)) return;
+    try {
+      const n = await api.deleteConversation(id);
+      await refreshThreads();
+      // 删的正好是当前这条就退回主对话,否则界面停在一条已经不存在的对话上
+      if (thread === id) await goThread(null);
+      setNotice(`已删除「${title}」(${n} 条消息)`);
+    } catch (e) {
+      // 后端会挡主对话和被引用的父对话,原样显示它的理由
+      setNotice(String(e));
+    }
+  };
+
   const addConversation = async () => {
     try {
       const t = await api.newConversation("personal");
@@ -418,17 +444,34 @@ export default function App() {
                     {threads.map((t) => {
                       const id = t.id.startsWith("main:") ? null : t.id;
                       const on = view === "pchat" && thread === id;
+                      const isMain = t.id.startsWith("main:");
                       return (
-                        <button key={t.id} onClick={() => void goThread(id)}
-                          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[12.5px]"
-                          style={{ background: on ? T.indigo : "transparent", color: on ? "#fff" : "#5A5E70", fontWeight: on ? 600 : 400 }}
-                          title={t.forked_from ? `继承 ${t.inherited_count} 条` : t.id.startsWith("main:") ? "这个空间原本的那条对话" : "新开的空对话"}>
-                          <MessageSquare size={11} style={{ opacity: 0.7 }} />
-                          <span className="truncate">{t.title}</span>
-                          {t.inherited_count > 0 && (
-                            <span className="ml-auto text-[9px]" style={{ color: on ? "#DCDCFE" : T.faint }}>{t.inherited_count}</span>
+                        <div key={t.id} className="group flex items-center gap-1 rounded-lg"
+                          style={{ background: on ? T.indigo : "transparent" }}>
+                          <button onClick={() => void goThread(id)}
+                            className="flex-1 min-w-0 flex items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px]"
+                            style={{ color: on ? "#fff" : "#5A5E70", fontWeight: on ? 600 : 400 }}
+                            title={t.forked_from ? `继承 ${t.inherited_count} 条` : isMain ? "这个空间原本的那条对话" : "新开的空对话"}>
+                            <MessageSquare size={11} style={{ opacity: 0.7 }} />
+                            <span className="truncate">{t.title}</span>
+                            {t.inherited_count > 0 && (
+                              <span className="ml-auto text-[9px]" style={{ color: on ? "#DCDCFE" : T.faint }}>{t.inherited_count}</span>
+                            )}
+                          </button>
+                          {/* 主对话没有这两个:它不是 thread 表里的行,是这个空间本身 */}
+                          {!isMain && (
+                            <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 pr-1.5">
+                              <button onClick={() => void renameConversation(t.id, t.title)} title="改名"
+                                style={{ color: on ? "#DCDCFE" : T.faint }}>
+                                <Pencil size={10} />
+                              </button>
+                              <button onClick={() => void removeConversation(t.id, t.title)} title="删除"
+                                style={{ color: on ? "#DCDCFE" : T.faint }}>
+                                <Trash2 size={10} />
+                              </button>
+                            </span>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                     <button onClick={() => void addConversation()}

@@ -311,6 +311,10 @@ export const api = {
   publishToChannel: (threadId: string | null, nthUserMessage: number, targetChannelId: string) =>
     invoke<PublishResult>("publish_to_channel", { threadId, nthUserMessage, targetChannelId }),
   /** 某会话当前的密级底线(E3 棘轮)。界面只照着显示,判定在后端。 */
+  renameConversation: (threadId: string, title: string) =>
+    invoke<void>("rename_conversation", { threadId, title }),
+  /** 删对话连同它的消息。**主对话删不得**,被 referenced 引用的也删不得。 */
+  deleteConversation: (threadId: string) => invoke<number>("delete_conversation", { threadId }),
   sessionFloor: (sessionId: string) => invoke<Sensitivity>("session_floor", { sessionId }),
   newConversation: (channelId: string, title?: string) =>
     invoke<ThreadInfo>("new_conversation", { channelId, title: title ?? null }),

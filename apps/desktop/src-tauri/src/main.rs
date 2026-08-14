@@ -473,6 +473,7 @@ impl StateStore {
         let (where_sql, arg): (&str, Option<String>) = match sel {
             Selector::All => ("1=1", None),
             Selector::Channel(c) => ("channel_id = ?1", Some(c.clone())),
+            Selector::Thread(t) => ("thread_id = ?1", Some(t.clone())),
             Selector::Run(r) => ("run_id = ?1", Some(r.clone())),
             Selector::OlderThan(ms) => ("ts_ms < ?1", Some(ms.to_string())),
         };
@@ -511,6 +512,9 @@ impl StateStore {
             Selector::Channel(c) => {
                 self.conn.execute("DELETE FROM messages WHERE channel_id = ?1", rusqlite::params![c])?
             }
+            Selector::Thread(t) => {
+                self.conn.execute("DELETE FROM messages WHERE thread_id = ?1", rusqlite::params![t])?
+            }
             Selector::Run(r) => {
                 self.conn.execute("DELETE FROM messages WHERE run_id = ?1", rusqlite::params![r])?
             }
@@ -531,6 +535,9 @@ impl StateStore {
 enum Selector {
     All,
     Channel(String),
+    /// 一条对话。删对话走这里,而不是另写一条删除路径——
+    /// 那条路径已经处理了两件容易漏的事:**先取区间再留痕**、**删完 VACUUM**。
+    Thread(String),
     Run(String),
     OlderThan(u64),
 }
@@ -541,6 +548,7 @@ impl Selector {
         match self {
             Selector::All => "all".into(),
             Selector::Channel(c) => format!("channel:{c}"),
+            Selector::Thread(t) => format!("thread:{t}"),
             Selector::Run(r) => format!("run:{r}"),
             Selector::OlderThan(_) => match keep_days {
                 Some(d) => format!("retention:{d}d"),
@@ -553,6 +561,7 @@ impl Selector {
         match kind {
             "all" => Ok(Selector::All),
             "channel" => value.map(Selector::Channel).ok_or("缺少频道 id".into()),
+            "thread" => value.map(Selector::Thread).ok_or("缺少对话 id".into()),
             "run" => value.map(Selector::Run).ok_or("缺少 run id".into()),
             "older_than_days" => {
                 let d: u64 = value.ok_or("缺少天数")?.parse().map_err(|_| "天数不是数字")?;
@@ -2042,6 +2051,88 @@ struct PublishResult {
 
 /// 某会话的密级底线。**界面只拿它做显示与预判,真正的闸在
 /// [`publish_to_channel`] 里**——前端算的东西不能当授权依据。
+/// 改对话标题。
+#[tauri::command]
+fn rename_conversation(
+    state: State<'_, AppState>,
+    thread_id: String,
+    title: String,
+) -> Result<(), String> {
+    let t = title.trim();
+    if t.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    if thread_id.starts_with("main:") {
+        // 主对话不是 thread 表里的行,没有标题可改
+        return Err("主对话不能改名".into());
+    }
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let n = store
+        .lock()
+        .unwrap()
+        .conn
+        .execute("UPDATE thread SET title = ?2 WHERE id = ?1", rusqlite::params![&thread_id, t])
+        .map_err(|e| format!("改名失败:{e}"))?;
+    if n == 0 {
+        return Err(format!("找不到对话 {thread_id}"));
+    }
+    Ok(())
+}
+
+/// 删对话:连同它的消息一起。
+///
+/// ## 走的是已有的清理路径
+///
+/// 不另写一条删除逻辑。`purge_and_record` 已经处理了两件容易漏的事:
+/// **先取区间再留痕**(删完就问不出"删掉的是哪一段"了),
+/// 以及**删完 VACUUM**(SQLite 只标记页为空闲,正文仍在文件里,
+/// `strings` 一读就出来——对一个以"删得掉"为卖点的功能来说那是假删)。
+///
+/// ## 两种情况不许删
+///
+/// - **主对话**:它不是 thread 表里的行,是频道本身。要清空它有 purge 那条路。
+/// - **被别的对话引用**:`referenced` 存法的子对话要顺着 `forked_from` 回读
+///   父对话的历史。删了父,子对话的前半段就凭空消失了——**而它不会报错,
+///   只是内容少了一截**。
+#[tauri::command]
+fn delete_conversation(state: State<'_, AppState>, thread_id: String) -> Result<u64, String> {
+    if thread_id.starts_with("main:") {
+        return Err("主对话不能删除(它是这个空间本身)。要清空内容请用正文清理。".into());
+    }
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+
+    let children: i64 = b
+        .state
+        .lock()
+        .unwrap()
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM thread WHERE forked_from = ?1 AND persistence = 'referenced'",
+            rusqlite::params![&thread_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if children > 0 {
+        return Err(format!(
+            "有 {children} 条对话引用着它的历史。删了父对话,它们的前半段会凭空消失,\
+             而且不会报错——只是内容少了一截。先删掉那几条,或把它们改成独立存法。"
+        ));
+    }
+
+    let n = purge_and_record(b, &Selector::Thread(thread_id.clone()), None)?;
+    b.state
+        .lock()
+        .unwrap()
+        .conn
+        .execute("DELETE FROM thread WHERE id = ?1", rusqlite::params![&thread_id])
+        .map_err(|e| format!("删除对话失败:{e}"))?;
+    Ok(n)
+}
+
 #[tauri::command]
 fn session_floor(state: State<'_, AppState>, session_id: String) -> Result<Sensitivity, String> {
     let store = {
@@ -3226,6 +3317,8 @@ fn main() {
             new_conversation,
             publish_to_channel,
             session_floor,
+            rename_conversation,
+            delete_conversation,
             thread_history,
             remote_action_items,
             remote_decide_action,
@@ -3645,5 +3738,68 @@ mod ratchet_tests {
         let mut r = SessionRatchet::new();
         assert!(r.observe(&label_sources(&chan("general", Sensitivity::Open))).is_none());
         assert!(!r.is_locked());
+    }
+}
+
+#[cfg(test)]
+mod conversation_admin_tests {
+    use super::*;
+    use crate::fork::Persistence;
+
+    fn store() -> (tempfile::TempDir, StateStore) {
+        let d = tempfile::tempdir().unwrap();
+        let s = StateStore::open(d.path().join("state.db").to_str().unwrap()).unwrap();
+        (d, s)
+    }
+
+    /// 删对话只删它自己的消息,**不碰别的对话**。
+    #[test]
+    fn deleting_one_conversation_leaves_the_others_alone() {
+        let (_d, s) = store();
+        s.insert("personal", "user", "主对话的话", None, "done");
+        s.create_thread("conv:a", "personal", "A", None, 0, Persistence::Copied).unwrap();
+        s.insert_in("conv:a", "personal", "user", "A 的话", None, "done");
+        s.create_thread("conv:b", "personal", "B", None, 0, Persistence::Copied).unwrap();
+        s.insert_in("conv:b", "personal", "user", "B 的话", None, "done");
+
+        let n = s.purge(&Selector::Thread("conv:a".into())).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(s.thread_history("conv:a").unwrap().len(), 0);
+        assert_eq!(s.thread_history("conv:b").unwrap().len(), 1, "删 A 波及了 B");
+        assert_eq!(s.thread_history(&main_thread("personal")).unwrap().len(), 1, "主对话被波及");
+    }
+
+    /// **referenced 的子对话会因为父被删而少一截,且不报错。**
+    ///
+    /// 这就是 delete_conversation 要挡住这种情况的原因——测试在这里把
+    /// "不挡会怎样"钉住:内容凭空少了,而调用方一切正常。
+    #[test]
+    fn deleting_a_referenced_parent_silently_truncates_the_child() {
+        let (_d, s) = store();
+        s.insert("personal", "user", "问一", None, "done");
+        s.insert("personal", "agent", "答一", None, "done");
+        let (child, _, _) = s
+            .fork_thread(&main_thread("personal"), "personal", 9, Persistence::Referenced)
+            .unwrap();
+        assert_eq!(s.thread_history(&child).unwrap().len(), 2, "先确认继承到了");
+
+        s.purge(&Selector::Thread(main_thread("personal"))).unwrap();
+
+        // 没有任何错误,只是内容没了——所以必须在删之前就挡住
+        assert_eq!(s.thread_history(&child).unwrap().len(), 0, "这正是要防的:安静地少一截");
+    }
+
+    /// 改名只动标题,不动消息。
+    #[test]
+    fn renaming_touches_only_the_title() {
+        let (_d, s) = store();
+        s.create_thread("conv:a", "personal", "旧名", None, 0, Persistence::Copied).unwrap();
+        s.insert_in("conv:a", "personal", "user", "内容", None, "done");
+        s.conn
+            .execute("UPDATE thread SET title = ?2 WHERE id = ?1", rusqlite::params!["conv:a", "新名"])
+            .unwrap();
+        let t = s.threads_of("personal").unwrap();
+        assert_eq!(t[0].title, "新名");
+        assert_eq!(s.thread_history("conv:a").unwrap().len(), 1, "改名动了消息");
     }
 }
