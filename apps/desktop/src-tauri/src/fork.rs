@@ -160,3 +160,65 @@ mod tests {
         assert_eq!(Persistence::parse("garbage"), Persistence::Copied);
     }
 }
+
+// ---------------------------------------------------------------- 个人 → 团队
+
+use muster_route::Sensitivity;
+
+/// 能不能把个人空间的内容发到某个频道。
+///
+/// ## 这不是流程,是铁律一
+///
+/// 「密级只升不降」。个人会话被棘轮抬到 `internal` 之后,它承载的内容就是
+/// internal 的;发进一个 `open` 频道,等于**用一次转发把密级降了一级**,
+/// 而且是不可撤销的——发出去的那一刻别人已经看到了。
+///
+/// 所以判据是:**目标频道的密级必须不低于个人会话的底线**。
+///
+/// ## 为什么不是"发进去然后把频道抬上去"
+///
+/// 频道的密级是组织给的,一个人不该靠往里发东西来改它。而且频道里已有的
+/// 成员是照着原来那个密级加进来的——抬升频道等于让一批人突然有权看到
+/// 更高密级的内容。
+pub fn can_publish(floor: Sensitivity, target: Sensitivity) -> Result<(), String> {
+    if target >= floor {
+        return Ok(());
+    }
+    Err(format!(
+        "不能发到这里:你的个人会话已被抬升到 {floor:?},而这个频道是 {target:?}。\
+         发过去等于把密级降一级,而且不可撤销。\
+         要发的话,选一个密级不低于 {floor:?} 的频道。"
+    ))
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use super::*;
+    use muster_route::Sensitivity::{Internal, Open, Restricted};
+
+    #[test]
+    fn equal_or_higher_is_allowed() {
+        assert!(can_publish(Open, Open).is_ok());
+        assert!(can_publish(Open, Internal).is_ok());
+        assert!(can_publish(Open, Restricted).is_ok());
+        assert!(can_publish(Internal, Internal).is_ok());
+        assert!(can_publish(Internal, Restricted).is_ok());
+        assert!(can_publish(Restricted, Restricted).is_ok());
+    }
+
+    /// **降级一律拒绝。** 这是铁律一在这条路径上的落点。
+    ///
+    /// 发出去不可撤销——那一刻别人已经看到了,再删也没用。所以这道闸
+    /// 必须挡在发之前,不能是"发完提醒一句"。
+    #[test]
+    fn any_downgrade_is_refused() {
+        for (floor, target) in
+            [(Internal, Open), (Restricted, Open), (Restricted, Internal)]
+        {
+            let e = can_publish(floor, target).unwrap_err();
+            assert!(e.contains("不能发到这里"), "{floor:?} → {target:?} 必须拒绝");
+            // 报错要说清楚该怎么办,不能只说"不行"
+            assert!(e.contains("选一个密级不低于"), "拒绝时没告诉人下一步该做什么");
+        }
+    }
+}

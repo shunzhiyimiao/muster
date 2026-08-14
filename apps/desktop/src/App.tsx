@@ -10,7 +10,7 @@ import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
   CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut,
-  TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
+  Sensitivity, TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -212,6 +212,8 @@ export default function App() {
   const [threads, setThreads] = useState<ThreadInfo[]>([]);
   const [thread, setThread] = useState<string | null>(null); // null = 主对话
   const [convOpen, setConvOpen] = useState(true);
+  /** 个人会话的密级底线。决定哪些频道发得进去——**界面只照着显示,判定在后端**。 */
+  const [personalFloor, setPersonalFloor] = useState<Sensitivity>("open");
 
   const refreshThreads = async () => {
     try {
@@ -221,6 +223,9 @@ export default function App() {
     }
   };
   useEffect(() => { void refreshThreads(); }, []);
+  useEffect(() => {
+    api.sessionFloor("session:personal").then(setPersonalFloor).catch(() => {});
+  }, [view, thread]);
 
   const goThread = async (id: string | null) => {
     setModule("personal");
@@ -553,7 +558,9 @@ export default function App() {
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                  <ChatPane channel={personalChannel} chat={chat} thread={thread} onThreadsChanged={(g) => void onThreadsChanged(g)} />
+                  <ChatPane channel={personalChannel} chat={chat} thread={thread}
+                    onThreadsChanged={(g) => void onThreadsChanged(g)}
+                    channels={channels.filter((c) => !c.personal)} personalFloor={personalFloor} />
                 </Card>
                 <div className="w-72 shrink-0 overflow-y-auto flex flex-col gap-3">
                   <ApprovalsPanel pending={approvals} onDecided={refreshAll} canApprove={me?.can.approve_merge ?? true} />

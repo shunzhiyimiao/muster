@@ -224,6 +224,12 @@ export interface ForkResult {
   reopened_prompt: string | null;
 }
 
+export interface PublishResult {
+  channel_id: string;
+  channel_name: string;
+  sent: number;
+}
+
 export interface ThreadInfo {
   id: string;
   title: string;
@@ -301,6 +307,11 @@ export const api = {
     invoke<string>("send_message", { channelId, text, threadId: threadId ?? null }),
   runTask: (channelId: string, text: string, threadId?: string | null) =>
     invoke<string>("run_workspace_task", { channelId, text, threadId: threadId ?? null }),
+  /** 把个人空间的一段对话发到团队频道。**不可撤销**,且过密级闸。 */
+  publishToChannel: (threadId: string | null, nthUserMessage: number, targetChannelId: string) =>
+    invoke<PublishResult>("publish_to_channel", { threadId, nthUserMessage, targetChannelId }),
+  /** 某会话当前的密级底线(E3 棘轮)。界面只照着显示,判定在后端。 */
+  sessionFloor: (sessionId: string) => invoke<Sensitivity>("session_floor", { sessionId }),
   newConversation: (channelId: string, title?: string) =>
     invoke<ThreadInfo>("new_conversation", { channelId, title: title ?? null }),
   auditTail: (limit: number) => invoke<AuditRow[]>("audit_tail", { limit }),

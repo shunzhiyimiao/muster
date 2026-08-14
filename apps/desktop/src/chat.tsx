@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, Play, Send } from "lucide-react";
-import { api, Channel, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
+import { api, Channel, Sensitivity, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -196,6 +196,8 @@ export function ChatPane({
   header,
   thread = null,
   onThreadsChanged,
+  channels = [],
+  personalFloor = "open",
 }: {
   channel: Channel;
   chat: ChatState;
@@ -205,6 +207,10 @@ export function ChatPane({
   thread?: string | null;
   /** 对话列表变了(分叉 / 拉取)时通知侧栏重读;带上新对话就跳过去 */
   onThreadsChanged?: (goTo?: string) => void;
+  /** 可发往的团队频道(个人空间用) */
+  channels?: Channel[];
+  /** 个人会话当前的密级底线,决定哪些频道发得进去 */
+  personalFloor?: Sensitivity;
 }) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -241,6 +247,25 @@ export function ChatPane({
   /* 当前对话由侧栏决定(见 App.tsx)。**这里不再自己管一套**——
      同一件事两个入口,迟早出现"侧栏选了 A、发消息进了 B"。 */
   const multi = channel.personal;
+
+  /* ------------------------------------------------ 个人 → 团队(一次公开) */
+  const RANK: Record<Sensitivity, number> = { open: 0, internal: 1, restricted: 2 };
+  const [publishAt, setPublishAt] = useState<number | null>(null); // 选中的第几问
+
+  const doPublish = async (target: Channel) => {
+    const at = publishAt;
+    setPublishAt(null);
+    if (at === null) return;
+    try {
+      const r = await api.publishToChannel(thread, at, target.id);
+      setForkNote(`已转发 ${r.sent} 条到 #${r.channel_name}。两边都留了来源标记。`);
+      setTimeout(() => setForkNote(null), 9000);
+      await chat.reload("personal", thread);
+    } catch (e) {
+      setForkNote(`转发失败:${e}`);
+      setTimeout(() => setForkNote(null), 12000);
+    }
+  };
 
   /// 拉到个人空间。
   ///
@@ -290,6 +315,57 @@ export function ChatPane({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {publishAt !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{ background: "rgba(23,24,28,.42)" }}
+             onClick={() => setPublishAt(null)}>
+          <div className="w-full max-w-md rounded-2xl p-5" style={{ background: "#fff" }} onClick={(e) => e.stopPropagation()}>
+            <div className="text-[15px] font-bold">转发到哪个频道</div>
+            {/* **不可撤销要写在最前面**,不是发完才说 */}
+            <div className="mt-2 px-3 py-2 rounded-xl text-[11.5px] leading-relaxed" style={{ background: T.redSoft, color: T.red }}>
+              发出去<b>不可撤销</b>——频道里的人立刻就能看到,再删也没用。
+              你的个人会话当前密级是 <b>{personalFloor}</b>。
+            </div>
+            <div className="mt-3 flex flex-col gap-1.5 max-h-[46vh] overflow-y-auto">
+              {channels.map((c) => {
+                const blocked = RANK[c.level] < RANK[personalFloor];
+                return (
+                  <button
+                    key={c.id}
+                    disabled={blocked}
+                    onClick={() => void doPublish(c)}
+                    className="text-left px-3 py-2 rounded-xl"
+                    style={{
+                      border: `1px solid ${T.line}`,
+                      opacity: blocked ? 0.55 : 1,
+                      cursor: blocked ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12.5px] font-semibold">#{c.name}</span>
+                      <Tag tone={(c.level === "restricted" ? "red" : c.level === "internal" ? "amb" : undefined) as never}>
+                        {c.level}
+                      </Tag>
+                      <span className="ml-auto text-[10.5px]" style={{ color: T.faint }}>{c.team}</span>
+                    </div>
+                    {/* **挡掉的也列出来,并说明原因。**
+                        只显示可选项的话,人会以为频道不见了,然后去找为什么。 */}
+                    {blocked && (
+                      <div className="text-[10.5px] mt-1" style={{ color: T.red }}>
+                        密级低于你的会话({personalFloor}),发过去等于降一级——不可选
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={() => setPublishAt(null)}
+              className="mt-3 w-full text-[12px] font-semibold py-2 rounded-xl" style={{ background: T.soft, color: T.sub }}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
       {forkNote && (
         <div className="mx-5 mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
           {forkNote}
@@ -340,6 +416,17 @@ export function ChatPane({
                       title="从这一问之前分叉出一条新对话,并把它放回输入框重写"
                     >
                       从这里分叉
+                    </button>
+                  )}
+                  {/* 个人 → 团队:一次**公开**,所以只给入口,真正的动作在弹窗里 */}
+                  {multi && channels.length > 0 && (
+                    <button
+                      onClick={() => setPublishAt(nthUserBefore(list, i) + 1)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
+                      style={{ background: T.soft, color: T.sub }}
+                      title="把到这一问为止的对话转发到某个团队频道。发出去不可撤销。"
+                    >
+                      转发到频道
                     </button>
                   )}
                   {/* 团队 → 个人。个人空间里没有这个按钮:它已经是终点了。

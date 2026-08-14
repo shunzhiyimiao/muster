@@ -1920,6 +1920,138 @@ async fn fork_to_personal(
 ///
 /// 与 fork 的区别:fork 继承一段历史,这个从零开始。都落在同一张 thread 表上,
 /// 因为对使用者来说它们是同一种东西——**左边列表里的一行**。
+/// 把个人空间的一段对话**发到团队频道**。
+///
+/// ## 与反方向的根本不同
+///
+/// 「拉到个人空间」只是把内容搬进你自己的地盘,不外泄;这个方向是一次
+/// **公开**,而且**不可撤销**——发出去的那一刻别人已经看到了,再删也没用。
+///
+/// 所以这里有三道反方向没有的东西:
+///
+/// 1. **密级闸**(见 [`fork::can_publish`]):目标频道的密级必须不低于个人
+///    会话的底线。铁律一"密级只升不降"在这条路径上的落点。
+/// 2. **两边都留来源标记**:目标频道要看得出这段是从谁的个人空间来的
+///    (否则它看起来就像有人在频道里说过);个人这边也要留一条
+///    "已转发到 #X",因为**发出去不可撤销,你得看得见自己发过什么**。
+/// 3. **确认由界面负责**:后端不做二次确认,但也不给"静默转发"留口子——
+///    这个命令只能由那个弹窗调起。
+#[tauri::command]
+async fn publish_to_channel(
+    state: State<'_, AppState>,
+    thread_id: Option<String>,
+    nth_user_message: usize,
+    target_channel_id: String,
+) -> Result<PublishResult, String> {
+    if remote::is_personal(&target_channel_id) {
+        return Err("目标不能是个人空间".into());
+    }
+    let (store, audit) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.state.clone(), b.audit.clone())
+    };
+    let target = resolve_channel(&state, &target_channel_id).await?;
+
+    // ---- 密级闸。**挡在发之前**,不能是"发完提醒一句"
+    let floor = store.lock().unwrap().load_ratchet("session:personal").floor();
+    fork::can_publish(floor, target.level)?;
+
+    let src = thread_id.unwrap_or_else(|| main_thread("personal"));
+    let history = store.lock().unwrap().thread_history(&src).map_err(|e| e.to_string())?;
+    let keep = fork::truncate_before_nth_user_message(&history, nth_user_message);
+    if keep == 0 {
+        return Err("这一问之前没有内容,没有可转发的".into());
+    }
+
+    let rmt = remote_of(&state);
+    let me = rmt.as_ref().map(|r| r.display_name.clone()).unwrap_or_else(|| "我".into());
+    let target_thread = main_thread(&target.id);
+
+    // ---- 发过去,第一条是来源标记
+    //
+    // 不标的话,这段话在频道里看起来就像有人当场说的——而它其实是从某人的
+    // 私有空间搬来的,上下文完全不同。
+    record_msg(
+        rmt.as_ref(),
+        &store,
+        &target_thread,
+        &target.id,
+        "system",
+        &format!("↗ 以下 {keep} 条来自 {me} 的个人空间,不是在本频道说的"),
+        None,
+        "done",
+    )
+    .await?;
+    for m in history.iter().take(keep) {
+        // 转发失败要停,不能发一半:半段对话比不发更容易被误读
+        record_msg(
+            rmt.as_ref(),
+            &store,
+            &target_thread,
+            &target.id,
+            &m.role,
+            &m.text,
+            m.run_id.as_deref(),
+            &m.status,
+        )
+        .await?;
+    }
+
+    // ---- 个人这边也留一条:发出去不可撤销,你得看得见自己发过什么
+    store.lock().unwrap().insert_in(
+        &src,
+        "personal",
+        "system",
+        &format!("↗ 以上 {keep} 条已转发到 #{}(不可撤销)", target.name),
+        None,
+        "done",
+    );
+
+    // ---- 进审计链。一次公开必须留痕
+    audit
+        .lock()
+        .unwrap()
+        .append(NewEvent {
+            ts_ms: None,
+            actor: Actor::human("me"),
+            scope: Scope { team: Some(target.team.clone()), channel: Some(target.id.clone()) },
+            run_id: None,
+            session_id: Some("session:personal".into()),
+            policy_version: Some(POLICY_VERSION.into()),
+            label: None,
+            locality: None,
+            body: EventBody::PolicyUpdate {
+                changed_by: Actor::human("me"),
+                diff_hash: ContentHash::sha256(
+                    format!("publish:personal→{}|{keep}", target.id).as_bytes(),
+                ),
+            },
+        })
+        .map_err(|e| format!("审计写入失败:{e}"))?;
+
+    Ok(PublishResult { channel_id: target.id, channel_name: target.name, sent: keep })
+}
+
+#[derive(Serialize)]
+struct PublishResult {
+    channel_id: String,
+    channel_name: String,
+    sent: usize,
+}
+
+/// 某会话的密级底线。**界面只拿它做显示与预判,真正的闸在
+/// [`publish_to_channel`] 里**——前端算的东西不能当授权依据。
+#[tauri::command]
+fn session_floor(state: State<'_, AppState>, session_id: String) -> Result<Sensitivity, String> {
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let f = store.lock().unwrap().load_ratchet(&session_id).floor();
+    Ok(f)
+}
+
 #[tauri::command]
 fn new_conversation(
     state: State<'_, AppState>,
@@ -3092,6 +3224,8 @@ fn main() {
             fork_to_personal,
             list_threads,
             new_conversation,
+            publish_to_channel,
+            session_floor,
             thread_history,
             remote_action_items,
             remote_decide_action,
