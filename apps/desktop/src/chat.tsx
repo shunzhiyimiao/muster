@@ -1,8 +1,8 @@
 /* 真实聊天/任务状态机:与后端事件通道对接(task-start/delta/done/refused/failed) */
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Bot, Play, Plus, Send } from "lucide-react";
-import { api, Channel, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg, ThreadInfo } from "./api";
+import { Bot, Play, Send } from "lucide-react";
+import { api, Channel, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -194,11 +194,17 @@ export function ChatPane({
   chat,
   agentName = "小七",
   header,
+  thread = null,
+  onThreadsChanged,
 }: {
   channel: Channel;
   chat: ChatState;
   agentName?: string;
   header?: React.ReactNode;
+  /** 当前对话,由侧栏决定。`null` = 主对话。 */
+  thread?: string | null;
+  /** 对话列表变了(分叉 / 拉取)时通知侧栏重读 */
+  onThreadsChanged?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -221,7 +227,7 @@ export function ChatPane({
       return;
     }
     setHint(null);
-    chat.send(channel.id, draft, asTask, active);
+    chat.send(channel.id, draft, asTask, thread);
     setDraft("");
   };
 
@@ -232,46 +238,9 @@ export function ChatPane({
 
   const [forkNote, setForkNote] = useState<string | null>(null);
 
-  /* ---------------------------------------------------------------- 多对话
-   *
-   * **只在个人空间。** 团队频道的历史在服务端,一个频道就是一条流——
-   * 本地再分几条对话,只会与所有人看到的那份分岔,而别人永远看不到你的分支。
-   */
-  const [threads, setThreads] = useState<ThreadInfo[]>([]);
-  const [active, setActive] = useState<string | null>(null);
+  /* 当前对话由侧栏决定(见 App.tsx)。**这里不再自己管一套**——
+     同一件事两个入口,迟早出现"侧栏选了 A、发消息进了 B"。 */
   const multi = channel.personal;
-
-  const refreshThreads = async () => {
-    if (!multi) return;
-    try {
-      setThreads(await api.listThreads(channel.id));
-    } catch {
-      /* 列不出来就只用主对话,不该因此发不出消息 */
-    }
-  };
-  useEffect(() => {
-    setActive(null);
-    void refreshThreads();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel.id]);
-
-  const switchTo = async (id: string | null) => {
-    setActive(id);
-    await chat.reload(channel.id, id);
-  };
-
-  const addConversation = async () => {
-    try {
-      const t = await api.newConversation(channel.id);
-      await refreshThreads();
-      await switchTo(t.id);
-      setForkNote("已开一条新对话。它是空的,与其他对话互不影响。");
-      setTimeout(() => setForkNote(null), 5000);
-    } catch (e) {
-      setForkNote(`新建失败:${e}`);
-      setTimeout(() => setForkNote(null), 6000);
-    }
-  };
 
   /// 拉到个人空间。
   ///
@@ -285,8 +254,8 @@ export function ChatPane({
     try {
       const r = await api.forkToPersonal(channel.id, null, nth);
       // 写进库不等于看得见:个人频道已有内容,hydrate 填不进去
-      await chat.reload("personal");
-      await refreshThreads();
+      await chat.reload("personal", null);
+      onThreadsChanged?.();
       // **抬升必须说出来。** 悄悄把个人空间锁到 restricted,人下次发现是
       // "为什么我的私人会话突然不能用云模型了",而那时已经找不到原因
       const raised =
@@ -307,9 +276,8 @@ export function ChatPane({
 
   const forkAt = async (nth: number, prompt: string) => {
     try {
-      const r = await api.forkConversation(channel.id, active, nth, "copied");
-      await refreshThreads();
-      await switchTo(r.thread_id);
+      const r = await api.forkConversation(channel.id, thread, nth, "copied");
+      onThreadsChanged?.();
       // 把被切掉的那条提问放回输入框——codex 的 Esc Esc 就是干这个的
       setDraft(r.reopened_prompt ?? prompt);
       setForkNote(`已分叉:继承 ${r.inherited} 条,原会话未改动。改完这句再发。`);
@@ -322,48 +290,6 @@ export function ChatPane({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* 对话切换条。分叉出来的、拉过来的、新建的,在使用者眼里是同一种东西
-          ——**左边列表里的一行**,所以放在一起。 */}
-      {multi && threads.length > 0 && (
-        <div className="flex items-center gap-1.5 px-5 pt-3 flex-wrap">
-          {threads.map((t) => {
-            const id = t.id.startsWith("main:") ? null : t.id;
-            const on = active === id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => switchTo(id)}
-                className="text-[11px] font-semibold px-2.5 py-1 rounded-lg whitespace-nowrap"
-                style={{
-                  background: on ? T.indigo : T.soft,
-                  color: on ? "#fff" : T.sub,
-                }}
-                title={
-                  t.forked_from
-                    ? `继承 ${t.inherited_count} 条,来自 ${t.forked_from}`
-                    : t.id.startsWith("main:")
-                      ? "这个频道原本的那条对话"
-                      : "新开的空对话"
-                }
-              >
-                {t.title}
-                {t.inherited_count > 0 && (
-                  <span style={{ opacity: 0.7 }}> ·{t.inherited_count}</span>
-                )}
-              </button>
-            );
-          })}
-          <button
-            onClick={addConversation}
-            className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg"
-            style={{ border: `1px dashed ${T.line}`, color: T.faint }}
-            title="开一条空对话,与其他对话互不影响"
-          >
-            <Plus size={11} /> 新对话
-          </button>
-        </div>
-      )}
-
       {forkNote && (
         <div className="mx-5 mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
           {forkNote}

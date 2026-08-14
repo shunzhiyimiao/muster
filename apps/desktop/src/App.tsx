@@ -4,13 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Clock, Hash, Home,
   LayoutDashboard, Library, LineChart, Link2, Lock, MessageSquare, Network, Puzzle, Search,
-  Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, User, Users, Video, X,
+  Plus, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, User, Users, Video, X,
 } from "lucide-react";
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
   CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut,
-  TeamCount, WhoAmI, fmtBytes, fmtTime,
+  TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
 import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
@@ -207,6 +207,39 @@ export default function App() {
     setExpanded((e) => ({ ...e, [tid]: true }));
     refreshAll(); // 编制是活数据,进页即刷
   };
+  /* 个人空间的多对话。**状态放在这里而不是 ChatPane**——
+     侧栏在这一层,而对话列表要像团队的 #频道 一样长在侧栏上。 */
+  const [threads, setThreads] = useState<ThreadInfo[]>([]);
+  const [thread, setThread] = useState<string | null>(null); // null = 主对话
+  const [convOpen, setConvOpen] = useState(true);
+
+  const refreshThreads = async () => {
+    try {
+      setThreads(await api.listThreads("personal"));
+    } catch {
+      /* 列不出来就只用主对话,不该因此发不出消息 */
+    }
+  };
+  useEffect(() => { void refreshThreads(); }, []);
+
+  const goThread = async (id: string | null) => {
+    setModule("personal");
+    setView("pchat");
+    setNotice("");
+    setThread(id);
+    await chat.reload("personal", id);
+  };
+
+  const addConversation = async () => {
+    try {
+      const t = await api.newConversation("personal");
+      await refreshThreads();
+      await goThread(t.id);
+    } catch (e) {
+      setNotice(`新建对话失败:${e}`);
+    }
+  };
+
   const goPersonalChat = () => {
     setModule("personal");
     setView("pchat");
@@ -357,7 +390,43 @@ export default function App() {
               <SideItem icon={<Home size={16} />} label="首页" active={view === "phome"} onClick={() => { setView("phome"); setNotice(""); }} />
               <SideItem icon={<Bot size={16} />} label="Agent 档案" active={view === "agent"} onClick={() => { setView("agent"); setNotice(""); refreshAll(); }}
                 extra={<span className="ml-auto text-[10px]" style={{ color: view === "agent" ? "#DCDCFE" : T.faint }}>小七</span>} />
-              <SideItem icon={<MessageSquare size={16} />} label="对话" active={view === "pchat"} onClick={goPersonalChat} />
+              {/* 对话列表。形态照团队的 #频道:同一件事(左边一行 = 一段对话)
+                  就该长成同一个样子,不该在个人空间另发明一套。 */}
+              <div className="mb-0.5">
+                <button onClick={() => { setConvOpen((o) => !o); goPersonalChat(); }}
+                  className="w-full flex items-center gap-2 px-2 py-2 rounded-xl text-left"
+                  style={{ background: view === "pchat" ? T.indigo : "transparent", color: view === "pchat" ? "#fff" : "#5A5E70" }}>
+                  <ChevronDown size={12} style={{ opacity: 0.7, transform: convOpen ? "none" : "rotate(-90deg)", transition: "transform .15s" }} />
+                  <MessageSquare size={15} />
+                  <span className="text-[13px] font-semibold">对话</span>
+                  <span className="ml-auto text-[10px]" style={{ color: view === "pchat" ? "#DCDCFE" : T.faint }}>{threads.length}</span>
+                </button>
+                {convOpen && (
+                  <div className="ml-3.5 pl-2 fade" style={{ borderLeft: `1px solid ${T.line}` }}>
+                    {threads.map((t) => {
+                      const id = t.id.startsWith("main:") ? null : t.id;
+                      const on = view === "pchat" && thread === id;
+                      return (
+                        <button key={t.id} onClick={() => void goThread(id)}
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[12.5px]"
+                          style={{ background: on ? T.indigo : "transparent", color: on ? "#fff" : "#5A5E70", fontWeight: on ? 600 : 400 }}
+                          title={t.forked_from ? `继承 ${t.inherited_count} 条` : t.id.startsWith("main:") ? "这个空间原本的那条对话" : "新开的空对话"}>
+                          <MessageSquare size={11} style={{ opacity: 0.7 }} />
+                          <span className="truncate">{t.title}</span>
+                          {t.inherited_count > 0 && (
+                            <span className="ml-auto text-[9px]" style={{ color: on ? "#DCDCFE" : T.faint }}>{t.inherited_count}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                    <button onClick={() => void addConversation()}
+                      className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[12.5px]"
+                      style={{ color: T.faint }}>
+                      <Plus size={11} /> 新对话
+                    </button>
+                  </div>
+                )}
+              </div>
               <SideItem icon={<Clock size={16} />} label="任务" onClick={() => soft("任务")} />
               <SideSec>积累</SideSec>
               <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />
@@ -477,7 +546,7 @@ export default function App() {
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                  <ChatPane channel={personalChannel} chat={chat} />
+                  <ChatPane channel={personalChannel} chat={chat} thread={thread} onThreadsChanged={() => void refreshThreads()} />
                 </Card>
                 <div className="w-72 shrink-0 overflow-y-auto flex flex-col gap-3">
                   <ApprovalsPanel pending={approvals} onDecided={refreshAll} canApprove={me?.can.approve_merge ?? true} />
