@@ -368,7 +368,7 @@ export default function App() {
               <div className="mt-auto rounded-2xl p-3.5" style={{ background: streamed ? T.indigo : "#fff", border: `1px solid ${streamed ? T.indigo : T.line}`, color: streamed ? "#fff" : T.ink }}>
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold">
                   <Cast size={13} />
-                  {streamed ? "串流进行中" : "串流到团队"}
+                  {streamed ? "串流(未实现)" : "串流到团队"}
                 </div>
                 {streamed ? (
                   <>
@@ -416,6 +416,7 @@ export default function App() {
                       <div className="ml-3.5 pl-2 fade" style={{ borderLeft: `1px solid ${T.line}` }}>
                         {t.channels.map((c) => {
                           const on = view === "channel" && channelId === c.id;
+                          // 同上:这个 live 标记不代表任何真实的串流
                           const live = streamed && c.id === "platform";
                           return (
                             <button key={c.id} onClick={() => goChannel(t.id, c.id)}
@@ -632,7 +633,10 @@ export default function App() {
                 })}
               </div>
               <div className="mt-3.5 text-[10.5px] leading-relaxed" style={{ color: T.faint }}>
-                串流为只读投屏:队友可围观与提问,接手需你授权。全程计入审计。<b>串流通道为 v1.x 演示,当前仅 UI 状态。</b>
+                <b>这条通道尚未实现</b>——点下去只会改变本机的界面状态,
+                <b>不会有任何内容发送到任何频道</b>。
+                <br />
+                做出来之后的形态:只读投屏,队友可围观与提问,接手需你授权,全程计入审计。
               </div>
             </div>
           </div>
@@ -750,9 +754,17 @@ function TopBar({
             <span className="w-1.5 h-1.5 rounded-full lv" style={{ background: T.red }} />演习中 · 外联切断
           </span>
         )}
+        {/* **串流尚未实现,后端一行都没有。** 原来这里写「串流中 → #platform」
+            并配一个闪烁红点,频道名还是硬编码的——看起来像正在发生的事。
+            对话框里确实写了「当前仅 UI 状态」,但那句话点完就没了,
+            而顶栏这条会一直亮着。
+            界面上的东西要么是真的,要么明说自己不是。 */}
         {streamed && (
-          <span className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full" style={{ background: T.redSoft, color: T.red }}>
-            <span className="w-1.5 h-1.5 rounded-full lv" style={{ background: T.red }} />串流中 → #platform
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full"
+                style={{ background: T.soft, color: T.sub }}
+                title="串流通道尚未实现:这只是界面状态,没有任何内容被发送到任何频道。">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: T.faint }} />
+            串流(未实现·仅界面状态)
           </span>
         )}
         <button disabled title="全局搜索尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
