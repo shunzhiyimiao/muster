@@ -213,6 +213,14 @@ export function ChatPane({
 
   const [forkNote, setForkNote] = useState<string | null>(null);
 
+  /// 拉到个人空间。
+  ///
+  /// **切点比「从这里分叉」多一格,因为意图相反。**
+  /// 分叉是"回到这一问之前重写",所以切在它之前;拉到个人空间是"把这段讨论
+  /// 带走接着深挖",切在之前会恰好把你选中的那条排除掉——点在唯一一条消息上
+  /// 会得到"已拉取 0 条",而那看起来像功能坏了。
+  ///
+  /// 所以传 nth+1:含选中这一问及它的回答。
   const toPersonal = async (nth: number) => {
     try {
       const r = await api.forkToPersonal(channel.id, null, nth);
@@ -222,7 +230,11 @@ export function ChatPane({
         channel.level === "open"
           ? ""
           : ` 个人会话的密级已抬升到 ${channel.level}——只升不降,要回到 open 只能开新会话。`;
-      setForkNote(`已拉到个人空间:${r.inherited} 条。${raised}`);
+      setForkNote(
+        r.inherited === 0
+          ? "这一问之前没有内容,没有可拉取的历史。"
+          : `已拉到个人空间:${r.inherited} 条。${raised}`
+      );
       setTimeout(() => setForkNote(null), 12000);
     } catch (e) {
       setForkNote(`拉取失败:${e}`);
@@ -285,10 +297,10 @@ export function ChatPane({
                       密级会跟着搬过去(E3 棘轮),下面的提示条会说清楚。 */}
                   {!channel.personal && (
                     <button
-                      onClick={() => toPersonal(nthUserBefore(list, i))}
+                      onClick={() => toPersonal(nthUserBefore(list, i) + 1)}
                       className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
                       style={{ background: T.soft, color: T.sub }}
-                      title="把这之前的对话拉到个人空间接着深挖。个人会话的密级会被抬升到本频道的级别。"
+                      title="把到这一问为止的对话(含这一问和它的回答)拉到个人空间接着深挖。个人会话的密级会被抬升到本频道的级别。"
                     >
                       拉到个人空间
                     </button>
