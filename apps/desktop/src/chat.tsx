@@ -26,6 +26,8 @@ export interface ChatState {
   send: (channelId: string, text: string, asTask: boolean) => void;
   /// C1:把持久化历史灌进尚未有内容的频道(避免与本次会话消息重复)。
   hydrate: (rows: StoredMsg[]) => void;
+  /** 强制重读某个频道(hydrate 只填空频道,刷新不了已有内容的) */
+  reload: (channelId: string) => Promise<void>;
   /** C2:服务端推来的一条(别人发的,或自己在别的客户端发的) */
   pushRemote: (channelId: string, role: string, text: string, ts: number) => void;
 }
@@ -127,26 +129,40 @@ export function useChat(onActivity: () => void): ChatState {
     });
   };
 
+  /// 库里的行 → 界面的消息。**只此一处**——hydrate 与 reload 各写一份的话,
+  /// 迟早在某一边漏掉 system,而那时"来源分隔线"会显示成小七说的话。
+  const toMsg = (r: StoredMsg, i: number): Msg => ({
+    key: `db-${i}-${r.ts_ms}`,
+    // system 要保住:它是来源分隔线,归成 agent 就成了小七说的话
+    role: r.role === "user" ? "user" : r.role === "system" ? "system" : "agent",
+    text: r.text,
+    runId: r.run_id ?? undefined,
+    status: (["done", "failed", "refused"].includes(r.status) ? r.status : "done") as Msg["status"],
+    ts: r.ts_ms,
+  });
+
   const hydrate = (rows: StoredMsg[]) => {
     setMsgs((prev) => {
       const next = { ...prev };
       const grouped: Record<string, Msg[]> = {};
-      rows.forEach((r, i) => {
-        (grouped[r.channel_id] ??= []).push({
-          key: `db-${i}-${r.ts_ms}`,
-          // system 要保住:它是来源分隔线,归成 agent 就成了小七说的话
-          role: r.role === "user" ? "user" : r.role === "system" ? "system" : "agent",
-          text: r.text,
-          runId: r.run_id ?? undefined,
-          status: (["done", "failed", "refused"].includes(r.status) ? r.status : "done") as Msg["status"],
-          ts: r.ts_ms,
-        });
-      });
+      rows.forEach((r, i) => (grouped[r.channel_id] ??= []).push(toMsg(r, i)));
       for (const [chan, list] of Object.entries(grouped)) {
+        // 只填空频道:启动时的载入不该盖掉正在流式的消息
         if (!next[chan] || next[chan].length === 0) next[chan] = list;
       }
       return next;
     });
+  };
+
+  /// **强制重读某个频道。**
+  ///
+  /// hydrate 只填空频道(见上),于是一个已有内容的频道没有任何路径能刷新——
+  /// "拉到个人空间"写进了库,界面却永远看不见,要重启应用才出现。
+  /// 这条是那个缺口的补丁,所以它必须是替换而不是合并。
+  const reload = async (channelId: string) => {
+    const rows = await api.historyBulk(600);
+    const list = rows.filter((r) => r.channel_id === channelId).map(toMsg);
+    setMsgs((prev) => ({ ...prev, [channelId]: list }));
   };
 
   /// 服务端推来的消息。**按 (ts, text) 去重**:自己发的那条既走了 HTTP 响应
@@ -166,7 +182,7 @@ export function useChat(onActivity: () => void): ChatState {
     });
   };
 
-  return { msgs, busy, lastStart, lastDone, lastFail, lastDiff, send, hydrate, pushRemote };
+  return { msgs, busy, lastStart, lastDone, lastFail, lastDiff, send, hydrate, reload, pushRemote };
 }
 
 /* ---------- 真实消息流 + 输入区(v4 皮肤) ---------- */
@@ -225,6 +241,8 @@ export function ChatPane({
   const toPersonal = async (nth: number) => {
     try {
       const r = await api.forkToPersonal(channel.id, null, nth);
+      // 写进库不等于看得见:个人频道已有内容,hydrate 填不进去
+      await chat.reload("personal");
       // **抬升必须说出来。** 悄悄把个人空间锁到 restricted,人下次发现是
       // "为什么我的私人会话突然不能用云模型了",而那时已经找不到原因
       const raised =
