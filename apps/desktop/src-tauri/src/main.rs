@@ -1869,35 +1869,47 @@ async fn fork_to_personal(
     }
 
     let src = thread_id.unwrap_or_else(|| main_thread(&channel_id));
-    let personal_main = main_thread("personal");
+    // **每次拉取都开一条新对话。**
+    //
+    // 这条一度改成"追加到主对话",因为当时新线程在界面上没有任何入口——
+    // 落进去等于什么都没发生。现在侧栏会列出每条对话,那个理由不成立了,
+    // 而新对话才是对的:拉过来的是**另一段上下文**,混进主对话会让
+    // 两段无关的讨论互相当成上文,而模型分不出来。
+    let new_id = format!("fork:{}", uuid_like());
     {
         let st = store.lock().unwrap();
-        // **追加到个人主线程,不新建线程。**
-        //
-        // 同频道分叉要新线程(那是"另一条走法");但拉到个人空间的意图是
-        // "带过来接着聊",而"接着聊"发生在主线程上。落进一条界面不显示的
-        // 分支里,等于什么都没发生——实测就是这个结果。
-        //
-        // 来源不靠线程行记录,靠下面这条分隔线 + 审计链里的 session.lock.raise
-        // (它记着是哪个频道把密级抬上去的)。
+        st.create_thread(
+            &new_id,
+            "personal",
+            &format!("来自 #{}", src_channel.name),
+            Some(&src),
+            keep,
+            // 跨频道只能 copied:referenced 要顺着 forked_from 回读父线程,
+            // 而父线程的历史在**服务端**,个人空间读不到它
+            fork::Persistence::Copied,
+        )
+        .map_err(|e| format!("建对话失败:{e}"))?;
+        // 第一条就是来源说明:进了个人空间之后,这段话是谁在哪说的
+        // 必须一眼看得出,否则它看起来就像你自己在私有空间说过的
         st.insert_in(
-            &personal_main,
+            &new_id,
             "personal",
             "system",
             &format!(
                 "↘ 以下 {keep} 条来自 #{}(密级 {}),不是在这里说的",
-                src_channel.name, format!("{:?}", src_channel.level).to_lowercase()
+                src_channel.name,
+                format!("{:?}", src_channel.level).to_lowercase()
             ),
             None,
             "done",
         );
         for m in history.iter().take(keep) {
-            st.insert_in(&personal_main, "personal", &m.role, &m.text, m.run_id.as_deref(), &m.status);
+            st.insert_in(&new_id, "personal", &m.role, &m.text, m.run_id.as_deref(), &m.status);
         }
     }
 
     Ok(ForkResult {
-        thread_id: personal_main,
+        thread_id: new_id,
         forked_from: src,
         inherited: keep,
         reopened_prompt: reopened,

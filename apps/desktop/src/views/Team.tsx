@@ -26,6 +26,7 @@ export function ChannelView({
   approvals,
   onApprovalsChanged,
   canApprove,
+  onThreadsChanged,
 }: {
   channel: Channel;
   chat: ChatState;
@@ -38,6 +39,8 @@ export function ChannelView({
   approvals: PendingApprovalOut[];
   onApprovalsChanged: () => void;
   canApprove?: boolean;
+  /** 「拉到个人空间」之后通知外层刷新对话列表并跳过去 */
+  onThreadsChanged?: (goTo?: string) => void;
 }) {
   const isPlatform = channel.id === "platform";
   const start = chat.lastStart?.channel_id === channel.id ? chat.lastStart : null;
@@ -146,7 +149,7 @@ export function ChannelView({
           </span>
         </div>
         <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <ChatPane channel={channel} chat={chat} header={conceptCards} />
+          <ChatPane channel={channel} chat={chat} header={conceptCards} onThreadsChanged={onThreadsChanged} />
         </Card>
       </div>
 

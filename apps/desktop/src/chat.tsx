@@ -203,8 +203,8 @@ export function ChatPane({
   header?: React.ReactNode;
   /** 当前对话,由侧栏决定。`null` = 主对话。 */
   thread?: string | null;
-  /** 对话列表变了(分叉 / 拉取)时通知侧栏重读 */
-  onThreadsChanged?: () => void;
+  /** 对话列表变了(分叉 / 拉取)时通知侧栏重读;带上新对话就跳过去 */
+  onThreadsChanged?: (goTo?: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
@@ -254,8 +254,8 @@ export function ChatPane({
     try {
       const r = await api.forkToPersonal(channel.id, null, nth);
       // 写进库不等于看得见:个人频道已有内容,hydrate 填不进去
-      await chat.reload("personal", null);
-      onThreadsChanged?.();
+      // 不在这里 reload:跳转由侧栏那一层做,它顺带会读对的那条对话
+      onThreadsChanged?.(r.thread_id);
       // **抬升必须说出来。** 悄悄把个人空间锁到 restricted,人下次发现是
       // "为什么我的私人会话突然不能用云模型了",而那时已经找不到原因
       const raised =
@@ -265,7 +265,7 @@ export function ChatPane({
       setForkNote(
         r.inherited === 0
           ? "这一问之前没有内容,没有可拉取的历史。"
-          : `已拉到个人空间:${r.inherited} 条。${raised}`
+          : `已拉到个人空间的新对话:${r.inherited} 条。${raised}`
       );
       setTimeout(() => setForkNote(null), 12000);
     } catch (e) {
@@ -277,7 +277,7 @@ export function ChatPane({
   const forkAt = async (nth: number, prompt: string) => {
     try {
       const r = await api.forkConversation(channel.id, thread, nth, "copied");
-      onThreadsChanged?.();
+      onThreadsChanged?.(r.thread_id);
       // 把被切掉的那条提问放回输入框——codex 的 Esc Esc 就是干这个的
       setDraft(r.reopened_prompt ?? prompt);
       setForkNote(`已分叉:继承 ${r.inherited} 条,原会话未改动。改完这句再发。`);

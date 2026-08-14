@@ -230,6 +230,13 @@ export default function App() {
     await chat.reload("personal", id);
   };
 
+  /// 对话列表变了。带了 id 就顺便跳过去——**"拉到个人空间"之后人要看到结果**,
+  /// 停在原频道只会让人怀疑有没有成功(上一版就是这样)。
+  const onThreadsChanged = async (goTo?: string) => {
+    await refreshThreads();
+    if (goTo) await goThread(goTo);
+  };
+
   const addConversation = async () => {
     try {
       const t = await api.newConversation("personal");
@@ -546,7 +553,7 @@ export default function App() {
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                  <ChatPane channel={personalChannel} chat={chat} thread={thread} onThreadsChanged={() => void refreshThreads()} />
+                  <ChatPane channel={personalChannel} chat={chat} thread={thread} onThreadsChanged={(g) => void onThreadsChanged(g)} />
                 </Card>
                 <div className="w-72 shrink-0 overflow-y-auto flex flex-col gap-3">
                   <ApprovalsPanel pending={approvals} onDecided={refreshAll} canApprove={me?.can.approve_merge ?? true} />
@@ -558,7 +565,8 @@ export default function App() {
               <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed}
                 introduced={introduced} setIntroduced={setIntroduced}
                 openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")}
-                approvals={approvals} onApprovalsChanged={refreshAll} canApprove={me?.can.approve_merge ?? true} />
+                approvals={approvals} onApprovalsChanged={refreshAll} canApprove={me?.can.approve_merge ?? true}
+                onThreadsChanged={(g) => void onThreadsChanged(g)} />
             )}
             {view === "roster" && (
               <RosterView filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
