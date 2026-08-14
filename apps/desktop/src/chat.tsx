@@ -213,6 +213,23 @@ export function ChatPane({
 
   const [forkNote, setForkNote] = useState<string | null>(null);
 
+  const toPersonal = async (nth: number) => {
+    try {
+      const r = await api.forkToPersonal(channel.id, null, nth);
+      // **抬升必须说出来。** 悄悄把个人空间锁到 restricted,人下次发现是
+      // "为什么我的私人会话突然不能用云模型了",而那时已经找不到原因
+      const raised =
+        channel.level === "open"
+          ? ""
+          : ` 个人会话的密级已抬升到 ${channel.level}——只升不降,要回到 open 只能开新会话。`;
+      setForkNote(`已拉到个人空间:${r.inherited} 条。${raised}`);
+      setTimeout(() => setForkNote(null), 12000);
+    } catch (e) {
+      setForkNote(`拉取失败:${e}`);
+      setTimeout(() => setForkNote(null), 8000);
+    }
+  };
+
   const forkAt = async (nth: number, prompt: string) => {
     try {
       const r = await api.forkConversation(channel.id, null, nth, "copied");
@@ -264,6 +281,18 @@ export function ChatPane({
                   >
                     从这里分叉
                   </button>
+                  {/* 团队 → 个人。个人空间里没有这个按钮:它已经是终点了。
+                      密级会跟着搬过去(E3 棘轮),下面的提示条会说清楚。 */}
+                  {!channel.personal && (
+                    <button
+                      onClick={() => toPersonal(nthUserBefore(list, i))}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-semibold px-1.5 py-0.5 rounded-md"
+                      style={{ background: T.soft, color: T.sub }}
+                      title="把这之前的对话拉到个人空间接着深挖。个人会话的密级会被抬升到本频道的级别。"
+                    >
+                      拉到个人空间
+                    </button>
+                  )}
                 </div>
                 <div className="text-[13px] mt-0.5 leading-relaxed whitespace-pre-wrap break-words" style={{ color: "#454A5C" }}>
                   {m.text}

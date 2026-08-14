@@ -22,7 +22,9 @@ use muster_audit::{
     Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
 };
 use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, StreamEvent};
-use muster_route::{LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, Sensitivity};
+use muster_route::{
+    LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, SessionRatchet, Sensitivity,
+};
 use muster_runner::{run_task, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 
 const POLICY_VERSION: &str = "policy-v1";
@@ -220,7 +222,15 @@ impl StateStore {
                 persistence     TEXT NOT NULL DEFAULT 'copied',
                 created_ms      INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_thread_chan ON thread(channel_id, created_ms);",
+            CREATE INDEX IF NOT EXISTS idx_thread_chan ON thread(channel_id, created_ms);
+
+            -- E3 会话棘轮的持久化。**跨重启保留**是语义的一部分,不是优化:
+            -- 底线只升不降,重启就归零的话,关一次应用就等于降密。
+            CREATE TABLE IF NOT EXISTS session_ratchet(
+                session_id TEXT PRIMARY KEY,
+                state      TEXT NOT NULL,  -- SessionRatchet 的 JSON
+                updated_ms INTEGER NOT NULL
+            );",
         )?;
         // 老库没有 thread_id 列。**加列 + 回填,不是重建表**——
         // 重建会丢掉 rowid 顺序,而消息的先后全靠它
@@ -318,6 +328,29 @@ impl StateStore {
     /// 被切掉的那条提问要**原样带回给调用方**——codex 那边 Esc Esc 之后
     /// 提问会重新出现在输入框里等你改,那才是这个功能好用的地方,
     /// 而不是"复制一份对话"。
+    /// 建一条线程行。跨频道 fork 与同频道 fork 共用它——
+    /// 两份 INSERT 迟早会漂,而漂的表现是"某种 fork 出来的线程读不出继承关系"。
+    #[allow(clippy::too_many_arguments)]
+    fn create_thread(
+        &self,
+        id: &str,
+        channel_id: &str,
+        title: &str,
+        forked_from: Option<&str>,
+        inherited: usize,
+        persistence: fork::Persistence,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO thread(id, channel_id, title, forked_from, inherited_count, persistence, created_ms)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                id, channel_id, title, forked_from, inherited as i64,
+                persistence.as_str(), now_ms() as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     fn fork_thread(
         &self,
         src_thread: &str,
@@ -331,14 +364,7 @@ impl StateStore {
 
         let new_id = format!("fork:{}", uuid_like());
         let title = format!("分叉自 {} 第 {} 问", src_thread, nth_user_message + 1);
-        self.conn.execute(
-            "INSERT INTO thread(id, channel_id, title, forked_from, inherited_count, persistence, created_ms)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            rusqlite::params![
-                &new_id, channel_id, title, src_thread, keep as i64,
-                persistence.as_str(), now_ms() as i64
-            ],
-        )?;
+        self.create_thread(&new_id, channel_id, &title, Some(src_thread), keep, persistence)?;
 
         // Copied:把前缀抄进新线程。Referenced:什么都不抄,读的时候拼。
         if persistence == fork::Persistence::Copied {
@@ -371,6 +397,40 @@ impl StateStore {
             })
         })?;
         rows.collect()
+    }
+
+    /// 读会话棘轮。**读不出来一律当新会话**——但这里有个取舍要说清楚:
+    ///
+    /// 解析失败时回到 Open,等于一次静默降密。之所以仍这么做,是因为
+    /// 另一条路更糟:解析失败就拒绝一切路由,那么一个损坏的字节会让人
+    /// 彻底用不了这个频道,而他根本不知道为什么。**取舍写在这里,不藏着。**
+    ///
+    /// 真正的防线是:抬升的那一刻已经进了审计链(`session.lock.raise`),
+    /// 链是 append-only 的,棘轮这张表坏了不影响它。
+    fn load_ratchet(&self, session_id: &str) -> SessionRatchet {
+        self.conn
+            .query_row(
+                "SELECT state FROM session_ratchet WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default()
+    }
+
+    /// 存棘轮。**写失败要报错,不能像别的状态那样降级为日志**——
+    /// 抬升没存住,下一轮就回到低密级,那正是"只升不降"要防的事。
+    fn save_ratchet(&self, session_id: &str, r: &SessionRatchet) -> Result<(), String> {
+        let j = serde_json::to_string(r).map_err(|e| format!("棘轮序列化失败:{e}"))?;
+        self.conn
+            .execute(
+                "INSERT INTO session_ratchet(session_id, state, updated_ms) VALUES(?1,?2,?3)
+                 ON CONFLICT(session_id) DO UPDATE SET state=?2, updated_ms=?3",
+                rusqlite::params![session_id, j, now_ms() as i64],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("棘轮写入失败:{e}"))
     }
 
     fn bulk(&self, limit: u32) -> rusqlite::Result<Vec<StoredMsg>> {
@@ -801,6 +861,56 @@ async fn channel_history(
     }
 }
 
+/// 过一轮棘轮:算出本轮的决策来源,持久化新状态,抬升则进审计链。
+///
+/// ## 为什么抬升要单独记一条审计事件
+///
+/// 只看 `route.decide` 的话,只能在**下一次决策时**发现会话已经被污染了。
+/// 这里记的是污染发生的**那一刻**——UI 置灰和徽章解释都指向它。
+///
+/// ## 为什么写失败要中止本轮
+///
+/// 棘轮没存住,下一轮就回到低密级——那正是"只升不降"要防的事。
+/// 与状态库其他写入"失败降级为日志"的姿态刻意相反。
+async fn turn_sources_and_persist(
+    store: &Arc<Mutex<StateStore>>,
+    audit: &Arc<Mutex<AuditStore>>,
+    session_id: &str,
+    touched: &[LabelSource],
+) -> Result<Vec<LabelSource>, String> {
+    let (sources, raise, snapshot) = {
+        let st = store.lock().unwrap();
+        let mut r = st.load_ratchet(session_id);
+        let (sources, raise) = r.turn_sources(touched);
+        st.save_ratchet(session_id, &r)?;
+        (sources, raise, r)
+    };
+    let _ = snapshot;
+    if let Some(raise) = raise {
+        audit
+            .lock()
+            .unwrap()
+            .append(NewEvent {
+                ts_ms: None,
+                actor: Actor::human("me"),
+                scope: Scope::default(),
+                run_id: None,
+                session_id: Some(session_id.to_string()),
+                policy_version: Some(POLICY_VERSION.into()),
+                label: None,
+                locality: None,
+                body: EventBody::SessionLockRaise {
+                    from_level: raise.from,
+                    to_level: raise.to,
+                    cause: raise.cause,
+                    turn: raise.turn,
+                },
+            })
+            .map_err(|e| format!("审计写入失败:{e}"))?;
+    }
+    Ok(sources)
+}
+
 /// `record_msg` 的别名,参数顺序与 `StateStore::insert` 一致,
 /// 便于把原地的本地写换成"本地或服务端"而不动参数。
 async fn record_msg_body(
@@ -1159,10 +1269,18 @@ async fn send_message(
         (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
     };
     let channel = resolve_channel(&state, &channel_id).await?;
-    let sources = label_sources(&channel);
     let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
     let session_id = format!("session:{}", channel.id);
     let rmt = remote_of(&state);
+
+    // ---- E3 会话棘轮:密级只升不降
+    //
+    // 顺序有讲究(见 muster-route/src/session.rs):**先**用既有锁参与本轮决策,
+    // **再**把本轮触碰吸收进棘轮。这样触碰 restricted 资源的那一轮,
+    // deciders 里写的是资源本身;之后的轮次才由 session-lock 解释——
+    // "为什么是这个级别"始终指向信息量最大的肇因。
+    let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_sources(&channel))
+        .await?;
     record_msg(rmt.as_ref(), &store, &channel.id, "user", &text, None, "done").await?;
 
     // ---- E2 路由决策(含探活,fail-closed)
@@ -1573,12 +1691,17 @@ async fn run_workspace_task(
     // 非 git 仓时 runner 会如实降级只读并发 Notice。
     let workspace_root = std::env::var("MUSTER_WORKSPACE_ROOT")
         .unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+    // 任务同样过棘轮。只让聊天守规矩的话,**跑一次任务就能绕过会话密级**
+    // ——而任务送出去的内容(工作区文件、命令输出)比聊天多得多
+    let session_id = format!("session:{}", channel.id);
+    let sources =
+        turn_sources_and_persist(&store, &audit, &session_id, &label_sources(&channel)).await?;
     let spec = TaskSpec {
         run_id: run_id.clone(),
-        session_id: Some(format!("session:{}", channel.id)),
+        session_id: Some(session_id.clone()),
         team: Some(channel.team.clone()),
         channel: Some(channel.id.clone()),
-        sources: label_sources(&channel),
+        sources,
         requested_provider: None,
         default_provider: Some("kimi".into()),
         prompt: text,
@@ -1683,6 +1806,80 @@ fn fork_conversation(
         .fork_thread(&src, &channel_id, nth_user_message, mode)
         .map_err(|e| format!("分叉失败:{e}"))?;
     Ok(ForkResult { thread_id: id, forked_from: src, inherited, reopened_prompt: reopened })
+}
+
+/// 把团队频道的一段对话 fork 到个人空间。
+///
+/// ## 为什么这个方向要先做,而且必须抬升密级
+///
+/// 方向本身是安全的:团队内容进个人空间不会外泄给更多人。
+/// 但有一个反直觉的坑——**个人空间默认 open**。把一个 restricted 频道的
+/// 内容搬进来却不抬升,后续在个人空间里的提问就会以 open 的身份路由:
+/// **restricted 的内容进来了,路由却还按 open 走。**
+///
+/// 那是密级泄漏,而且外部完全看不出来:界面上个人频道的徽章仍写着 open,
+/// 一切"正常工作"。
+///
+/// 所以搬历史和抬棘轮是**同一个动作的两半**,不是两步。棘轮抬升不了(写不进去)
+/// 就不搬——宁可这次 fork 失败,也不要搬完之后密级没跟上。
+#[tauri::command]
+async fn fork_to_personal(
+    state: State<'_, AppState>,
+    channel_id: String,
+    thread_id: Option<String>,
+    nth_user_message: usize,
+) -> Result<ForkResult, String> {
+    if remote::is_personal(&channel_id) {
+        return Err("这已经是个人空间了".into());
+    }
+    let (store, audit) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.state.clone(), b.audit.clone())
+    };
+    let src_channel = resolve_channel(&state, &channel_id).await?;
+    let rmt = remote_of(&state);
+
+    // 团队频道的历史在服务端,不在本地——**要向服务端取那一份**,
+    // 那才是所有人共同看到的
+    let history = channel_history(rmt.as_ref(), &store, &channel_id).await;
+    let keep = fork::truncate_before_nth_user_message(&history, nth_user_message);
+    let reopened = history.get(keep).filter(|m| m.role == "user").map(|m| m.text.clone());
+
+    // **先抬棘轮,再搬内容。** 反过来的话,抬升失败时内容已经进了个人空间,
+    // 而密级没跟上——正是这个函数要防的那件事。
+    let personal_session = "session:personal";
+    let touched = label_sources(&src_channel);
+    if !touched.is_empty() {
+        turn_sources_and_persist(&store, &audit, personal_session, &touched).await?;
+    }
+
+    let src = thread_id.unwrap_or_else(|| main_thread(&channel_id));
+    let new_id = format!("fork:{}", uuid_like());
+    {
+        let st = store.lock().unwrap();
+        st.create_thread(
+            &new_id,
+            "personal",
+            &format!("来自 #{} 的 {} 条", src_channel.name, keep),
+            Some(&src),
+            keep,
+            // 跨频道只能 copied:referenced 要顺着 forked_from 回读父线程,
+            // 而父线程的历史在**服务端**,个人空间读不到它
+            fork::Persistence::Copied,
+        )
+        .map_err(|e| format!("建线程失败:{e}"))?;
+        for m in history.iter().take(keep) {
+            st.insert_in(&new_id, "personal", &m.role, &m.text, m.run_id.as_deref(), &m.status);
+        }
+    }
+
+    Ok(ForkResult {
+        thread_id: new_id,
+        forked_from: src,
+        inherited: keep,
+        reopened_prompt: reopened,
+    })
 }
 
 #[tauri::command]
@@ -1991,7 +2188,13 @@ async fn capsule_run(
         std::path::Path::new(&workspace),
         std::path::Path::new(&root),
         context.as_deref(),
-        label_sources(&channel),
+        turn_sources_and_persist(
+            &store_state,
+            &audit,
+            &format!("session:{}", channel.id),
+            &label_sources(&channel),
+        )
+        .await?,
         Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
         move |ev| forward_runner_event(&a, &rid, &chan, &tr, ev),
     )
@@ -2809,6 +3012,7 @@ fn main() {
             remote_meeting_start,
             remote_meeting_join,
             fork_conversation,
+            fork_to_personal,
             list_threads,
             thread_history,
             remote_action_items,
@@ -3145,5 +3349,89 @@ mod context_tests {
     fn empty_text_is_skipped() {
         let h = vec![msg("agent", "   ", "done"), msg("user", "问", "done")];
         assert_eq!(context_window(&h, 10, 9999).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod ratchet_tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, StateStore) {
+        let d = tempfile::tempdir().unwrap();
+        let s = StateStore::open(d.path().join("state.db").to_str().unwrap()).unwrap();
+        (d, s)
+    }
+
+    fn chan(id: &str, level: Sensitivity) -> ChannelInfo {
+        ChannelInfo {
+            id: id.into(),
+            name: id.into(),
+            team: "平台组".into(),
+            team_id: "platform".into(),
+            level,
+            level_note: String::new(),
+            desc: String::new(),
+            personal: id == "personal",
+        }
+    }
+
+    /// 棘轮**必须跨重启保留**。
+    ///
+    /// 这不是优化,是语义的一部分:底线只升不降。重启就归零的话,
+    /// 关一次应用等于一次降密——而关应用是每天都会发生的事。
+    #[test]
+    fn the_ratchet_survives_a_restart() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("state.db");
+        {
+            let s = StateStore::open(path.to_str().unwrap()).unwrap();
+            let mut r = SessionRatchet::new();
+            r.observe(&label_sources(&chan("payments", Sensitivity::Restricted)));
+            s.save_ratchet("session:personal", &r).unwrap();
+        }
+        let s = StateStore::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            s.load_ratchet("session:personal").floor(),
+            Sensitivity::Restricted,
+            "重启后底线掉回去了——那等于关一次应用就降一次密"
+        );
+    }
+
+    /// 没有任何降低底线的路径。
+    ///
+    /// `SessionRatchet` 类型上就没有降级 API(接口即政策),这里验的是
+    /// **我们的用法**没有绕过它:比如先读出来、改一个低的、再存回去。
+    #[test]
+    fn observing_a_lower_level_never_lowers_the_floor() {
+        let (_d, s) = store();
+        let mut r = SessionRatchet::new();
+        r.observe(&label_sources(&chan("payments", Sensitivity::Restricted)));
+        s.save_ratchet("sess", &r).unwrap();
+
+        // 之后又碰了一个 internal 的频道
+        let mut r2 = s.load_ratchet("sess");
+        r2.observe(&label_sources(&chan("platform", Sensitivity::Internal)));
+        s.save_ratchet("sess", &r2).unwrap();
+
+        assert_eq!(s.load_ratchet("sess").floor(), Sensitivity::Restricted, "底线被拉低了");
+    }
+
+    /// 会话之间互不影响:抬升一个不该殃及另一个。
+    #[test]
+    fn sessions_are_independent() {
+        let (_d, s) = store();
+        let mut r = SessionRatchet::new();
+        r.observe(&label_sources(&chan("payments", Sensitivity::Restricted)));
+        s.save_ratchet("session:payments", &r).unwrap();
+
+        assert_eq!(s.load_ratchet("session:personal").floor(), Sensitivity::Open);
+    }
+
+    /// open 频道不产生锁——open 是默认底,锁在 open 没有信息量。
+    #[test]
+    fn open_channels_do_not_lock_the_session() {
+        let mut r = SessionRatchet::new();
+        assert!(r.observe(&label_sources(&chan("general", Sensitivity::Open))).is_none());
+        assert!(!r.is_locked());
     }
 }

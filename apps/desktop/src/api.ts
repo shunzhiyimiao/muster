@@ -323,6 +323,9 @@ export const api = {
   /** 从第 nth 条用户提问**之前**分叉。父会话不动,新会话新 id(照抄 codex)。 */
   forkConversation: (channelId: string, threadId: string | null, nthUserMessage: number, persistence: "copied" | "referenced") =>
     invoke<ForkResult>("fork_conversation", { channelId, threadId, nthUserMessage, persistence }),
+  /** 把团队频道的一段对话拉到个人空间。**会抬升个人会话的密级**(E3 棘轮)。 */
+  forkToPersonal: (channelId: string, threadId: string | null, nthUserMessage: number) =>
+    invoke<ForkResult>("fork_to_personal", { channelId, threadId, nthUserMessage }),
   listThreads: (channelId: string) => invoke<ThreadInfo[]>("list_threads", { channelId }),
   threadHistory: (threadId: string) => invoke<StoredMsg[]>("thread_history", { threadId }),
 
