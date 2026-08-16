@@ -42,6 +42,20 @@ ssh -o BatchMode=yes -o ConnectTimeout=8 "$SERVER" true 2>/dev/null \
   || die "连不上 ${SERVER}。先确认 ssh ${SERVER} 能免密登录(公钥已装)。"
 ok "ssh 通"
 
+# **云主机的默认用户不是 root**(EC2 是 ubuntu / ec2-user,阿里云是 root)。
+# 装 Docker、写 /opt、跑 docker 都要提权,而免密 sudo 是云镜像的惯例。
+# 判定用实际身份,不猜发行版。
+if [ "$(ssh "$SERVER" id -u)" = "0" ]; then
+  SUDO=""
+  ok "以 root 登录"
+else
+  ssh "$SERVER" "sudo -n true" 2>/dev/null \
+    || die "$(ssh "$SERVER" whoami) 不能免密 sudo。云镜像通常默认可以;
+  自建的机器请先配好 NOPASSWD,或改用 root 登录。"
+  SUDO="sudo"
+  ok "以 $(ssh "$SERVER" whoami) 登录,用 sudo 提权"
+fi
+
 SERVER_IP=$(ssh "$SERVER" "curl -s4 --max-time 8 ifconfig.me || hostname -I | awk '{print \$1}'")
 [ -n "$SERVER_IP" ] || die "取不到服务器的公网 IP"
 ok "服务器公网 IP ${SERVER_IP}"
@@ -68,8 +82,35 @@ if [ "$dns_fail" = 1 ]; then
   改完等生效(dig 查到就算)再重跑。"
 fi
 
+# **资源预检。** 这两条是 EC2 上最容易翻车的地方,而失败方式都很难看:
+# 磁盘满了 cargo 会在编到一半时报一句莫名其妙的 IO 错误;内存不够 OOM
+# killer 会直接杀掉 rustc,日志里只留一个 "signal: 9"。
+free_gb=$(ssh "$SERVER" "df -BG --output=avail / | tail -1 | tr -dc '0-9'")
+if [ "${free_gb:-0}" -lt 20 ]; then
+  bad "根分区可用空间 ${free_gb}G,不够。"
+  die "编译整个 Rust 工作区 + Docker 镜像 + whisper 模型要 20G 以上。
+  **EC2 默认根卷只有 8G**——在控制台把 EBS 卷扩到 30G,然后:
+    sudo growpart /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1
+  (Amazon Linux 用 xfs_growfs 代替 resize2fs)"
+fi
+ok "磁盘可用 ${free_gb}G"
+
+mem_mb=$(ssh "$SERVER" "free -m | awk '/^Mem:/{print \$2}'")
+if [ "${mem_mb:-0}" -lt 3500 ]; then
+  bad "内存 ${mem_mb}M,偏小。"
+  echo "  编 Rust 时 rustc 很可能被 OOM killer 杀掉,日志里只留一个 signal: 9。"
+  echo "  建议 t3.medium(4G)以上。要在小机器上硬撑,先加 swap:"
+  echo "    sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile"
+  echo "    sudo mkswap /swapfile && sudo swapon /swapfile"
+  printf '  继续吗?[y/N] '
+  read -r yn < /dev/tty
+  [ "$yn" = "y" ] || exit 1
+else
+  ok "内存 ${mem_mb}M"
+fi
+
 # 80/443 被占的话 Caddy 起不来,而报错要翻容器日志才看得见
-busy=$(ssh "$SERVER" "ss -lntp 2>/dev/null | awk '\$4 ~ /:(80|443)\$/ {print \$4}'" || true)
+busy=$(ssh "$SERVER" "$SUDO ss -lntp 2>/dev/null | awk '\$4 ~ /:(80|443)\$/ {print \$4}'" || true)
 if [ -n "$busy" ]; then
   bad "服务器上 80/443 已被占用:"
   echo "$busy" | sed 's/^/    /'
@@ -85,7 +126,7 @@ if ssh "$SERVER" "command -v docker >/dev/null && docker compose version >/dev/n
   ok "已装 $(ssh "$SERVER" 'docker --version')"
 else
   echo "  服务器上没有 Docker,正在装(用官方脚本)…"
-  ssh "$SERVER" "curl -fsSL https://get.docker.com | sh" >/dev/null 2>&1 \
+  ssh "$SERVER" "curl -fsSL https://get.docker.com | $SUDO sh" >/dev/null 2>&1 \
     || die "Docker 装失败。手动装完再重跑:https://docs.docker.com/engine/install/"
   ok "已装 $(ssh "$SERVER" 'docker --version')"
 fi
@@ -94,7 +135,8 @@ fi
 
 step "同步源码到 ${REMOTE_DIR}"
 
-ssh "$SERVER" "mkdir -p $REMOTE_DIR"
+# 建目录并**交给登录用户**:后面 rsync 是以他的身份写的,属主是 root 就写不进去
+ssh "$SERVER" "$SUDO mkdir -p $REMOTE_DIR && $SUDO chown -R \$(id -u):\$(id -g) $REMOTE_DIR"
 # --delete 让服务器上的树与本机一致(删掉的文件那边也删),
 # 但**排除 .env 和数据卷**:那些是服务器上的东西,不该被本机的状态覆盖
 rsync -az --delete \
@@ -132,7 +174,7 @@ fi
 
 step "构建并启动(第一次要几分钟,在编 Rust)"
 
-ssh "$SERVER" "cd $REMOTE_DIR && docker compose --env-file deploy/.env \
+ssh "$SERVER" "cd $REMOTE_DIR && $SUDO docker compose --env-file deploy/.env \
   -f deploy/docker-compose.prod.yml up -d --build" 2>&1 | tail -20
 
 # ---------------------------------------------------------------- 验收
@@ -168,7 +210,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://livekit.$DOM
 
 step "组织所有者"
 
-DC="docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml"
+DC="$SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml"
 OWNER_PW=$(openssl rand -base64 18 | tr -d '\n=+/' | head -c 18)
 
 # bootstrap 只在 owner 不存在时成功。**不必先探测**——探测本身要一个口令,
@@ -190,6 +232,43 @@ if ssh "$SERVER" "cd $REMOTE_DIR && $DC exec -T muster-server \
   fi
 else
   ok "owner 已存在,跳过(要重置口令进服务器手动改)"
+fi
+
+# ---------------------------------------------------------------- 云平台提示
+#
+# 安全组在控制台里,脚本改不了。但它是这套部署最常见的失败点,而且**症状
+# 极具误导性**:登录、界面、聊天全都正常,只有会议进不去。所以宁可多说一次。
+
+step "云平台"
+
+# IMDSv2 探测。EC2 之外拿不到 token,静默跳过
+EC2_TOKEN=$(ssh "$SERVER" "curl -sX PUT 'http://169.254.169.254/latest/api/token' \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' --max-time 3" 2>/dev/null || true)
+if [ -n "$EC2_TOKEN" ]; then
+  EC2_ID=$(ssh "$SERVER" "curl -s -H 'X-aws-ec2-metadata-token: $EC2_TOKEN' \
+    http://169.254.169.254/latest/meta-data/instance-id --max-time 3" 2>/dev/null || true)
+  ok "这是一台 EC2 实例(${EC2_ID:-未知})"
+  cat <<'EC2EOF'
+
+  安全组必须放行这四个端口(控制台 → EC2 → 安全组 → 入站规则):
+
+    TCP  80    0.0.0.0/0    Let's Encrypt 签证书
+    TCP  443   0.0.0.0/0    应用与 LiveKit 信令
+    UDP  7882  0.0.0.0/0    WebRTC 媒体
+    UDP  3478  0.0.0.0/0    TURN(严格网络后面靠它中转)
+
+  ** 那两个 UDP 最容易漏 ** 漏了的表现是:登录正常、界面正常、聊天正常,
+  只有会议进不去,报 "could not establish pc connection"——
+  而那句话看起来像 LiveKit 配错了,人会去查配置,方向完全错。
+
+  ** 还要分配弹性 IP ** EC2 的公网 IP 在停止/启动后会变,而 DNS 是按 IP 指的
+  ——换了就全断,且报错只是"连不上",看不出根因。
+  控制台 → 弹性 IP → 分配 → 关联到这台实例。
+
+EC2EOF
+else
+  echo "  不是 EC2(或拿不到实例元数据)。"
+  echo "  无论哪家云,都要在防火墙/安全组放行:80、443/tcp,7882、3478/udp。"
 fi
 
 step "完成"
