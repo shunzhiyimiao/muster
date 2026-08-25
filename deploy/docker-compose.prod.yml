@@ -110,6 +110,14 @@ services:
     restart: unless-stopped
     # **没有 ports**:它是个无鉴权的转写接口,暴露出去谁都能白嫖算力,
     # 还能拿它当放大器。只有同一网络里的会议 Agent 需要它
+    #
+    # **给它设上限,给媒体面留一个核。**
+    # 实测转写一段音频会吃掉 4.45 个核——比 4 核的机器还多。不限的话它会
+    # 把整台机器占满,而 LiveKit 正在同一台机器上转发音频包:CPU 一饱和,
+    # 包的调度就开始抖,表现是**会议里声音卡顿**,而 whisper 那边一切正常。
+    #
+    # 少一个核只是让转写慢一点(仍快过实时),而卡顿是所有人当场就听得见的。
+    cpus: ${WHISPER_CPUS:-3}
     environment:
       WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
 
