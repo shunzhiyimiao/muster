@@ -276,17 +276,26 @@ cat <<EOF
   网页参会端   https://$DOMAIN
   桌面壳       侧栏填 https://$DOMAIN
 
-  下一步(建团队和频道,否则登进去是空的):
-    ssh $SERVER
-    cd $REMOTE_DIR
-    C="docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec muster-server"
-    \$C muster-admin login owner '<口令>'
-    \$C muster-admin team-add platform 平台组
-    \$C muster-admin channel-add platform-main platform 主频道 internal
-    \$C muster-admin account-add alice '<口令>' Alice human
-    \$C muster-admin grant alice member org
+  ---- 还差两步,否则登进去是空的、任务也跑不了 ----
 
-  云主机记得在**安全组**里放行:80、443/tcp,7882、3478/udp。
-  UDP 那两个不放行的话,登录和界面都正常,只有会议进不去——
-  报 "could not establish pc connection"。
+  ssh $SERVER
+  cd $REMOTE_DIR
+  C="$SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml exec muster-server"
+
+  # 1) 建团队、频道、成员
+  \$C muster-admin login owner '<上面那个口令>'
+  \$C muster-admin team-add platform 平台组
+  \$C muster-admin channel-add platform-main platform 主频道 internal
+  \$C muster-admin account-add alice '<口令>' Alice human
+  \$C muster-admin grant alice member org
+
+  # 2) 配 provider 目录。**不配的话能登录能开会,但跑任务会被路由拒绝**
+  #    ——目录空就是一个通道都没有,而那个症状看不出根因
+  \$C muster-admin provider-add kimi https://api.kimi.com/coding/v1 \\
+       kimi-k3 cloud KIMI_API_KEY --default
+  \$C muster-admin providers
+
+  填的是**环境变量名**,不是密钥。服务端一个密钥都不存;
+  每台要跑模型的机器自己 export KIMI_API_KEY=…
+
 EOF
