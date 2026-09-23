@@ -2,6 +2,7 @@
 name = "muster-eval"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 rust-version = "1.85"
 description = "Muster A7 — 工具调用评测集：20 个固定样本，双 provider 成功率报告（G0′ 闸门证据）"
 

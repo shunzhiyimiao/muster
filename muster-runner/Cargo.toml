@@ -2,6 +2,7 @@
 name = "muster-runner"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 rust-version = "1.85"
 description = "Muster B1 — 任务执行器:路由 → 流式工具循环 → 审计事件链(Capsule-ready run)"
 

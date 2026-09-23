@@ -46,7 +46,9 @@ cargo run -p muster-eval -- --list
 (`cargo metadata` 生成,依赖变更后需重新生成)。Codex fork 遵循 Apache-2.0,
 义务落实见 `../muster-codex/NOTICE` 与 `FORK.md`。
 
-**Muster 自身的许可证尚未选定**——对外分发前必须先确定,详见上述文件。
+Muster 自身采用 **AGPL-3.0-or-later**(2026-09-23 定,全文见根目录 `LICENSE`):自托管部署
+与内部修改不受影响;把修改版作为网络服务提供给他人时,须向使用者提供对应源码(§13)。
+各 crate 的 `Cargo.toml` 与桌面壳 `package.json` 均已声明同一 SPDX 标识。
 
 设计决策写在各 crate 的 `lib.rs` 文档注释与 README 里,**改代码前先读**。
 总体规划(16 周 P0–P6,任务号 P0-01…P6-08)与概念稿见 `docs/`;

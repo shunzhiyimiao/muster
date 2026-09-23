@@ -16,7 +16,7 @@
 | 总规划任务 | 细化编号 | 状态 |
 |---|---|---|
 | P0-01 Fork codex + upstream 同步策略 | — | ✅ `~/muster-codex`,upstream=openai/codex,基点 fe01054a28,策略见其 FORK.md |
-| P0-02 Third-party Notice 与许可证清单 | — | ✅ THIRD-PARTY-NOTICES.md(依赖变更后需重新生成);**Muster 自身 LICENSE 未定** |
+| P0-02 Third-party Notice 与许可证清单 | — | ✅ THIRD-PARTY-NOTICES.md(依赖变更后需重新生成);Muster 自身 AGPL-3.0-or-later(2026-09-23 定) |
 | P0-03 本地 Provider | A2 muster-provider | ✅ wire=chat/completions;与 Responses API 的对齐由 muster-gateway 完成 |
 | P0-04/05 Offline Mode + 零公网验证 | (E4 外发计量可反哺) | **未过**:providers.toml 已配 Ollama 本地位,但本机未装 Ollama,A7 从未在本地模型上跑过 |
 | P0-06 thread/turn/流式事件验证 | — | ✅ 2026-07-30 P1 闸门:fork 经 muster-gateway 用 Kimi 完整改代码 |

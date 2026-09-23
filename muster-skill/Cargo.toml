@@ -2,6 +2,7 @@
 name = "muster-skill"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 rust-version = "1.85"
 description = "Muster 技能:SKILL.md 约定的过程性知识包(与 codex 同一格式),只从本地发现、审计只存哈希"
 

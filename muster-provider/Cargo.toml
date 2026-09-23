@@ -2,6 +2,7 @@
 name = "muster-provider"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 rust-version = "1.85"
 description = "Muster A2 — pluggable ModelProvider abstraction: chat / streaming / tool calls / usage metering / locality-aware routing metadata"
 

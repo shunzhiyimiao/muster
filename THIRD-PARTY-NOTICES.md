@@ -47,17 +47,21 @@
 - **ryu / matchit / subtle**:BSL-1.0 / BSD-3-Clause 系,均为宽松授权,
   义务仅为保留版权与许可声明。
 
-## ⚠️ 待决:Muster 自身的许可证
+## Muster 自身的许可证:AGPL-3.0-or-later
 
-**Muster 尚未选定自己的许可证**,仓库内没有 `LICENSE` 文件。当前为 private
-仓库,不影响使用;但**对外分发、开源或交付客户之前必须先确定**,因为它决定:
+2026-09-23 定:**GNU Affero General Public License v3.0 or later**,全文见根目录
+`LICENSE`;各 crate 的 `Cargo.toml` 与桌面壳 `package.json` 声明同一 SPDX 标识
+(`AGPL-3.0-or-later`)。
 
-- 客户/合作方能否以及如何再分发;
-- 是否需要与 Apache-2.0 的 Codex fork 分仓(当前已分仓,兼容性无虞);
-- 隔离网交付时安装包的许可声明内容(总规划 P6-05)。
+与本清单的关系:
 
-这是**产品与法务决策,不由工程侧代选**。定下来后:补 `LICENSE`、在 README
-声明、并把本节替换为正式说明。
+- 本清单中的第三方组件除 webpki-roots 外均为宽松许可,可并入 AGPL-3.0 作品;
+  webpki-roots(MPL-2.0)按 MPL-2.0 §3.3 可与 GPL 系许可组合,且本项目不修改它(见上)。
+- Codex 受控 fork 分仓保持 **Apache-2.0**(见下节)。Apache-2.0 可单向并入 AGPLv3 作品,
+  但两仓不合并,义务各自履行。
+- 隔离网交付时安装包须随附本文件与 `LICENSE`(总规划 P6-05)。
+- **以修改版对外提供网络服务时,须向使用者提供对应源码**(AGPL §13)。
+  服务端上线公网前要落实源码获取途径,例如在 `/health` 或页面页脚给出源码地址。
 
 ## Codex Fork(muster-codex)
 

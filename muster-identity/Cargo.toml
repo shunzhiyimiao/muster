@@ -2,6 +2,7 @@
 name = "muster-identity"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 rust-version = "1.85"
 description = "Muster P2 — 身份与权限语义内核:角色、作用域、判定纯函数(§4.3/§4.4)"
 
