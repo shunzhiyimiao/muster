@@ -350,6 +350,11 @@ pub enum EventBody {
         refused: Option<String>,
     },
 
+    /// 频道编制变更:把某张工牌引入频道,或请它离开(actor 是操作的人)。
+    /// 谁能在哪个频道说话是治理事项,与工牌能力变更同一待遇——留痕。
+    #[serde(rename = "channel.roster")]
+    ChannelRoster { channel_id: String, badge: String, joined: bool },
+
     /// 一次委派:本 run 的 Agent 把子任务交给另一张工牌,在同一工作区里跑一个子 run。
     /// 子 run 有自己的 run_id 与完整链(actor 是被委派的工牌);这条事件把父子连起来,
     /// 指令正文只留哈希。
@@ -462,6 +467,7 @@ impl EventBody {
             EventBody::WorkflowOutput { .. } => "workflow.output",
             EventBody::ToolEgress { .. } => "tool.egress",
             EventBody::RunDelegate { .. } => "run.delegate",
+            EventBody::ChannelRoster { .. } => "channel.roster",
             EventBody::TranscriptPurge { .. } => "transcript.purge",
             EventBody::TranscriptExport { .. } => "transcript.export",
             EventBody::AuditArchived { .. } => "audit.archived",

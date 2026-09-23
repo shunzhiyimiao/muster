@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, fmtDate, fmtTime } from "../api";
+import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, api, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
@@ -47,6 +47,22 @@ export function ChannelView({
   defaultBadge?: string | null;
 }) {
   const isPlatform = channel.id === "platform";
+  // 频道编制:引入了哪些工牌。空 = 没限制,名册里的都能点;非空 = 只有这些能在此说话
+  const [members, setMembers] = useState<string[]>([]);
+  const [rosterNote, setRosterNote] = useState<string | null>(null);
+  useEffect(() => {
+    api.channelAgents(channel.id).then(setMembers).catch(() => setMembers([]));
+  }, [channel.id]);
+  const chatAgents = members.length
+    ? members.map((b) => agents.find((a) => a.badge === b)).filter((a): a is AgentOut => !!a)
+    : agents;
+  const chatDefault = members[0] ?? defaultBadge;
+  const setMember = (badge: string, joined: boolean) => {
+    setRosterNote(null);
+    api.channelAgentSet(channel.id, badge, joined)
+      .then((m) => { setMembers(m); setRosterNote(joined ? `已引入 ${agents.find((a) => a.badge === badge)?.name ?? badge}` : `已请离 ${badge}`); setTimeout(() => setRosterNote(null), 4000); })
+      .catch((e) => setRosterNote(`失败:${e}`));
+  };
   const start = chat.lastStart?.channel_id === channel.id ? chat.lastStart : null;
   const fail = chat.lastFail?.channel_id === channel.id ? chat.lastFail : null;
 
@@ -146,6 +162,31 @@ export function ChannelView({
               <Radio size={11} className="wv" /> 语音房间 · 3 人 + 007 · 加入
             </button>
           )}
+          <span className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px]" style={{ color: T.faint }}>编制</span>
+            {members.length === 0 ? (
+              <span className="text-[10.5px]" style={{ color: T.faint }}>未指定,名册里的都能点</span>
+            ) : (
+              members.map((b) => {
+                const a = agents.find((x) => x.badge === b);
+                return (
+                  <span key={b} className="inline-flex items-center gap-1 text-[10.5px] px-2 py-0.5 rounded-lg" style={{ background: T.indigoSoft, color: T.indigo }}
+                    title={a ? `${a.badge} · ${a.role}` : b}>
+                    {a?.name ?? b}
+                    <button onClick={() => setMember(b, false)} title="请离本频道" style={{ color: T.indigo }}>×</button>
+                  </span>
+                );
+              })
+            )}
+            <select value="" onChange={(e) => e.target.value && setMember(e.target.value, true)}
+              className="text-[10.5px] px-1.5 py-0.5 rounded-lg" style={{ background: T.soft, color: T.sub }} title="从名册引入一张工牌">
+              <option value="">＋ 引入…</option>
+              {agents.filter((a) => !members.includes(a.badge)).map((a) => (
+                <option key={a.badge} value={a.badge}>{a.name} · {a.role}{a.sensitivity_max ? `(≤ ${a.sensitivity_max})` : ""}</option>
+              ))}
+            </select>
+            {rosterNote && <span className="text-[10.5px]" style={{ color: rosterNote.startsWith("失败") ? T.red : T.green }}>{rosterNote}</span>}
+          </span>
           <span className="ml-auto flex items-center gap-1.5">
             <Tag tone={channel.level === "restricted" ? "red" : channel.level === "internal" ? "amb" : undefined}>
               频道密级 {channel.level}
@@ -153,7 +194,7 @@ export function ChannelView({
           </span>
         </div>
         <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <ChatPane channel={channel} chat={chat} header={conceptCards} onThreadsChanged={onThreadsChanged} agents={agents} defaultBadge={defaultBadge} />
+          <ChatPane channel={channel} chat={chat} header={conceptCards} onThreadsChanged={onThreadsChanged} agents={chatAgents} defaultBadge={chatDefault} />
         </Card>
       </div>
 

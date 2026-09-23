@@ -232,6 +232,15 @@ impl StateStore {
                 session_id TEXT PRIMARY KEY,
                 state      TEXT NOT NULL,  -- SessionRatchet 的 JSON
                 updated_ms INTEGER NOT NULL
+            );
+
+            -- 频道编制:引入了哪些工牌。空 = 没限制;非空 = 只有这些能在此频道说话,
+            -- 第一张是频道默认。变更本身写审计(channel.roster),这里只是当前状态。
+            CREATE TABLE IF NOT EXISTS channel_agents(
+                channel_id TEXT NOT NULL,
+                badge      TEXT NOT NULL,
+                added_ms   INTEGER NOT NULL,
+                PRIMARY KEY(channel_id, badge)
             );",
         )?;
         // 老库没有 thread_id 列。**加列 + 回填,不是重建表**——
@@ -257,6 +266,26 @@ impl StateStore {
     }
 
     /// 状态库是便利层,写失败降级为日志,不阻断任务(与审计的 fail-closed 相反,刻意)。
+    /// 频道引入了哪些工牌,按引入顺序。
+    fn channel_agents(&self, channel_id: &str) -> Vec<String> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT badge FROM channel_agents WHERE channel_id = ?1 ORDER BY added_ms, rowid") else { return Vec::new() };
+        stmt.query_map(rusqlite::params![channel_id], |r| r.get::<_, String>(0))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
+    fn set_channel_agent(&self, channel_id: &str, badge: &str, joined: bool) -> rusqlite::Result<()> {
+        if joined {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO channel_agents(channel_id, badge, added_ms) VALUES(?1, ?2, ?3)",
+                rusqlite::params![channel_id, badge, now_ms() as i64],
+            )?;
+        } else {
+            self.conn.execute("DELETE FROM channel_agents WHERE channel_id = ?1 AND badge = ?2", rusqlite::params![channel_id, badge])?;
+        }
+        Ok(())
+    }
+
     fn insert(&self, channel_id: &str, role: &str, text: &str, run_id: Option<&str>, status: &str) {
         self.insert_in(&main_thread(channel_id), channel_id, role, text, run_id, status)
     }
@@ -1358,7 +1387,8 @@ async fn send_message(
         .await?;
     // 点将:谁来答。密级上限在这里核对,派不了就明说
     let roster = load_roster()?;
-    let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0)?;
+    let allowed = store.lock().unwrap().channel_agents(&channel.id);
+    let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0, &allowed)?;
     let system_prompt = format!("{SYSTEM_PROMPT}\n\n{}", agent.persona_prompt());
     record_msg(rmt.as_ref(), &store, &thread, &channel.id, "user", &text, None, "done").await?;
 
@@ -1789,7 +1819,8 @@ async fn run_workspace_task(
     let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
     // 点将:谁来干。只读工牌不建隔离工作区(没有写权限可换),其余按岗位卡装配
     let roster = load_roster()?;
-    let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0)?;
+    let allowed = store.lock().unwrap().channel_agents(&channel.id);
+    let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0, &allowed)?;
     let all_skills = found.skills.clone();
     let skills = skills_for(&agent, found.skills)?;
     let spec = TaskSpec {
@@ -2470,9 +2501,27 @@ fn pick_agent(
     requested: Option<&str>,
     text: &str,
     level: Sensitivity,
+    // 频道编制(引入了哪些工牌)。空 = 没限制;非空 = 只能点这些,第一张是频道默认
+    allowed: &[String],
 ) -> Result<(muster_roster::AgentSpec, String), String> {
+    let in_channel = |a: &muster_roster::AgentSpec| -> Result<(), String> {
+        if allowed.is_empty() || allowed.iter().any(|b| b.eq_ignore_ascii_case(&a.badge)) {
+            Ok(())
+        } else {
+            Err(format!("工牌 {}({})没有引入本频道;先在频道顶部的「编制」里引入,或点已引入的工牌", a.badge, a.name))
+        }
+    };
+    let channel_default = || -> Result<muster_roster::AgentSpec, String> {
+        for b in allowed {
+            if let Some(a) = roster.find(b) {
+                return Ok(a.clone());
+            }
+        }
+        roster.default_agent().cloned().ok_or_else(|| "名册为空".to_string())
+    };
     let (agent, body) = if let Some(key) = requested.filter(|k| !k.trim().is_empty()) {
         let a = roster.find(key).ok_or_else(|| format!("名册里没有工牌 {key}"))?;
+        in_channel(a)?;
         // 指名之后消息开头若还 @ 了同一个人,称呼去掉
         let body = roster
             .mention(text)
@@ -2481,9 +2530,10 @@ fn pick_agent(
             .unwrap_or_else(|| text.to_string());
         (a.clone(), body)
     } else if let Some((a, body)) = roster.mention(text) {
+        in_channel(a)?;
         (a.clone(), body)
     } else {
-        (roster.default_agent().ok_or("名册为空")?.clone(), text.to_string())
+        (channel_default()?, text.to_string())
     };
     if !agent.allows_level(level) {
         return Err(format!(
@@ -2562,6 +2612,63 @@ fn record_badge_updates(audit: &Arc<Mutex<AuditStore>>, roster: &muster_roster::
         n += 1;
     }
     Ok(n)
+}
+
+/// 频道引入了哪些工牌(按引入顺序)。个人空间恒为空:名册里的都能点。
+#[tauri::command]
+async fn channel_agents(state: State<'_, AppState>, channel_id: String) -> Result<Vec<String>, String> {
+    let store = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.state.clone()
+    };
+    let members = store.lock().unwrap().channel_agents(&channel_id);
+    Ok(members)
+}
+
+/// 引入 / 请离一张工牌。需要管理成员的权限;变更写审计 channel.roster。
+#[tauri::command]
+async fn channel_agent_set(
+    state: State<'_, AppState>,
+    channel_id: String,
+    badge: String,
+    joined: bool,
+) -> Result<Vec<String>, String> {
+    let channel = resolve_channel(&state, &channel_id).await?;
+    if channel.personal {
+        return Err("个人空间不设编制:名册里的工牌都能点".into());
+    }
+    let who = require(muster_identity::Action::ManageMembers, muster_identity::Scope::Channel(channel.id.clone()))?;
+    let roster = load_roster()?;
+    let agent = roster.find(&badge).ok_or_else(|| format!("名册里没有工牌 {badge}"))?.clone();
+    if joined && !agent.allows_level(channel.level) {
+        return Err(format!(
+            "工牌 {}({})的密级上限低于频道密级 {:?},引入了也说不了话",
+            agent.badge, agent.name, channel.level
+        ));
+    }
+    let (store, audit) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        (b.state.clone(), b.audit.clone())
+    };
+    store.lock().unwrap().set_channel_agent(&channel.id, &agent.badge, joined).map_err(|e| e.to_string())?;
+    audit
+        .lock()
+        .unwrap()
+        .append(NewEvent {
+            ts_ms: None,
+            actor: Actor::human(who.id),
+            scope: Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
+            run_id: None,
+            session_id: None,
+            policy_version: Some(POLICY_VERSION.into()),
+            label: Some(channel.level),
+            locality: None,
+            body: EventBody::ChannelRoster { channel_id: channel.id.clone(), badge: agent.badge.clone(), joined },
+        })
+        .map_err(|e| format!("审计写入失败:{e}"))?;
+    let members = store.lock().unwrap().channel_agents(&channel.id);
+    Ok(members)
 }
 
 #[derive(Serialize)]
@@ -4239,6 +4346,8 @@ fn main() {
             home_stats,
             agent_stats,
             roster_list,
+            channel_agents,
+            channel_agent_set,
             history_bulk,
             roster_stats,
             roster_counts_cmd,
@@ -4750,5 +4859,59 @@ mod conversation_admin_tests {
         let t = s.threads_of("personal").unwrap();
         assert_eq!(t[0].title, "新名");
         assert_eq!(s.thread_history("conv:a").unwrap().len(), 1, "改名动了消息");
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+
+    fn roster() -> muster_roster::Roster {
+        let card = |b: &str, name: &str, extra: &str| {
+            muster_roster::AgentSpec::parse(
+                &format!("---\nname: {name}\nrole: r\ndescription: d\n{extra}\n---\n说明书\n"),
+                std::path::Path::new(&format!("/x/{b}/AGENT.md")),
+                std::path::Path::new("/x"),
+            )
+            .unwrap()
+        };
+        muster_roster::Roster {
+            agents: vec![card("A-007", "小七", "default: true"), card("A-012", "阿岩", "aliases: [实现工程师]"), card("A-021", "小析", "sensitivity_max: open")],
+            problems: vec![],
+        }
+    }
+
+    /// 频道编制:非空时只能点已引入的,第一张是频道默认;空时名册默认。
+    #[test]
+    fn channel_roster_constrains_picking() {
+        let r = roster();
+        let (a, _) = pick_agent(&r, None, "你好", Sensitivity::Open, &[]).unwrap();
+        assert_eq!(a.badge, "A-007", "没限制 ⇒ 名册默认");
+        let allowed = vec!["A-012".to_string(), "A-021".to_string()];
+        let (a, _) = pick_agent(&r, None, "你好", Sensitivity::Open, &allowed).unwrap();
+        assert_eq!(a.badge, "A-012", "有编制 ⇒ 第一张是频道默认");
+        let (a, body) = pick_agent(&r, None, "@小析 出个报告", Sensitivity::Open, &allowed).unwrap();
+        assert_eq!((a.badge.as_str(), body.as_str()), ("A-021", "出个报告"));
+        let e = pick_agent(&r, None, "@小七 看看", Sensitivity::Open, &allowed).unwrap_err();
+        assert!(e.contains("没有引入本频道"), "{e}");
+        let e = pick_agent(&r, Some("A-007"), "看看", Sensitivity::Open, &allowed).unwrap_err();
+        assert!(e.contains("没有引入本频道"), "{e}");
+        // 密级上限仍是硬闸,与编制无关
+        let e = pick_agent(&r, Some("A-021"), "看看", Sensitivity::Internal, &allowed).unwrap_err();
+        assert!(e.contains("密级上限"), "{e}");
+    }
+
+    #[test]
+    fn channel_agents_roundtrip_in_state_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = StateStore::open(dir.path().join("s.db").to_str().unwrap()).unwrap();
+        assert!(s.channel_agents("platform").is_empty());
+        s.set_channel_agent("platform", "A-012", true).unwrap();
+        s.set_channel_agent("platform", "A-007", true).unwrap();
+        s.set_channel_agent("platform", "A-012", true).unwrap();
+        assert_eq!(s.channel_agents("platform"), vec!["A-012", "A-007"], "按引入顺序,重复引入不重复");
+        s.set_channel_agent("platform", "A-012", false).unwrap();
+        assert_eq!(s.channel_agents("platform"), vec!["A-007"]);
+        assert!(s.channel_agents("pay").is_empty(), "别的频道不受影响");
     }
 }

@@ -474,6 +474,11 @@ export const api = {
   skillsList: () => invoke<SkillsOut>("skills_list"),
   /** 名册:聊天与任务能点的工牌,与后端同一份发现结果 */
   rosterList: () => invoke<RosterOut>("roster_list"),
+  /** 频道里引入了哪些工牌(按引入顺序;空 = 没限制,名册里的都能点) */
+  channelAgents: (channelId: string) => invoke<string[]>("channel_agents", { channelId }),
+  /** 引入 / 请离一张工牌;写审计 channel.roster */
+  channelAgentSet: (channelId: string, badge: string, joined: boolean) =>
+    invoke<string[]>("channel_agent_set", { channelId, badge, joined }),
   workflowsList: () => invoke<WorkflowsOut>("workflows_list"),
   /** 手动跑一次;返回 run_id,过程走与任务相同的事件流 */
   workflowRunNow: (name: string) => invoke<string>("workflow_run_now", { name }),
