@@ -341,6 +341,13 @@ pub async fn run_task_at(
                     body,
                 })
                 .map_err(|er| RunnerError::Audit(er.to_string()))?;
+            // 路由被拒时隔离工作区已经建好但一个字节都没写:立即回收,别留个空壳等保留策略兜底。
+            // (真机跑工作流时撞见的:被拒的运行在 worktrees 目录里留下了目录与分支。)
+            if let Some(wt) = worktree.take() {
+                if let Err(er) = wt.cleanup() {
+                    on_event(RunnerEvent::Notice { text: format!("回收隔离工作区失败:{er}") });
+                }
+            }
             return Err(RunnerError::Refused(e.to_string()));
         }
     };

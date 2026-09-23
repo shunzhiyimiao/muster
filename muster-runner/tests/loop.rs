@@ -252,3 +252,42 @@ async fn restricted_with_cloud_only_is_refused_and_audited() {
     assert!(e.payload["reason"].as_str().unwrap_or("").contains("绝不升云"));
     assert_eq!(store.verify_chain().unwrap().unwrap(), 1);
 }
+
+/// 路由被拒时隔离工作区已建好但没写过一个字节:必须立即回收,不留空壳、不留分支。
+#[tokio::test]
+async fn refused_route_reclaims_its_untouched_worktree() {
+    let base = tempfile::tempdir().unwrap();
+    let g = |args: &[&str]| {
+        std::process::Command::new("git").arg("-C").arg(base.path()).args(args).output().unwrap()
+    };
+    g(&["init", "-q", "-b", "main"]);
+    g(&["config", "user.email", "t@t"]);
+    g(&["config", "user.name", "t"]);
+    std::fs::write(base.path().join("a.txt"), "a\n").unwrap();
+    g(&["add", "-A"]);
+    g(&["commit", "-qm", "init"]);
+    let root = tempfile::tempdir().unwrap();
+
+    let mock = MockProvider::cloud("mock-k").with_text("不该被调用");
+    let router = Router::new(
+        vec![Arc::new(mock) as Arc<dyn ModelProvider>],
+        OrgPolicy::new(Sensitivity::Internal).unwrap(),
+    );
+    let audit = Arc::new(Mutex::new(AuditStore::open_in_memory().unwrap()));
+    let mut sp = spec(
+        "RUN-R1",
+        base.path(),
+        vec![LabelSource::new(LabelOrigin::Channel, Sensitivity::Restricted, "channel:sec")],
+    );
+    sp.workspace_root = Some(root.path().to_path_buf());
+
+    let mut events = Vec::new();
+    let err = run_task(&router, &audit, &RunnerConfig::default(), sp, |e| events.push(e))
+        .await
+        .expect_err("restricted + 仅云端必须拒绝");
+    assert!(matches!(err, RunnerError::Refused(_)));
+    assert!(events.iter().any(|e| matches!(e, RunnerEvent::WorkspaceReady { .. })), "拒绝前工作区确实建过");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0, "被拒的运行不得留下隔离工作区");
+    let branches = String::from_utf8(g(&["branch", "--list", "muster/*"]).stdout).unwrap();
+    assert!(branches.trim().is_empty(), "分支也应回收:{branches}");
+}
