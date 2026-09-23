@@ -291,7 +291,7 @@ cat <<EOF
 
   # 2) 配 provider 目录。**不配的话能登录能开会,但跑任务会被路由拒绝**
   #    ——目录空就是一个通道都没有,而那个症状看不出根因
-  \$C muster-admin provider-add kimi https://api.kimi.com/coding/v1 \\
+  \$C muster-admin provider-add kimi https://api.moonshot.cn/v1 \\
        kimi-k3 cloud KIMI_API_KEY --default
   \$C muster-admin providers
 

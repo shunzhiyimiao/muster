@@ -36,6 +36,11 @@ pub enum ProviderConfig {
         api_key_env: Option<String>,
         #[serde(default = "default_timeout_secs")]
         timeout_secs: u64,
+        /// 探活(`GET /models`)的超时。与正式调用分开:探活只回答"活着吗",
+        /// 太短会把响应慢的端点误判成不可用(实测 Moonshot 开放平台的 /models 要 3-12 秒),
+        /// 太长会让 restricted 任务在云端不可用时等很久才 fail-closed。
+        #[serde(default = "default_probe_timeout_secs")]
+        probe_timeout_secs: u64,
     },
     /// In-memory mock — demo seeding and tests.
     Mock {
@@ -47,6 +52,12 @@ pub enum ProviderConfig {
 
 fn default_timeout_secs() -> u64 {
     120
+}
+
+pub const DEFAULT_PROBE_TIMEOUT_SECS: u64 = 20;
+
+fn default_probe_timeout_secs() -> u64 {
+    DEFAULT_PROBE_TIMEOUT_SECS
 }
 
 pub struct ProviderRegistry {
@@ -81,6 +92,7 @@ impl ProviderRegistry {
                     display_name,
                     api_key_env,
                     timeout_secs,
+                    probe_timeout_secs,
                 } => {
                     let api_key = match api_key_env {
                         None => None,
@@ -97,6 +109,7 @@ impl ProviderRegistry {
                         locality,
                         display_name: display_name.unwrap_or_else(|| id.clone()),
                         timeout: std::time::Duration::from_secs(timeout_secs),
+                        probe_timeout: std::time::Duration::from_secs(probe_timeout_secs),
                     };
                     Arc::new(OpenAiCompatProvider::new(id.clone(), oc)?)
                 }

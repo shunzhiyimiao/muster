@@ -371,7 +371,7 @@ mod wire_tests {
             "kimi".to_string(),
             CatalogEntry {
                 kind: "openai_compat".into(),
-                base_url: "https://api.kimi.com/coding/v1".into(),
+                base_url: "https://api.moonshot.cn/v1".into(),
                 model: "kimi-k3".into(),
                 locality: "cloud".into(),
                 display_name: Some("云端·Kimi K3".into()),

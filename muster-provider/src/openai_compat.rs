@@ -31,6 +31,9 @@ pub struct OpenAiCompatConfig {
     pub display_name: String,
     /// Total timeout for non-streaming calls; streams use connect timeout only.
     pub timeout: Duration,
+    /// Health-probe (`GET /models`) timeout — separate from `timeout` because a probe only
+    /// asks "are you there", and some endpoints answer that slowly (Moonshot: 3–12 s).
+    pub probe_timeout: Duration,
 }
 
 impl OpenAiCompatConfig {
@@ -42,6 +45,7 @@ impl OpenAiCompatConfig {
             locality: Locality::Cloud,
             display_name: "云端·DeepSeek".into(),
             timeout: Duration::from_secs(120),
+            probe_timeout: Duration::from_secs(crate::registry::DEFAULT_PROBE_TIMEOUT_SECS),
         }
     }
 
@@ -54,6 +58,7 @@ impl OpenAiCompatConfig {
             locality: Locality::Cloud,
             display_name: "云端·Qwen".into(),
             timeout: Duration::from_secs(120),
+            probe_timeout: Duration::from_secs(crate::registry::DEFAULT_PROBE_TIMEOUT_SECS),
         }
     }
 
@@ -66,6 +71,7 @@ impl OpenAiCompatConfig {
             locality: Locality::Local,
             display_name: "本地·Ollama".into(),
             timeout: Duration::from_secs(300),
+            probe_timeout: Duration::from_secs(crate::registry::DEFAULT_PROBE_TIMEOUT_SECS),
         }
     }
 }
@@ -79,6 +85,7 @@ impl std::fmt::Debug for OpenAiCompatConfig {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("locality", &self.locality)
             .field("timeout", &self.timeout)
+            .field("probe_timeout", &self.probe_timeout)
             .finish()
     }
 }
@@ -273,10 +280,17 @@ impl ModelProvider for OpenAiCompatProvider {
     async fn health_check(&self) -> Result<(), ProviderError> {
         let resp = self
             .authed(self.client.get(self.url("models")))
-            .timeout(Duration::from_secs(5))
+            .timeout(self.cfg.probe_timeout)
             .send()
             .await
-            .map_err(|e| self.map_transport_error(e))?;
+            .map_err(|e| {
+                // 报探活自己的超时,不要印正式调用的那个数——否则"5 秒没回"会被写成"300 秒超时"
+                if e.is_timeout() {
+                    ProviderError::Timeout(self.cfg.probe_timeout)
+                } else {
+                    self.map_transport_error(e)
+                }
+            })?;
         self.check_status(resp).await.map(|_| ())
     }
 }

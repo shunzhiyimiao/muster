@@ -5,12 +5,14 @@ default = "kimi"
 
 [providers.kimi]
 kind = "openai_compat"
-base_url = "https://api.kimi.com/coding/v1"
+base_url = "https://api.moonshot.cn/v1"
 model = "kimi-k3"
 locality = "cloud"
-display_name = "云端·Kimi K3"
+display_name = "云端·Kimi K3(Moonshot 开放平台)"
 api_key_env = "KIMI_API_KEY"
 timeout_secs = 300
+# 探活(/models)实测要 3-12 秒,别用默认 20 秒去赌
+probe_timeout_secs = 30
 
 # 本地通道:Ollama 未运行时探活失败,restricted 频道将 fail-closed 拒绝
 # ——这是产品行为,不是故障(绝不静默升云)。
