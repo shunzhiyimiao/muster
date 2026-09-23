@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, Play, Send } from "lucide-react";
-import { api, Channel, Sensitivity, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
+import { api, AgentOut, Channel, Sensitivity, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -13,6 +13,8 @@ export interface Msg {
   runId?: string;
   status: "streaming" | "done" | "failed" | "refused";
   ts?: number;
+  /** 说话的工牌(agent 消息) */
+  badge?: string | null;
 }
 
 export interface ChatState {
@@ -23,7 +25,7 @@ export interface ChatState {
   lastFail: FailPayload | null;
   /// P1-04:最近一次任务的真实代码变更(worktree 模式)。
   lastDiff: DiffPayload | null;
-  send: (channelId: string, text: string, asTask: boolean, threadId?: string | null) => void;
+  send: (channelId: string, text: string, asTask: boolean, threadId?: string | null, badge?: string | null) => void;
   /// C1:把持久化历史灌进尚未有内容的频道(避免与本次会话消息重复)。
   hydrate: (rows: StoredMsg[]) => void;
   /** 强制重读某个频道(hydrate 只填空频道,刷新不了已有内容的) */
@@ -105,7 +107,7 @@ export function useChat(onActivity: () => void): ChatState {
     };
   }, []);
 
-  const send = (channelId: string, text: string, asTask: boolean, threadId?: string | null) => {
+  const send = (channelId: string, text: string, asTask: boolean, threadId?: string | null, badge?: string | null) => {
     const t = text.trim();
     if (!t || busy[channelId]) return;
     const userKey = `u-${Date.now()}`;
@@ -115,12 +117,12 @@ export function useChat(onActivity: () => void): ChatState {
       [channelId]: [
         ...(prev[channelId] ?? []),
         { key: userKey, role: "user", text: asTask ? `▶ 任务:${t}` : t, status: "done" },
-        { key: agentKey, role: "agent", text: "", status: "streaming" },
+        { key: agentKey, role: "agent", text: "", status: "streaming", badge: badge ?? null },
       ],
     }));
     pending.current[channelId] = [...(pending.current[channelId] ?? []), agentKey];
     setBusy((b) => ({ ...b, [channelId]: true }));
-    (asTask ? api.runTask(channelId, t, threadId) : api.send(channelId, t, threadId)).catch((e) => {
+    (asTask ? api.runTask(channelId, t, threadId, badge) : api.send(channelId, t, threadId, badge)).catch((e) => {
       setMsgs((prev) => ({
         ...prev,
         [channelId]: (prev[channelId] ?? []).map((m) => (m.key === agentKey ? { ...m, status: "failed", text: `⚠️ ${e}` } : m)),
@@ -139,6 +141,7 @@ export function useChat(onActivity: () => void): ChatState {
     runId: r.run_id ?? undefined,
     status: (["done", "failed", "refused"].includes(r.status) ? r.status : "done") as Msg["status"],
     ts: r.ts_ms,
+    badge: r.badge ?? null,
   });
 
   const hydrate = (rows: StoredMsg[]) => {
@@ -198,6 +201,8 @@ export function ChatPane({
   onThreadsChanged,
   channels = [],
   personalFloor = "open",
+  agents = [],
+  defaultBadge = null,
 }: {
   channel: Channel;
   chat: ChatState;
@@ -211,9 +216,17 @@ export function ChatPane({
   channels?: Channel[];
   /** 个人会话当前的密级底线,决定哪些频道发得进去 */
   personalFloor?: Sensitivity;
+  /** 名册(编制):用来点将,以及显示每条回复是哪张工牌说的 */
+  agents?: AgentOut[];
+  defaultBadge?: string | null;
 }) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
+  // 点将:这条输入交给哪张工牌;不选就是默认工牌,消息开头 @ 别名也能指名
+  const [badge, setBadge] = useState<string | null>(null);
+  const effBadge = badge ?? defaultBadge ?? agents[0]?.badge ?? null;
+  const nameOf = (b?: string | null) => agents.find((a) => a.badge === b)?.name;
+  const curName = nameOf(effBadge) ?? agentName;
   const scroller = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const list = chat.msgs[channel.id] ?? [];
@@ -233,7 +246,7 @@ export function ChatPane({
       return;
     }
     setHint(null);
-    chat.send(channel.id, draft, asTask, thread);
+    chat.send(channel.id, draft, asTask, thread, effBadge);
     setDraft("");
   };
 
@@ -454,8 +467,8 @@ export function ChatPane({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[13px] font-bold">{agentName}</span>
-                  <Tag tone="ind">编制 A-007</Tag>
+                  <span className="text-[13px] font-bold">{nameOf(m.badge) ?? curName}</span>
+                  <Tag tone="ind">编制 {m.badge ?? effBadge ?? "—"}</Tag>
                   {m.runId && (
                     <span className="text-[10px]" style={{ color: T.faint }}>
                       {m.runId}
@@ -479,13 +492,30 @@ export function ChatPane({
         )}
       </div>
       <div className="px-4 pb-4">
+        {agents.length > 1 && (
+          <div className="flex items-center gap-1.5 mb-1.5 px-1 flex-wrap">
+            <span className="text-[10px]" style={{ color: T.faint }}>点将</span>
+            {agents.map((a) => {
+              const on = a.badge === effBadge;
+              return (
+                <button key={a.badge} onClick={() => setBadge(a.badge)}
+                  title={`${a.badge} · ${a.role} · ${a.tools === "read-only" ? "只读" : "可写隔离区"}${a.sensitivity_max ? ` · 密级上限 ${a.sensitivity_max}` : ""}`}
+                  className="text-[10.5px] px-2 py-0.5 rounded-lg"
+                  style={{ background: on ? T.indigo : T.soft, color: on ? "#fff" : T.sub, fontWeight: on ? 600 : 500 }}>
+                  {a.name}
+                </button>
+              );
+            })}
+            <span className="text-[10px]" style={{ color: T.faint }}>或在消息开头写 @名字</span>
+          </div>
+        )}
         <div className="flex items-end gap-2 px-4 py-2.5 rounded-xl" style={{ background: T.soft }}>
           <textarea
             ref={inputRef}
             value={draft}
             disabled={isBusy}
             placeholder={
-              isBusy ? "执行中…" : channel.personal ? `对${agentName}说点什么…(Enter 发送)` : `给 #${channel.name} 发消息…可 ▶ 交给 ${agentName} 执行任务`
+              isBusy ? "执行中…" : channel.personal ? `对${curName}说点什么…(Enter 发送)` : `给 #${channel.name} 发消息…可 ▶ 交给 ${curName} 执行任务`
             }
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {

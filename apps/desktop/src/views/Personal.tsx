@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { T, LV } from "../theme";
 import { Card, ChipDd, IBtn, RouteTag, Tag } from "../ui";
-import { AgentStats, Channel, HomeStats, WhoAmI, fmtBytes, fmtDate } from "../api";
+import { AgentStats, Channel, HomeStats, RosterOut, WhoAmI, fmtBytes, fmtDate } from "../api";
 import { Msg } from "../chat";
 import { MEMO } from "../data";
 
@@ -241,11 +241,18 @@ export function AgentProfile({
   streamed,
   onStream,
   goChat,
+  roster = null,
+  badge = null,
+  onPick,
 }: {
   agent: AgentStats | null;
   streamed: boolean;
   onStream: () => void;
   goChat: () => void;
+  /** 名册(编制)与当前看的是哪张工牌 */
+  roster?: RosterOut | null;
+  badge?: string | null;
+  onPick?: (badge: string) => void;
 }) {
   // 真实热力图:heat 按日期升序(336 天);行 = 周一..周日,列 = 周。
   const heat = agent?.heat ?? [];
@@ -267,9 +274,44 @@ export function AgentProfile({
   });
   const lv = (n: number) => (n <= 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 6 ? 3 : 4);
   const firstSeen = agent?.first_seen_ms ? fmtDate(agent.first_seen_ms).split(" ")[0] : null;
+  const curBadge = agent?.badge ?? badge ?? roster?.default_badge ?? null;
+  const me = roster?.agents.find((a) => a.badge === curBadge) ?? null;
 
   return (
     <div className="px-7 pb-8 pt-2 flex flex-col gap-4">
+      {/* 编制名册:每张工牌一张卡,点哪张看哪张的档案 */}
+      <Card className="p-4">
+        <div className="flex items-center gap-2 mb-2.5">
+          <span className="text-[10px] font-semibold tracking-widest" style={{ color: T.faint }}>编制名册</span>
+          <span className="text-[10.5px]" style={{ color: T.faint }}>
+            {roster ? `${roster.agents.length} 张工牌 · 定义在 ${roster.roots[0] ?? ".agents/roster"}/<工牌>/AGENT.md,个人级放 ${roster.roots[1] ?? "~/.muster/roster"}` : "读取中…"}
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          {(roster?.agents ?? []).map((a) => {
+            const on = a.badge === curBadge;
+            return (
+              <button key={a.badge} onClick={() => onPick?.(a.badge)} className="text-left rounded-xl p-3"
+                style={{ background: on ? T.indigoSoft : T.panel, border: `1px solid ${on ? T.indigo : T.line}` }}>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <b className="text-[13px]">{a.name}</b>
+                  <Tag tone="ind">{a.badge}</Tag>
+                  {a.is_default && <Tag tone="grn">默认</Tag>}
+                  {a.sensitivity_max && <Tag tone={a.sensitivity_max === "restricted" ? "red" : "amb"}>≤ {a.sensitivity_max}</Tag>}
+                </div>
+                <div className="text-[11px] mt-1" style={{ color: T.sub }}>{a.role} · {a.tools === "read-only" ? "只读" : "隔离区可写"}{a.skills.length ? ` · 技能 ${a.skills.join("、")}` : ""}</div>
+                <div className="text-[10.5px] mt-1" style={{ color: T.faint }}>Runs {a.runs} · 待审批 {a.pending_approvals} · 外发 {fmtBytes(a.egress_bytes)}</div>
+              </button>
+            );
+          })}
+        </div>
+        {roster && roster.problems.length > 0 && (
+          <div className="mt-2.5 text-[10.5px]" style={{ color: T.amber }}>
+            {roster.problems.map((p) => <div key={p}>⚠️ {p}</div>)}
+          </div>
+        )}
+      </Card>
+
       {/* 档案头 */}
       <Card className="p-6 flex items-start gap-6">
         <div className="relative shrink-0" style={{ transform: "rotate(-3deg)" }}>
@@ -287,8 +329,8 @@ export function AgentProfile({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5">
-            <span className="text-2xl font-extrabold">小七</span>
-            <Tag tone="ind">编制 {agent?.badge ?? "—"} · 代码评审员</Tag>
+            <span className="text-2xl font-extrabold">{me?.name ?? "小七"}</span>
+            <Tag tone="ind">编制 {agent?.badge ?? "—"} · {me?.role ?? "代码评审员"}</Tag>
             <button disabled title="Agent 档案编辑尚未实现" className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg" style={{ background: T.soft, color: T.sub , opacity: 0.45, cursor: "not-allowed"}}>
               <Pencil size={11} /> 编辑
             </button>
@@ -299,7 +341,9 @@ export function AgentProfile({
             <RouteTag />
           </div>
           <div className="text-[12.5px] mt-2.5 leading-relaxed" style={{ color: "#454A5C" }}>
-            负责代码评审与变更验证:静态审查、跑测试、产出修复 diff 与评审意见。只读工具(list_dir / read_file / grep)始终可用;在任务的隔离工作区里另有写工具与 run_command(按允许清单执行构建/测试,不经 shell)。路径圈禁,合入一律走审批(P5)。
+            {me
+              ? `${me.description} 工具:只读三件套始终可用;${me.tools === "read-only" ? "本工牌不进隔离工作区,不改代码。" : "在任务的隔离工作区里另有写工具与 run_command(按岗位卡的允许清单执行,不经 shell),合入一律走审批。"}${me.commands ? ` 允许的命令:${me.commands.join(" / ")}。` : ""}`
+              : "负责代码评审与变更验证:静态审查、跑测试、产出修复 diff 与评审意见。只读工具始终可用;在任务的隔离工作区里另有写工具与 run_command,合入一律走审批。"}
           </div>
           <div className="flex items-center gap-2 mt-3">
             {streamed ? (
@@ -327,7 +371,7 @@ export function AgentProfile({
           {[
             [agent ? String(agent.hired_days) : "—", "入职天数"],
             [agent ? String(agent.total_runs) : "—", "累计 Runs"],
-            ["3 / 6", "工具(只读 / 隔离区)"],
+            [me?.tools === "read-only" ? "3 / —" : "3 / 6", "工具(只读 / 隔离区)"],
             [agent ? fmtBytes(agent.total_egress_bytes) : "—", "累计外发"],
           ].map(([v, l]) => (
             <div key={l} className="rounded-xl p-3.5" style={{ background: T.panel }}>

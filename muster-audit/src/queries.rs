@@ -133,6 +133,48 @@ pub fn workflow_runs(conn: &Connection, workflow: &str, limit: u32) -> Result<Ve
     Ok(out)
 }
 
+// ---------------------------------------------------------------- 编制:按 actor 的统计
+
+pub const SQL_ACTOR_RUNS: &str =
+    "SELECT COUNT(DISTINCT run_id) FROM audit_event WHERE actor_id = ?1 AND run_id IS NOT NULL";
+
+/// 某个 actor(工牌)参与过的 run 数。
+pub fn actor_runs(conn: &Connection, actor_id: &str) -> Result<u64, StoreError> {
+    let n: i64 = conn.query_row(SQL_ACTOR_RUNS, params![actor_id], |r| r.get(0))?;
+    Ok(n as u64)
+}
+
+pub const SQL_ACTOR_EGRESS: &str = r#"
+SELECT COALESCE(SUM(CASE WHEN json_type(payload,'$.bytes_out') = 'object'
+                         THEN json_extract(payload,'$.bytes_out.measured') ELSE 0 END), 0)
+FROM audit_event
+WHERE actor_id = ?1 AND event_type IN ('model.call', 'tool.egress')
+"#;
+
+/// 某个 actor 的实测外发字节(模型 + 工具两条通道)。
+pub fn actor_egress_bytes(conn: &Connection, actor_id: &str) -> Result<u64, StoreError> {
+    let n: i64 = conn.query_row(SQL_ACTOR_EGRESS, params![actor_id], |r| r.get(0))?;
+    Ok(n as u64)
+}
+
+pub const SQL_LAST_BADGE_UPDATE: &str = r#"
+SELECT payload FROM audit_event
+WHERE event_type = 'badge.update' AND actor_id = ?1
+ORDER BY event_id DESC LIMIT 1
+"#;
+
+/// 某工牌最近一次 `badge.update`:(能力哈希, 版本号)。从未记录 ⇒ `None`。
+pub fn last_badge_update(conn: &Connection, badge: &str) -> Result<Option<(String, u32)>, StoreError> {
+    use rusqlite::OptionalExtension;
+    let payload: Option<String> = conn
+        .query_row(SQL_LAST_BADGE_UPDATE, params![badge], |r| r.get(0))
+        .optional()?;
+    Ok(payload.and_then(|p| {
+        let v: serde_json::Value = serde_json::from_str(&p).ok()?;
+        Some((v["capabilities_hash"].as_str()?.to_owned(), v["badge_version"].as_u64()? as u32))
+    }))
+}
+
 /// 第 7 幕降级流(时间窗内所有带 downgrade 的路由决策)。
 pub const SQL_DOWNGRADES: &str = r#"
 SELECT ts_ms, run_id, json_extract(payload, '$.downgrade')
@@ -1110,5 +1152,64 @@ mod home_query_tests {
         assert_eq!(workflow_last_trigger(store.conn(), "daily").unwrap(), Some(20));
         assert_eq!(workflow_last_trigger(store.conn(), "other").unwrap(), None);
         assert!(workflow_runs(store.conn(), "other", 10).unwrap().is_empty());
+    }
+
+    /// 编制:按 actor 的 run 数与外发字节;工牌能力变更取最近一次。
+    #[test]
+    fn actor_stats_and_last_badge_update() {
+        use crate::event::{ContentHash, EgressBytes};
+        let mut store = AuditStore::open_in_memory().unwrap();
+        let call = |actor: &str, run: &str, bytes: u64| NewEvent {
+            ts_ms: Some(1_000),
+            actor: Actor::agent(actor),
+            scope: Scope::default(),
+            run_id: Some(run.into()),
+            session_id: None,
+            policy_version: None,
+            label: None,
+            locality: Some(Locality::Cloud),
+            body: EventBody::ModelCall {
+                provider_id: "p".into(),
+                model: "m".into(),
+                locality: Locality::Cloud,
+                label: Sensitivity::Open,
+                tokens_in: None,
+                tokens_out: None,
+                bytes_in: 1,
+                bytes_out: EgressBytes::Measured(bytes),
+                latency_ms: 1,
+                request_hash: ContentHash::sha256(b"r"),
+            },
+        };
+        store.append(call("A-007", "RUN-1", 100)).unwrap();
+        store.append(call("A-007", "RUN-1", 50)).unwrap();
+        store.append(call("A-007", "RUN-2", 10)).unwrap();
+        store.append(call("A-012", "RUN-3", 7)).unwrap();
+        assert_eq!(actor_runs(store.conn(), "A-007").unwrap(), 2);
+        assert_eq!(actor_egress_bytes(store.conn(), "A-007").unwrap(), 160);
+        assert_eq!(actor_runs(store.conn(), "A-012").unwrap(), 1);
+        assert_eq!(actor_runs(store.conn(), "A-099").unwrap(), 0);
+
+        assert_eq!(last_badge_update(store.conn(), "A-007").unwrap(), None);
+        for (v, h) in [(1u32, "sha256:aa"), (2, "sha256:bb")] {
+            store
+                .append(NewEvent {
+                    ts_ms: Some(2_000 + v as u64),
+                    actor: Actor::agent("A-007"),
+                    scope: Scope::default(),
+                    run_id: None,
+                    session_id: None,
+                    policy_version: None,
+                    label: None,
+                    locality: None,
+                    body: EventBody::BadgeUpdate {
+                        changed_by: Actor::system("roster"),
+                        capabilities_hash: ContentHash(h.into()),
+                        badge_version: v,
+                    },
+                })
+                .unwrap();
+        }
+        assert_eq!(last_badge_update(store.conn(), "A-007").unwrap(), Some(("sha256:bb".into(), 2)));
     }
 }

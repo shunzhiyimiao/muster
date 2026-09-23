@@ -49,6 +49,8 @@
 //! - 团队共享靠仓库(`.agents/skills/` 随代码提交);服务端分发未做。
 //! - 技能目录里的脚本、参考文件不会被读取,Agent 只看得到 SKILL.md 本身。
 
+pub mod frontmatter;
+
 use std::path::{Path, PathBuf};
 
 use muster_audit::{ContentHash, SkillRef};

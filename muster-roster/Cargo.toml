@@ -1,0 +1,17 @@
+[package]
+name = "muster-roster"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.85"
+description = "Muster Agent 编制:工牌(AGENT.md)—岗位、别名、技能、工具档位、命令白名单、密级上限;能力哈希进审计"
+
+[dependencies]
+muster-audit = { path = "../muster-audit" }
+muster-route = { path = "../muster-route" }
+muster-skill = { path = "../muster-skill" }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

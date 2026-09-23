@@ -69,6 +69,23 @@ pub fn request_merge(
     // 眼前——半成品同样值得复核,但**不能让它看起来像一次跑完的产出**。
     outcome: &str,
 ) -> Result<String, ApprovalError> {
+    request_merge_with_caps(audit, badge, policy_version, run_id, session_id, scope, diff, outcome, None)
+}
+
+/// 同 [`request_merge`],但工牌能力哈希由调用方给(见 muster-roster:tools / commands /
+/// 密级上限等的规范化哈希)。`None` 退回旧常量——只读工具 + 沙盒写。
+#[allow(clippy::too_many_arguments)]
+pub fn request_merge_with_caps(
+    audit: &Arc<Mutex<AuditStore>>,
+    badge: &str,
+    policy_version: &str,
+    run_id: &str,
+    session_id: Option<String>,
+    scope: Scope,
+    diff: &RunDiff,
+    outcome: &str,
+    capabilities: Option<&ContentHash>,
+) -> Result<String, ApprovalError> {
     let approval_id = approval_id_for(run_id);
     let caveat = match outcome {
         "success" => String::new(),
@@ -98,10 +115,11 @@ pub fn request_merge(
             body: EventBody::ApprovalRequest {
                 approval_id: approval_id.clone(),
                 requested_capability: CAP_MERGE.into(),
-                // 工牌当前能力:只读工具 + 沙盒写,**不含**合入主仓
-                badge_capabilities_hash: ContentHash::sha256(
-                    br#"["read_workspace","write_worktree"]"#,
-                ),
+                // 工牌当前能力:名册给的哈希;没有名册时退回"只读工具 + 沙盒写"的旧常量。
+                // 两者都**不含**合入主仓——合入永远是申请来的。
+                badge_capabilities_hash: capabilities.cloned().unwrap_or_else(|| {
+                    ContentHash::sha256(br#"["read_workspace","write_worktree"]"#)
+                }),
                 // 申请内容 = diff 正文的哈希(正文留 run 存储侧)
                 command_hash: ContentHash::sha256(diff.patch.as_bytes()),
                 reason,

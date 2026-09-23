@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, SkillsOut, WorkflowsOut,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, RosterOut, SkillsOut, WorkflowsOut,
   Sensitivity, TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
@@ -77,6 +77,8 @@ export default function App() {
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
   const [skills, setSkills] = useState<SkillsOut | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowsOut | null>(null);
+  const [roster, setRoster] = useState<RosterOut | null>(null);
+  const [agentBadge, setAgentBadge] = useState<string | null>(null);
   const [me, setMe] = useState<WhoAmI | null>(null);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
@@ -86,7 +88,8 @@ export default function App() {
     api.auditTail(50).then(setAudit).catch(() => {});
     api.verifyChain().then(setChain).catch(() => {});
     api.homeStats().then(setHome).catch(() => {});
-    api.agentStats().then(setAgent).catch(() => {});
+    api.agentStats(agentBadge).then(setAgent).catch(() => {});
+    api.rosterList().then(setRoster).catch(() => {});
     api.rosterStats().then(setRosterLive).catch(() => {});
     api.rosterCounts().then(setTeamCounts).catch(() => {});
     api.approvalsPending().then(setApprovals).catch(() => {});
@@ -433,7 +436,7 @@ export default function App() {
               <SideSec>我的</SideSec>
               <SideItem icon={<Home size={16} />} label="首页" active={view === "phome"} onClick={() => { setView("phome"); setNotice(""); }} />
               <SideItem icon={<Bot size={16} />} label="Agent 档案" active={view === "agent"} onClick={() => { setView("agent"); setNotice(""); refreshAll(); }}
-                extra={<span className="ml-auto text-[10px]" style={{ color: view === "agent" ? "#DCDCFE" : T.faint }}>小七</span>} />
+                extra={<span className="ml-auto text-[10px]" style={{ color: view === "agent" ? "#DCDCFE" : T.faint }}>{roster?.agents.find((a) => a.badge === roster.default_badge)?.name ?? "小七"}</span>} />
               {/* 对话列表。形态照团队的 #频道:同一件事(左边一行 = 一段对话)
                   就该长成同一个样子,不该在个人空间另发明一套。 */}
               <div className="mb-0.5">
@@ -606,13 +609,14 @@ export default function App() {
                 goChannel={() => goChannel("platform", "platform")} openConvo={() => setConvo("open")}
                 onOpenChannel={(c) => (c.personal ? goPersonalChat() : goChannel(c.team_id, c.id))} />
             )}
-            {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat} />}
+            {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat}
+              roster={roster} badge={agentBadge} onPick={(b) => { setAgentBadge(b); api.agentStats(b).then(setAgent).catch(() => {}); }} />}
             {view === "skills" && <SkillsView data={skills} onRefresh={refreshAll} />}
             {view === "workflows" && <WorkflowsView data={workflows} onRefresh={refreshAll} />}
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                  <ChatPane channel={personalChannel} chat={chat} thread={thread}
+                  <ChatPane channel={personalChannel} chat={chat} thread={thread} agents={roster?.agents ?? []} defaultBadge={roster?.default_badge ?? null}
                     onThreadsChanged={(g) => void onThreadsChanged(g)}
                     channels={channels.filter((c) => !c.personal)} personalFloor={personalFloor} />
                 </Card>
@@ -623,7 +627,7 @@ export default function App() {
               </div>
             )}
             {view === "channel" && activeChannel && (
-              <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed}
+              <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed} agents={roster?.agents ?? []} defaultBadge={roster?.default_badge ?? null}
                 introduced={introduced} setIntroduced={setIntroduced}
                 openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")}
                 approvals={approvals} onApprovalsChanged={refreshAll} canApprove={me?.can.approve_merge ?? true}

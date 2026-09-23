@@ -17,7 +17,7 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 
 use muster_audit::{
-    actor_first_seen, capsules, day_throughput, distinct_runs, downgrades_zh, drill_report,
+    actor_egress_bytes, actor_first_seen, actor_runs, capsules, day_throughput, distinct_runs, downgrades_zh, drill_report,
     forgeable, pending_approval_list, pending_approvals, recent_events, recent_events_of, roster,
     Actor, AuditStore, ContentHash, EgressBytes, EventBody, NewEvent, Scope,
 };
@@ -25,16 +25,15 @@ use muster_provider::{ChatMessage, ChatRequest, Locality, ProviderRegistry, Stre
 use muster_route::{
     LabelOrigin, LabelSource, OrgPolicy, RoutePlan, RouteRequest, Router, SessionRatchet, Sensitivity,
 };
-use muster_runner::{run_task, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
+use muster_runner::{run_task, CommandPolicy, RunnerConfig, RunnerError, RunnerEvent, TaskSpec};
 
 const POLICY_VERSION: &str = "policy-v1";
-const AGENT_BADGE: &str = "A-007";
 /// 聊天模式的提示词。
 ///
 /// **必须写清"我现在没有工具"以及"怎样才有"**:此模式确实读不到也改不了文件,
 /// 若只说"我无法访问文件系统",用户会以为是产品缺陷——实际上换个按钮就能做到。
 /// 让 Agent 自己指路,比在 UI 上堆说明有效得多。
-const SYSTEM_PROMPT: &str = r#"你是 Muster 点将台的协作 Agent(工牌 A-007)。用中文回答,简洁、直接。
+const SYSTEM_PROMPT: &str = r#"你是 Muster 点将台的协作 Agent。用中文回答,简洁、直接。
 
 当前是**对话模式**:你没有任何文件或命令工具,读不到仓库内容,也改不了代码。
 当用户要求你查看、修改文件或执行命令时,不要只说自己无法访问,而要明确告诉他:
@@ -146,6 +145,9 @@ struct StoredMsg {
     run_id: Option<String>,
     status: String,
     ts_ms: i64,
+    /// 说话的工牌(agent 消息才有)。老库与服务端消息为 None。
+    #[serde(default)]
+    badge: Option<String>,
 }
 
 /// 主线程的 id。老库回填用的也是这个式子——**只此一处**,
@@ -244,6 +246,13 @@ impl StateStore {
                  CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id, id);",
             )?;
         }
+        // 编制:agent 消息记下是哪张工牌说的。老库没有这一列,同样是加列不重建。
+        let has_badge = conn
+            .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='badge'")?
+            .exists([])?;
+        if !has_badge {
+            conn.execute_batch("ALTER TABLE messages ADD COLUMN badge TEXT;")?;
+        }
         Ok(Self { conn })
     }
 
@@ -262,10 +271,25 @@ impl StateStore {
         run_id: Option<&str>,
         status: &str,
     ) {
+        self.insert_in_as(thread_id, channel_id, role, text, run_id, status, None)
+    }
+
+    /// 同上,带工牌号:agent 的话记下是谁说的;人的消息传 None。
+    #[allow(clippy::too_many_arguments)]
+    fn insert_in_as(
+        &self,
+        thread_id: &str,
+        channel_id: &str,
+        role: &str,
+        text: &str,
+        run_id: Option<&str>,
+        status: &str,
+        badge: Option<&str>,
+    ) {
         if let Err(e) = self.conn.execute(
-            "INSERT INTO messages(channel_id, thread_id, role, text, run_id, status, ts_ms)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            rusqlite::params![channel_id, thread_id, role, text, run_id, status, now_ms() as i64],
+            "INSERT INTO messages(channel_id, thread_id, role, text, run_id, status, ts_ms, badge)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![channel_id, thread_id, role, text, run_id, status, now_ms() as i64, badge],
         ) {
             eprintln!("state 持久化失败(忽略):{e}");
         }
@@ -300,7 +324,7 @@ impl StateStore {
             }
         }
         let mut stmt = self.conn.prepare(
-            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms
+            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms, badge
              FROM messages WHERE thread_id = ?1 ORDER BY id ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![thread_id], |r| {
@@ -312,6 +336,7 @@ impl StateStore {
                 run_id: r.get(4)?,
                 status: r.get(5)?,
                 ts_ms: r.get(6)?,
+                badge: r.get(7)?,
             })
         })?;
         for m in rows {
@@ -435,7 +460,7 @@ impl StateStore {
 
     fn bulk(&self, limit: u32) -> rusqlite::Result<Vec<StoredMsg>> {
         let mut stmt = self.conn.prepare(
-            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms
+            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms, badge
              FROM messages ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit], |r| {
@@ -447,6 +472,7 @@ impl StateStore {
                 run_id: r.get(4)?,
                 status: r.get(5)?,
                 ts_ms: r.get(6)?,
+                badge: r.get(7)?,
             })
         })?;
         let mut out: Vec<StoredMsg> = rows.collect::<Result<_, _>>()?;
@@ -478,7 +504,7 @@ impl StateStore {
             Selector::OlderThan(ms) => ("ts_ms < ?1", Some(ms.to_string())),
         };
         let sql = format!(
-            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms
+            "SELECT channel_id, COALESCE(thread_id,''), role, text, run_id, status, ts_ms, badge
              FROM messages WHERE {where_sql} ORDER BY id ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -491,6 +517,7 @@ impl StateStore {
                 run_id: r.get(4)?,
                 status: r.get(5)?,
                 ts_ms: r.get(6)?,
+                badge: r.get(7)?,
             })
         };
         let rows: Vec<StoredMsg> = match (&arg, sel) {
@@ -857,6 +884,7 @@ async fn channel_history(
                         run_id: m.run_id,
                         status: "done".into(),
                         ts_ms: m.ts_ms,
+                        badge: None,
                     })
                     .collect()
             })
@@ -951,12 +979,29 @@ async fn record_msg(
     run_id: Option<&str>,
     status: &str,
 ) -> Result<(), String> {
+    record_msg_as(remote, store, thread_id, channel_id, role, text, run_id, status, None).await
+}
+
+/// 同 [`record_msg`],带工牌号。**服务端消息暂不带工牌**(协议里没有这个字段,诚实边界),
+/// 只有本地对话记得下来。
+#[allow(clippy::too_many_arguments)]
+async fn record_msg_as(
+    remote: Option<&remote::Remote>,
+    store: &Arc<Mutex<StateStore>>,
+    thread_id: &str,
+    channel_id: &str,
+    role: &str,
+    text: &str,
+    run_id: Option<&str>,
+    status: &str,
+    badge: Option<&str>,
+) -> Result<(), String> {
     match remote {
         Some(r) if !remote::is_personal(channel_id) => {
             r.send(channel_id, text, role, run_id).await.map(|_| ())
         }
         _ => {
-            store.lock().unwrap().insert_in(thread_id, channel_id, role, text, run_id, status);
+            store.lock().unwrap().insert_in_as(thread_id, channel_id, role, text, run_id, status, badge);
             Ok(())
         }
     }
@@ -1181,7 +1226,13 @@ fn home_stats(state: State<'_, AppState>) -> Result<HomeStats, String> {
         unmetered_week: week.unmetered_calls,
         cloud_calls_week: week.cloud_calls,
         local_calls_week: week.local_calls,
-        pending_approvals: pending_approvals(conn, AGENT_BADGE).map_err(|e| e.to_string())?,
+        pending_approvals: {
+            let mut n = 0;
+            for b in roster_badges() {
+                n += pending_approvals(conn, &b).map_err(|e| e.to_string())?;
+            }
+            n
+        },
         drill_last,
         throughput: day_throughput(conn, 7)
             .map_err(|e| e.to_string())?
@@ -1233,6 +1284,12 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
             drill: Arc::new(Mutex::new(None)),
             remote: Arc::new(Mutex::new(None)),
         });
+        // 工牌能力变更留痕:启动时按名册对一遍链上最近的 badge.update
+        if let (Some(b), Ok(roster)) = (guard.as_ref(), load_roster()) {
+            if let Err(e) = record_badge_updates(&b.audit, &roster) {
+                eprintln!("名册能力留痕失败(已跳过):{e}");
+            }
+        }
 
         // 保留期到点即清(仅在明确设了 MUSTER_TRANSCRIPT_KEEP_DAYS 时)。
         // 清理失败不阻断启动:正文治理是运维事项,不该让人开不了应用;
@@ -1277,6 +1334,8 @@ async fn send_message(
     text: String,
     // 写进哪条对话。None = 主对话(团队频道永远是它)。
     thread_id: Option<String>,
+    // 点将:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
+    badge: Option<String>,
 ) -> Result<String, String> {
     let (router, audit, store, run_seq) = {
         let guard = state.0.lock().unwrap();
@@ -1297,13 +1356,17 @@ async fn send_message(
     // "为什么是这个级别"始终指向信息量最大的肇因。
     let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_sources(&channel))
         .await?;
+    // 点将:谁来答。密级上限在这里核对,派不了就明说
+    let roster = load_roster()?;
+    let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0)?;
+    let system_prompt = format!("{SYSTEM_PROMPT}\n\n{}", agent.persona_prompt());
     record_msg(rmt.as_ref(), &store, &thread, &channel.id, "user", &text, None, "done").await?;
 
     // ---- E2 路由决策(含探活,fail-closed)
     let route_req = RouteRequest {
         sources: &sources,
         requested_provider: None,
-        default_provider: Some("kimi"),
+        default_provider: Some(agent.model.as_deref().unwrap_or("kimi")),
     };
     let resolution = match router.resolve(&route_req).await {
         Ok(r) => r,
@@ -1315,7 +1378,7 @@ async fn send_message(
                 .unwrap()
                 .append(NewEvent {
                     ts_ms: None,
-                    actor: Actor::agent(AGENT_BADGE),
+                    actor: Actor::agent(&agent.badge),
                     scope: Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
                     run_id: Some(run_id.clone()),
                     session_id: Some(session_id.clone()),
@@ -1361,7 +1424,7 @@ async fn send_message(
         store
             .append(NewEvent {
                 ts_ms: None,
-                actor: Actor::agent(AGENT_BADGE),
+                actor: Actor::agent(&agent.badge),
                 scope: Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
                 run_id: Some(run_id.clone()),
                 session_id: Some(session_id.clone()),
@@ -1398,8 +1461,8 @@ async fn send_message(
         "provider": meta.id,
         "model": meta.model,
         "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
-            { "role": "user", "content": text },
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": ask },
         ],
     })
     .to_string();
@@ -1410,7 +1473,7 @@ async fn send_message(
     let history = channel_history(rmt.as_ref(), &store, &channel.id).await;
     let ctx = context_window(&history, CTX_MAX_MSGS, CTX_MAX_CHARS);
     let mut messages = Vec::with_capacity(ctx.len() + 2);
-    messages.push(ChatMessage::system(SYSTEM_PROMPT));
+    messages.push(ChatMessage::system(system_prompt.clone()));
     for m in &ctx {
         // 刚写进去的这一问不重复放
         if m.role == "user" && m.text == text {
@@ -1422,7 +1485,7 @@ async fn send_message(
             ChatMessage::assistant(m.text.clone())
         });
     }
-    messages.push(ChatMessage::user(text.clone()));
+    messages.push(ChatMessage::user(ask.clone()));
 
     let req = ChatRequest {
         messages,
@@ -1488,7 +1551,7 @@ async fn send_message(
         store
             .append(NewEvent {
                 ts_ms: None,
-                actor: Actor::agent(AGENT_BADGE),
+                actor: Actor::agent(&agent.badge),
                 scope: Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) },
                 run_id: Some(run_id.clone()),
                 session_id: Some(session_id),
@@ -1540,7 +1603,7 @@ async fn send_message(
             .ok();
         }
         None => {
-            let _ = record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &full, Some(&run_id), "done").await;
+            let _ = record_msg_as(rmt.as_ref(), &store, &thread, &channel.id, "agent", &full, Some(&run_id), "done", Some(&agent.badge)).await;
             app.emit(
                 "task-done",
                 DonePayload {
@@ -1684,6 +1747,8 @@ async fn run_workspace_task(
     channel_id: String,
     text: String,
     thread_id: Option<String>,
+    // 点将:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
+    badge: Option<String>,
 ) -> Result<String, String> {
     let (router, audit, store, run_seq) = {
         let guard = state.0.lock().unwrap();
@@ -1722,6 +1787,10 @@ async fn run_workspace_task(
     let mut label_srcs = label_sources(&channel);
     label_srcs.extend(found.skills.iter().filter_map(|s| s.label_source()));
     let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
+    // 点将:谁来干。只读工牌不建隔离工作区(没有写权限可换),其余按岗位卡装配
+    let roster = load_roster()?;
+    let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0)?;
+    let skills = skills_for(&agent, found.skills)?;
     let spec = TaskSpec {
         run_id: run_id.clone(),
         session_id: Some(session_id.clone()),
@@ -1729,17 +1798,13 @@ async fn run_workspace_task(
         channel: Some(channel.id.clone()),
         sources,
         requested_provider: None,
-        default_provider: Some("kimi".into()),
-        prompt: text,
+        default_provider: Some(agent.model.clone().unwrap_or_else(|| "kimi".into())),
+        prompt: ask,
         workspace: workspace.into(),
-        workspace_root: Some(workspace_root.into()),
+        workspace_root: if agent.tools == muster_roster::ToolMode::ReadOnly { None } else { Some(workspace_root.into()) },
         propose_merge: true,
     };
-    let cfg = RunnerConfig {
-        policy_version: POLICY_VERSION.into(),
-        skills: found.skills,
-        ..Default::default()
-    };
+    let cfg = runner_cfg_for(&agent, skills);
 
     let a = app.clone();
     let rid = run_id.clone();
@@ -1757,9 +1822,8 @@ async fn run_workspace_task(
             let text = if saved.is_empty() { s.final_text.clone() } else { saved };
             // 结果同样要广播。失败也广播——**失败对队友一样是信息**,
             // 而且比"问题挂在那儿没有回答"清楚得多
-            let _ =
-                record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status)
-                    .await;
+            let _ = record_msg_as(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status, Some(&agent.badge))
+                .await;
             Ok(s.run_id)
         }
         // Model 错误的 UI 反馈已由 Finished(failed:stream) 事件完成,不重复发。
@@ -2321,6 +2385,237 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
     }
 }
 
+// ---------------------------------------------------------------- 编制:工牌名册(muster-roster)
+
+/// 仓库自带的默认岗位卡:名册一张都没有时(别的工作区、个人目录空着)用它——
+/// "没配编制"等价于"只有小七",而不是一个跑不起来的壳。
+const BUILTIN_A007: &str = include_str!("../../../../.agents/roster/A-007/AGENT.md");
+
+/// 名册的发现根,顺序即优先级:仓库级 `.agents/roster`(随代码提交)在前,个人级
+/// `~/.muster/roster` 在后。与技能、工作流同一套约定。
+fn roster_roots(workspace: &str, home: &str) -> Vec<std::path::PathBuf> {
+    vec![
+        std::path::Path::new(workspace).join(muster_roster::REPO_ROSTER_DIR),
+        std::path::Path::new(home).join(".muster").join("roster"),
+    ]
+}
+
+/// 发现名册;空名册退回内置的 A-007。问题列表原样保留给界面。
+fn load_roster() -> Result<muster_roster::Roster, String> {
+    let (workspace, home) = workspace_and_home()?;
+    let mut r = muster_roster::discover(&roster_roots(&workspace, &home));
+    if r.agents.is_empty() {
+        let builtin = muster_roster::AgentSpec::parse(
+            BUILTIN_A007,
+            std::path::Path::new("<内置>/A-007/AGENT.md"),
+            std::path::Path::new("<内置>"),
+        )
+        .map_err(|e| format!("内置岗位卡损坏:{e}"))?;
+        r.agents.push(builtin);
+    }
+    Ok(r)
+}
+
+/// 默认工牌号(锻造、统计等没有指名的场合)。
+fn default_badge() -> String {
+    load_roster()
+        .ok()
+        .and_then(|r| r.default_agent().map(|a| a.badge.clone()))
+        .unwrap_or_else(|| "A-007".into())
+}
+
+fn roster_badges() -> Vec<String> {
+    load_roster()
+        .map(|r| r.agents.iter().map(|a| a.badge.clone()).collect())
+        .unwrap_or_else(|_| vec!["A-007".into()])
+}
+
+/// 点将:指名的工牌 > 消息开头的 @ > 默认工牌;然后核对密级上限(硬闸,fail-closed)。
+/// 返回 (工牌, 去掉称呼后的正文)。
+fn pick_agent(
+    roster: &muster_roster::Roster,
+    requested: Option<&str>,
+    text: &str,
+    level: Sensitivity,
+) -> Result<(muster_roster::AgentSpec, String), String> {
+    let (agent, body) = if let Some(key) = requested.filter(|k| !k.trim().is_empty()) {
+        let a = roster.find(key).ok_or_else(|| format!("名册里没有工牌 {key}"))?;
+        // 指名之后消息开头若还 @ 了同一个人,称呼去掉
+        let body = roster
+            .mention(text)
+            .filter(|(m, _)| m.badge == a.badge)
+            .map(|(_, b)| b)
+            .unwrap_or_else(|| text.to_string());
+        (a.clone(), body)
+    } else if let Some((a, body)) = roster.mention(text) {
+        (a.clone(), body)
+    } else {
+        (roster.default_agent().ok_or("名册为空")?.clone(), text.to_string())
+    };
+    if !agent.allows_level(level) {
+        return Err(format!(
+            "工牌 {}({})的密级上限是 {},这里的有效密级是 {},不能派它——换一张工牌,或改岗位卡的 sensitivity_max",
+            agent.badge,
+            agent.name,
+            agent.sensitivity_max.map(|l| format!("{l:?}").to_lowercase()).unwrap_or_default(),
+            format!("{level:?}").to_lowercase()
+        ));
+    }
+    let body = if body.trim().is_empty() { text.to_string() } else { body };
+    Ok((agent, body))
+}
+
+/// 工牌的技能:岗位卡列了就只给那些(缺一个就报错),没列就给工作区里全部。
+fn skills_for(
+    agent: &muster_roster::AgentSpec,
+    found: Vec<muster_skill::SkillMeta>,
+) -> Result<Vec<muster_skill::SkillMeta>, String> {
+    if agent.skills.is_empty() {
+        return Ok(found);
+    }
+    let mut out = Vec::new();
+    for s in &agent.skills {
+        match found.iter().find(|k| &k.name == s) {
+            Some(k) => out.push(k.clone()),
+            None => return Err(format!("工牌 {} 的岗位卡要求技能 {s},但技能目录里没有它", agent.badge)),
+        }
+    }
+    Ok(out)
+}
+
+/// 由岗位卡装配 Runner 配置:工牌号、岗位说明书、命令白名单、能力哈希。
+/// 工具档位(只读 / 隔离可写)由调用方用 `workspace_root` 表达。
+fn runner_cfg_for(agent: &muster_roster::AgentSpec, skills: Vec<muster_skill::SkillMeta>) -> RunnerConfig {
+    RunnerConfig {
+        policy_version: POLICY_VERSION.into(),
+        badge: agent.badge.clone(),
+        persona: Some(agent.persona_prompt()),
+        skills,
+        command_policy: agent.commands.as_ref().map(|c| CommandPolicy::with_allow(c.clone())),
+        capabilities_hash: Some(agent.capabilities_hash.clone()),
+        ..Default::default()
+    }
+}
+
+/// 工牌能力变更留痕:与链上最近一次 `badge.update` 的哈希比对,变了就记一条。
+/// 名册是文件,谁都能改;链上这条记录让"什么时候改的、改成了什么"可查。
+fn record_badge_updates(audit: &Arc<Mutex<AuditStore>>, roster: &muster_roster::Roster) -> Result<usize, String> {
+    let mut store = audit.lock().unwrap();
+    let mut n = 0;
+    for a in &roster.agents {
+        let last = muster_audit::last_badge_update(store.conn(), &a.badge).map_err(|e| e.to_string())?;
+        let version = match &last {
+            Some((h, _)) if *h == a.capabilities_hash.0 => continue,
+            Some((_, v)) => v + 1,
+            None => 1,
+        };
+        store
+            .append(NewEvent {
+                ts_ms: None,
+                actor: Actor::agent(&a.badge),
+                scope: Scope::default(),
+                run_id: None,
+                session_id: None,
+                policy_version: Some(POLICY_VERSION.into()),
+                label: None,
+                locality: None,
+                body: EventBody::BadgeUpdate {
+                    changed_by: Actor::system("roster"),
+                    capabilities_hash: a.capabilities_hash.clone(),
+                    badge_version: version,
+                },
+            })
+            .map_err(|e| format!("审计写入失败:{e}"))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+#[derive(Serialize)]
+struct AgentOut {
+    badge: String,
+    name: String,
+    role: String,
+    description: String,
+    aliases: Vec<String>,
+    skills: Vec<String>,
+    tools: String,
+    commands: Option<Vec<String>>,
+    model: Option<String>,
+    sensitivity_max: Option<String>,
+    is_default: bool,
+    /// `workspace` / `personal` / `builtin`。
+    origin: String,
+    path: String,
+    capabilities_hash: String,
+    /// 链上最近一次 badge.update 的版本号;0 = 还没记过。
+    badge_version: u32,
+    first_seen_ms: Option<u64>,
+    runs: u64,
+    egress_bytes: u64,
+    pending_approvals: u64,
+}
+
+#[derive(Serialize)]
+struct RosterOut {
+    roots: Vec<String>,
+    agents: Vec<AgentOut>,
+    default_badge: Option<String>,
+    problems: Vec<String>,
+}
+
+/// 名册 + 每张工牌在链上的实绩。**这里列出的就是聊天与任务能派的**——同一个发现函数。
+#[tauri::command]
+fn roster_list(state: State<'_, AppState>) -> Result<RosterOut, String> {
+    let (workspace, home) = workspace_and_home()?;
+    let roots = roster_roots(&workspace, &home);
+    let roster = load_roster()?;
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    record_badge_updates(&b.audit, &roster)?;
+    let store = b.audit.lock().unwrap();
+    let conn = store.conn();
+    let mut agents = Vec::new();
+    for a in &roster.agents {
+        agents.push(AgentOut {
+            badge: a.badge.clone(),
+            name: a.name.clone(),
+            role: a.role.clone(),
+            description: a.description.clone(),
+            aliases: a.aliases.clone(),
+            skills: a.skills.clone(),
+            tools: a.tools.as_str().into(),
+            commands: a.commands.clone(),
+            model: a.model.clone(),
+            sensitivity_max: a.sensitivity_max.map(|l| format!("{l:?}").to_lowercase()),
+            is_default: a.is_default,
+            origin: if a.root == roots[0] {
+                "workspace".into()
+            } else if a.root.to_string_lossy().starts_with("<内置>") {
+                "builtin".into()
+            } else {
+                "personal".into()
+            },
+            path: a.path.display().to_string(),
+            capabilities_hash: a.capabilities_hash.0.clone(),
+            badge_version: muster_audit::last_badge_update(conn, &a.badge)
+                .map_err(|e| e.to_string())?
+                .map(|(_, v)| v)
+                .unwrap_or(0),
+            first_seen_ms: actor_first_seen(conn, &a.badge).map_err(|e| e.to_string())?,
+            runs: actor_runs(conn, &a.badge).map_err(|e| e.to_string())?,
+            egress_bytes: actor_egress_bytes(conn, &a.badge).map_err(|e| e.to_string())?,
+            pending_approvals: pending_approvals(conn, &a.badge).map_err(|e| e.to_string())?,
+        });
+    }
+    Ok(RosterOut {
+        roots: roots.iter().map(|r| r.display().to_string()).collect(),
+        agents,
+        default_badge: roster.default_agent().map(|a| a.badge.clone()),
+        problems: roster.problems.clone(),
+    })
+}
+
 // ---------------------------------------------------------------- 技能(SKILL.md)
 
 /// 技能的发现根,顺序即优先级:仓库级(`<工作区>/.agents/skills`,与 codex 同一约定,
@@ -2601,6 +2896,8 @@ async fn run_workflow_inner(
     let channel_id = spec.channel.clone().unwrap_or_else(|| "personal".into());
     let session_id = format!("session:workflow:{}", spec.name);
     let rmt = remote_of(state);
+    // 收尾事件的 actor:准备阶段选定工牌后更新;准备失败时用默认工牌
+    let finish_badge = Mutex::new(default_badge());
 
     let append = |actor: Actor, scope: Scope, label: Option<Sensitivity>, body: EventBody| -> Result<(), String> {
         audit
@@ -2622,7 +2919,7 @@ async fn run_workflow_inner(
     };
     let finish = |scope: Scope, label: Option<Sensitivity>, outcome: &str, artifacts: Vec<muster_audit::ArtifactRef>, merged: Option<String>| {
         append(
-            Actor::agent(AGENT_BADGE),
+            Actor::agent(finish_badge.lock().unwrap().clone()),
             scope,
             label,
             EventBody::WorkflowOutput { workflow: spec.name.clone(), outcome: outcome.into(), artifacts, merged_commit: merged },
@@ -2644,7 +2941,7 @@ async fn run_workflow_inner(
     )?;
 
     // ---- 2. 准备:频道、权限、自有仓库、技能、密级。任何一步失败 ⇒ failed:setup,不重试
-    type Prepared = (ChannelInfo, muster_workflow::Runs, std::path::PathBuf, Vec<muster_skill::SkillMeta>, Vec<LabelSource>, Sensitivity);
+    type Prepared = (ChannelInfo, muster_workflow::Runs, std::path::PathBuf, Vec<muster_skill::SkillMeta>, Vec<LabelSource>, Sensitivity, muster_roster::AgentSpec);
     let prepared: Result<Prepared, String> = async {
         let channel = resolve_channel(state, &channel_id).await?;
         require(muster_identity::Action::CreateTask, muster_identity::Scope::Channel(channel.id.clone()))?;
@@ -2665,10 +2962,19 @@ async fn run_workflow_inner(
         label_srcs.extend(spec.label_source());
         let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
         let (effective, _) = muster_route::effective_sensitivity(&sources);
-        Ok((channel, runs, repo, skills, sources, effective))
+        // 由哪张工牌跑:定义里指名的,或默认工牌;密级上限同样是硬闸
+        let roster = load_roster()?;
+        let agent = match &spec.agent {
+            Some(b) => roster.find(b).cloned().ok_or_else(|| format!("名册里没有工牌 {b}"))?,
+            None => roster.default_agent().cloned().ok_or("名册为空")?,
+        };
+        if !agent.allows_level(effective) {
+            return Err(format!("工牌 {} 的密级上限低于本次有效密级 {:?}", agent.badge, effective));
+        }
+        Ok((channel, runs, repo, skills, sources, effective, agent))
     }
     .await;
-    let (channel, runs, repo, skills, sources, effective) = match prepared {
+    let (channel, runs, repo, skills, sources, effective, agent) = match prepared {
         Ok(p) => p,
         Err(e) => {
             finish(raw_scope, None, "failed:setup", Vec::new(), None)?;
@@ -2687,6 +2993,7 @@ async fn run_workflow_inner(
             return Err(format!("工作流 {} 无法开始:{e}", spec.name));
         }
     };
+    *finish_badge.lock().unwrap() = agent.badge.clone();
     let scope = Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) };
 
     // 联网:白名单非空,且未演习锁定、有效密级不高于上云阈值——外发就是外发,与模型走同一条线
@@ -2738,20 +3045,19 @@ async fn run_workflow_inner(
         channel: Some(channel.id.clone()),
         sources,
         requested_provider: None,
-        default_provider: Some("kimi".into()),
+        default_provider: Some(agent.model.clone().unwrap_or_else(|| "kimi".into())),
         prompt,
         workspace: repo.clone(),
         workspace_root: Some(workspace_root.into()),
         // 产出由本函数合入自有仓库,不进审批队列
         propose_merge: false,
     };
+    // 工作流自有仓库不受工牌工具档位限制(那不是人的代码),但岗位说明书、命令白名单、能力哈希照用
     let cfg = RunnerConfig {
-        policy_version: POLICY_VERSION.into(),
-        skills,
         extra_tools,
         // 抓数据 + 写报告 + 自查,比一次代码改动多几轮
         max_turns: 24,
-        ..Default::default()
+        ..runner_cfg_for(&agent, skills)
     };
 
     let wt_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -2825,7 +3131,7 @@ async fn run_workflow_inner(
                 text.push_str(&format!("⚠️ {n}\n"));
             }
             let status = if outcome == "success" { "done" } else { "failed" };
-            let _ = record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status).await;
+            let _ = record_msg_as(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status, Some(&agent.badge)).await;
             Ok((run_id, outcome))
         }
         Ok(Err(e)) => {
@@ -3009,7 +3315,7 @@ fn capsule_forge(
     let out = muster_runner::forge_and_store(
         &audit,
         &store,
-        AGENT_BADGE,
+        &default_badge(),
         POLICY_VERSION,
         &run_id,
         spec,
@@ -3767,6 +4073,7 @@ async fn remote_history(
             run_id: m.run_id,
             status: "done".into(),
             ts_ms: m.ts_ms,
+            badge: None,
         })
         .collect())
 }
@@ -3791,6 +4098,7 @@ fn roster_stats(state: State<'_, AppState>, team: Option<String>) -> Result<Vec<
     let conn = store.conn();
     let rows = roster(conn, team.as_deref()).map_err(|e| e.to_string())?;
     let recent = recent_events_of(conn, "model.call", 200).map_err(|e| e.to_string())?;
+    let roster = load_roster().unwrap_or_default();
 
     Ok(rows
         .into_iter()
@@ -3800,8 +4108,10 @@ fn roster_stats(state: State<'_, AppState>, team: Option<String>) -> Result<Vec<
                 .find(|e| e.actor.id == r.actor_id)
                 .and_then(|e| e.locality.map(|l| format!("{l:?}").to_lowercase()));
             let (display_name, role) = match (r.actor_kind.as_str(), r.actor_id.as_str()) {
-                ("agent", AGENT_BADGE) => ("小七".to_string(), "代码评审员".to_string()),
-                ("agent", id) => (id.to_string(), "Agent".to_string()),
+                ("agent", id) => roster
+                    .find(id)
+                    .map(|a| (a.name.clone(), a.role.clone()))
+                    .unwrap_or_else(|| (id.to_string(), "Agent".to_string())),
                 ("human", id) => (id.to_string(), "成员".to_string()),
                 (_, id) => (id.to_string(), "系统".to_string()),
             };
@@ -3836,20 +4146,27 @@ struct AgentStats {
     heat: Vec<DayBar>,
 }
 
+/// 某张工牌的档案;不指名就是默认工牌。Runs 与外发按 actor 统计,热力图仍是全局的。
 #[tauri::command]
-fn agent_stats(state: State<'_, AppState>) -> Result<AgentStats, String> {
+fn agent_stats(state: State<'_, AppState>, badge: Option<String>) -> Result<AgentStats, String> {
+    let roster = load_roster()?;
+    let badge = badge
+        .as_deref()
+        .and_then(|b| roster.find(b).map(|a| a.badge.clone()))
+        .or_else(|| roster.default_agent().map(|a| a.badge.clone()))
+        .unwrap_or_else(|| "A-007".into());
     let guard = state.0.lock().unwrap();
     let b = guard.as_ref().ok_or("后端未初始化")?;
     let store = b.audit.lock().unwrap();
     let conn = store.conn();
     let now = now_ms();
-    let first = actor_first_seen(conn, AGENT_BADGE).map_err(|e| e.to_string())?;
+    let first = actor_first_seen(conn, &badge).map_err(|e| e.to_string())?;
     Ok(AgentStats {
-        badge: AGENT_BADGE.into(),
         first_seen_ms: first,
         hired_days: first.map(|f| (now.saturating_sub(f)) / 86_400_000 + 1).unwrap_or(0),
-        total_runs: distinct_runs(conn, 0, now).map_err(|e| e.to_string())?,
-        total_egress_bytes: drill_report(conn, 0, now).map_err(|e| e.to_string())?.egress_bytes,
+        total_runs: actor_runs(conn, &badge).map_err(|e| e.to_string())?,
+        total_egress_bytes: actor_egress_bytes(conn, &badge).map_err(|e| e.to_string())?,
+        badge,
         heat: day_throughput(conn, 336)
             .map_err(|e| e.to_string())?
             .into_iter()
@@ -3888,6 +4205,7 @@ fn main() {
             toggle_drill,
             home_stats,
             agent_stats,
+            roster_list,
             history_bulk,
             roster_stats,
             roster_counts_cmd,
@@ -4205,6 +4523,7 @@ mod context_tests {
             run_id: None,
             status: status.into(),
             ts_ms: 0,
+            badge: None,
         }
     }
 

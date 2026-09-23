@@ -1913,6 +1913,7 @@ dependencies = [
  "muster-audit",
  "muster-identity",
  "muster-provider",
+ "muster-roster",
  "muster-route",
  "muster-runner",
  "muster-skill",
@@ -1955,6 +1956,17 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
+]
+
+[[package]]
+name = "muster-roster"
+version = "0.1.0"
+dependencies = [
+ "muster-audit",
+ "muster-route",
+ "muster-skill",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

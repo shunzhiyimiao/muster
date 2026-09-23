@@ -300,6 +300,8 @@ export interface StoredMsg {
   run_id: string | null;
   status: string;
   ts_ms: number;
+  /** 说话的工牌(agent 消息才有;服务端消息与老库为 null) */
+  badge?: string | null;
 }
 
 /** 技能(SKILL.md):任务模式会提供给 Agent 的过程性知识。正文不在这里——Agent 在任务里经 read_skill 读 */
@@ -362,13 +364,43 @@ export interface WorkflowsOut {
   problems: string[];
 }
 
+/** 编制里的一张工牌(AGENT.md) */
+export interface AgentOut {
+  badge: string;
+  name: string;
+  role: string;
+  description: string;
+  aliases: string[];
+  skills: string[];
+  /** read-only | worktree */
+  tools: string;
+  commands: string[] | null;
+  model: string | null;
+  sensitivity_max: string | null;
+  is_default: boolean;
+  origin: "workspace" | "personal" | "builtin";
+  path: string;
+  capabilities_hash: string;
+  badge_version: number;
+  first_seen_ms: number | null;
+  runs: number;
+  egress_bytes: number;
+  pending_approvals: number;
+}
+export interface RosterOut {
+  roots: string[];
+  agents: AgentOut[];
+  default_badge: string | null;
+  problems: string[];
+}
+
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   /** `threadId` 为空 = 主对话。团队频道永远是主对话:那边的历史在服务端。 */
-  send: (channelId: string, text: string, threadId?: string | null) =>
-    invoke<string>("send_message", { channelId, text, threadId: threadId ?? null }),
-  runTask: (channelId: string, text: string, threadId?: string | null) =>
-    invoke<string>("run_workspace_task", { channelId, text, threadId: threadId ?? null }),
+  send: (channelId: string, text: string, threadId?: string | null, badge?: string | null) =>
+    invoke<string>("send_message", { channelId, text, threadId: threadId ?? null, badge: badge ?? null }),
+  runTask: (channelId: string, text: string, threadId?: string | null, badge?: string | null) =>
+    invoke<string>("run_workspace_task", { channelId, text, threadId: threadId ?? null, badge: badge ?? null }),
   /** 把个人空间的一段对话发到团队频道。**不可撤销**,且过密级闸。 */
   publishToChannel: (threadId: string | null, nthUserMessage: number, targetChannelId: string) =>
     invoke<PublishResult>("publish_to_channel", { threadId, nthUserMessage, targetChannelId }),
@@ -384,7 +416,8 @@ export const api = {
   verifyChain: () => invoke<ChainStatus>("verify_chain"),
   toggleDrill: (on: boolean) => invoke<DrillStatus>("toggle_drill", { on }),
   homeStats: () => invoke<HomeStats>("home_stats"),
-  agentStats: () => invoke<AgentStats>("agent_stats"),
+  /** 某张工牌的档案;不传 = 默认工牌 */
+  agentStats: (badge?: string | null) => invoke<AgentStats>("agent_stats", { badge: badge ?? null }),
   historyBulk: (limit: number) => invoke<StoredMsg[]>("history_bulk", { limit }),
   rosterStats: (team?: string) => invoke<RosterEntryOut[]>("roster_stats", { team: team ?? null }),
   rosterCounts: () => invoke<TeamCount[]>("roster_counts_cmd"),
@@ -439,6 +472,8 @@ export const api = {
   forgeableRuns: () => invoke<ForgeableRun[]>("forgeable_runs"),
   /** 与任务模式同一份发现结果:这里列出的就是 Agent 会拿到的 */
   skillsList: () => invoke<SkillsOut>("skills_list"),
+  /** 名册:聊天与任务能点的工牌,与后端同一份发现结果 */
+  rosterList: () => invoke<RosterOut>("roster_list"),
   workflowsList: () => invoke<WorkflowsOut>("workflows_list"),
   /** 手动跑一次;返回 run_id,过程走与任务相同的事件流 */
   workflowRunNow: (name: string) => invoke<string>("workflow_run_now", { name }),

@@ -38,6 +38,10 @@
 //! 7. **调用方可以带自己的异步工具**([`ExtraTool`]):Runner 只负责公示、分派、把它
 //!    产生的审计事件落链(`tool.egress` 一律记 cloud);策略(白名单、计量)在工具自己
 //!    那边。第一个用户是 muster-workflow 的 `http_get`。
+//! 8. **工牌是配置,不是常量**(见 muster-roster):`RunnerConfig` 里 `badge` 之外还有岗位
+//!    说明书(提示词后缀)、命令白名单、能力哈希;审批申请里记的就是这个哈希,
+//!    名册改了能力,审批人看到的申请依据随之变。工具档位(只读 / 隔离可写)由调用方
+//!    用 `workspace_root` 表达,Runner 不认识名册。
 //!
 //! ## 诚实边界(v0)
 //!
@@ -69,7 +73,9 @@ pub mod runner;
 pub mod tools;
 pub mod worktree;
 
-pub use approval::{decide, decide_as, request_merge, ApprovalError, DecisionOutcome, CAP_MERGE};
+pub use approval::{
+    decide, decide_as, request_merge, request_merge_with_caps, ApprovalError, DecisionOutcome, CAP_MERGE,
+};
 pub use capsule::{
     adopt, draft_spec, forge, forge_and_store, run_capsule, verify, AdoptOutcome, CapsuleError,
     CapsuleSpec, CapsuleStore, ForgeOutcome, VerifyOutcome,

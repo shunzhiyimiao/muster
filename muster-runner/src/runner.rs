@@ -47,6 +47,12 @@ pub struct RunnerConfig {
     pub skills: Vec<muster_skill::SkillMeta>,
     /// 调用方提供的异步工具(见 [`ExtraTool`]),与内建工具一起公示、同名内建优先。
     pub extra_tools: Vec<ExtraTool>,
+    /// 工牌的岗位说明书(见 muster-roster):追加在 A1 提示词之后、技能目录之前;常量不动。
+    pub persona: Option<String>,
+    /// 工牌的 `run_command` 允许清单;`None` = 默认清单。只在隔离 worktree 里生效。
+    pub command_policy: Option<crate::command::CommandPolicy>,
+    /// 工牌当前能力的哈希(见 muster-roster),进 `approval.request`;`None` = 旧常量。
+    pub capabilities_hash: Option<ContentHash>,
 }
 
 impl Default for RunnerConfig {
@@ -60,6 +66,9 @@ impl Default for RunnerConfig {
             retention: RetentionPolicy::default(),
             skills: Vec::new(),
             extra_tools: Vec::new(),
+            persona: None,
+            command_policy: None,
+            capabilities_hash: None,
         }
     }
 }
@@ -324,6 +333,11 @@ pub async fn run_task_at(
     }
     .map_err(|e| RunnerError::Workspace(e.to_string()))?
     .with_skills(cfg.skills.clone());
+    // 工牌自带的命令白名单:只读模式下 run_command 本就不公示,设了也无害
+    let tools = match &cfg.command_policy {
+        Some(p) => tools.with_command_policy(p.clone()),
+        None => tools,
+    };
     let started = Instant::now();
 
     // ---- 路由(一次)。拒绝也是证据:落 route.refuse(E4),写失败按审计失败处理。
@@ -499,6 +513,11 @@ pub async fn run_task_at(
     // 技能目录只放名字与一句描述(渐进披露),正文由 read_skill 按需读取——
     // 提示词是公共上下文,技能正文的每个字都在跟任务本身抢窗口。
     // 追加在 A1 提示词之后:SYSTEM_PROMPT 常量原样不动,A7 闸门证据不受影响。
+    // 工牌的岗位说明书:紧跟 A1 提示词,在技能目录之前——先知道自己是谁,再看手边有什么
+    if let Some(p) = &cfg.persona {
+        system_text.push_str("\n\n");
+        system_text.push_str(p);
+    }
     if !cfg.skills.is_empty() {
         system_text.push_str("\n\n");
         system_text.push_str(&muster_skill::render_catalog(&cfg.skills));
@@ -527,7 +546,7 @@ pub async fn run_task_at(
         if d.is_empty() || !spec.propose_merge {
             return Ok(());
         }
-        match crate::approval::request_merge(
+        match crate::approval::request_merge_with_caps(
             audit,
             &cfg.badge,
             &cfg.policy_version,
@@ -536,6 +555,7 @@ pub async fn run_task_at(
             scope.clone(),
             d,
             outcome,
+            cfg.capabilities_hash.as_ref(),
         ) {
             Ok(approval_id) => {
                 on_event(RunnerEvent::ApprovalRequested {

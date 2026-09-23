@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, fmtDate, fmtTime } from "../api";
+import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
@@ -27,6 +27,8 @@ export function ChannelView({
   onApprovalsChanged,
   canApprove,
   onThreadsChanged,
+  agents = [],
+  defaultBadge = null,
 }: {
   channel: Channel;
   chat: ChatState;
@@ -41,6 +43,8 @@ export function ChannelView({
   canApprove?: boolean;
   /** 「拉到个人空间」之后通知外层刷新对话列表并跳过去 */
   onThreadsChanged?: (goTo?: string) => void;
+  agents?: AgentOut[];
+  defaultBadge?: string | null;
 }) {
   const isPlatform = channel.id === "platform";
   const start = chat.lastStart?.channel_id === channel.id ? chat.lastStart : null;
@@ -149,7 +153,7 @@ export function ChannelView({
           </span>
         </div>
         <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <ChatPane channel={channel} chat={chat} header={conceptCards} onThreadsChanged={onThreadsChanged} />
+          <ChatPane channel={channel} chat={chat} header={conceptCards} onThreadsChanged={onThreadsChanged} agents={agents} defaultBadge={defaultBadge} />
         </Card>
       </div>
 
