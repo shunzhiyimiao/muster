@@ -1967,6 +1967,7 @@ dependencies = [
  "muster-prompt",
  "muster-provider",
  "muster-route",
+ "muster-skill",
  "serde",
  "serde_json",
  "sha2",
@@ -1997,6 +1998,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "muster-skill"
+version = "0.1.0"
+dependencies = [
+ "muster-audit",
+ "muster-route",
+ "tempfile",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

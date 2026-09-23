@@ -112,6 +112,14 @@ pub enum RunOutcome {
     Cancelled,
 }
 
+/// 技能引用:名字 + 该 SKILL.md 文件的内容哈希。正文留磁盘(铁律 3),
+/// 哈希让"Agent 当时看到的是哪个版本"可查、被改过可辨。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRef {
+    pub name: String,
+    pub content_hash: ContentHash,
+}
+
 // ---------------------------------------------------------------- 事件本体
 
 /// 写侧穷举的事件类型。`event_type` 采用点分命名空间,内部标签序列化
@@ -277,6 +285,23 @@ pub enum EventBody {
         label: Sensitivity,
     },
 
+    /// 本次运行**能看到**哪些技能(见 muster-skill)。紧跟 `run.start`:它和工具环境
+    /// 一样是这次运行的**条件**而非过程——有技能的运行与没技能的运行不是同一种运行。
+    /// 只记名字与哈希;正文在磁盘上,改过即与此处不符。
+    #[serde(rename = "skill.offer")]
+    SkillOffer { skills: Vec<SkillRef> },
+
+    /// Agent **真的读了**某个技能(`read_skill` 工具调用)。与 `skill.offer` 分开记:
+    /// 提供过 ≠ 用过,"为什么 Agent 这么做"要看的是这一条。
+    /// 被拒也留痕(`refused` = `unknown` / `tampered` / `io`),与 `command.run` 同一姿态。
+    #[serde(rename = "skill.read")]
+    SkillRead {
+        name: String,
+        /// 未知技能名时为 `None`(没有可引用的文件)。
+        content_hash: Option<ContentHash>,
+        refused: Option<String>,
+    },
+
     /// 一次命令执行(B2)。总体规划 §"运行了哪些命令、退出码和耗时"要求留痕,
     /// **被拒的命令同样留痕**——Agent 想跑却没跑成的东西,恰恰是最该看见的信号。
     ///
@@ -373,6 +398,8 @@ impl EventBody {
             EventBody::CapsuleVerify { .. } => "capsule.verify",
             EventBody::CapsuleAdopt { .. } => "capsule.adopt",
             EventBody::CommandRun { .. } => "command.run",
+            EventBody::SkillOffer { .. } => "skill.offer",
+            EventBody::SkillRead { .. } => "skill.read",
             EventBody::TranscriptPurge { .. } => "transcript.purge",
             EventBody::TranscriptExport { .. } => "transcript.export",
             EventBody::AuditArchived { .. } => "audit.archived",

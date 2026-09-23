@@ -6,11 +6,16 @@
 //!
 //! `run_command` 的策略与理由在 [`crate::command`];此处只负责:它**只在
 //! 隔离 worktree 里公示**(与写工具同一道闸),以及把它产生的审计事件带出去。
+//!
+//! `read_skill` 只在有技能被提供时公示(见 muster-skill):按名字读取 SKILL.md 全文,
+//! 读前校验哈希,读与拒都落 `skill.read` 事件。它**不走工作区圈禁**——技能文件
+//! 可能在个人目录(工作区之外),但它也只能读发现清单里的那几个文件,不接受路径。
 
 use std::path::{Path, PathBuf};
 
 use muster_audit::EventBody;
 use muster_provider::ToolSpec;
+use muster_skill::{SkillError, SkillMeta};
 
 use crate::command::{self, CommandPolicy};
 
@@ -43,6 +48,8 @@ pub struct ToolSet {
     writable: bool,
     /// 命令执行策略。与写工具同闸:只读模式下 `run_command` 既不公示也不执行。
     command: CommandPolicy,
+    /// 本次任务被提供的技能。空 ⇒ 不公示 `read_skill`。
+    skills: Vec<SkillMeta>,
 }
 
 /// 这条路径是不是**带根**的——即 join 到工作区上会把工作区整个顶掉。
@@ -71,6 +78,7 @@ impl ToolSet {
             workspace: workspace.canonicalize()?,
             writable: false,
             command: CommandPolicy::default(),
+            skills: Vec::new(),
         })
     }
 
@@ -81,6 +89,7 @@ impl ToolSet {
             workspace: workspace.canonicalize()?,
             writable: true,
             command: CommandPolicy::default(),
+            skills: Vec::new(),
         })
     }
 
@@ -89,6 +98,16 @@ impl ToolSet {
     pub fn with_command_policy(mut self, p: CommandPolicy) -> Self {
         self.command = p;
         self
+    }
+
+    /// 提供技能:有了它 `read_skill` 才会出现在工具清单里。
+    pub fn with_skills(mut self, skills: Vec<SkillMeta>) -> Self {
+        self.skills = skills;
+        self
+    }
+
+    pub fn skills(&self) -> &[SkillMeta] {
+        &self.skills
     }
 
     pub fn is_writable(&self) -> bool {
@@ -105,7 +124,80 @@ impl ToolSet {
         if self.writable {
             v.extend(self.write_specs());
         }
+        v.extend(self.skill_specs());
         v
+    }
+
+    /// 有技能才公示 `read_skill`;工具清单随之变化,`tool_env` 哈希如实反映。
+    fn skill_specs(&self) -> Vec<ToolSpec> {
+        if self.skills.is_empty() {
+            return Vec::new();
+        }
+        let names: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
+        vec![ToolSpec {
+            name: "read_skill".into(),
+            description: format!(
+                "读取某个技能的 SKILL.md 全文(过程性知识:步骤、检查清单、约定)。\
+                 任务与某技能相关时先读它再动手。可用技能:{}。",
+                names.join(" / ")
+            ),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "技能名(与目录中列出的完全一致)" }
+                },
+                "required": ["name"]
+            }),
+        }]
+    }
+
+    /// 按名字读技能。名字不在清单里、文件被改过、读不到:三种拒绝各自留痕。
+    fn read_skill(&self, name: Option<&str>) -> ToolOutcome {
+        let Some(name) = name else { return "缺少必填参数 name".to_string().into() };
+        let Some(skill) = self.skills.iter().find(|s| s.name == name) else {
+            let names: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
+            return ToolOutcome {
+                text: format!("未知技能 {name}(可用:{})", names.join(" / ")),
+                audit: Some(EventBody::SkillRead {
+                    name: name.into(),
+                    content_hash: None,
+                    refused: Some("unknown".into()),
+                }),
+            };
+        };
+        match skill.read_body() {
+            Ok(body) => {
+                let text = if body.len() > READ_CAP_BYTES {
+                    let cut = (0..=READ_CAP_BYTES).rev().find(|&i| body.is_char_boundary(i)).unwrap_or(0);
+                    format!("{}\n…(技能正文超过 {READ_CAP_BYTES} 字节,已截断)", &body[..cut])
+                } else {
+                    body
+                };
+                ToolOutcome {
+                    text,
+                    audit: Some(EventBody::SkillRead {
+                        name: name.into(),
+                        content_hash: Some(skill.content_hash.clone()),
+                        refused: None,
+                    }),
+                }
+            }
+            Err(e) => {
+                let class = match e {
+                    SkillError::Tampered { .. } => "tampered",
+                    SkillError::Io(_) => "io",
+                    SkillError::Format(_) => "format",
+                };
+                ToolOutcome {
+                    text: format!("拒绝:{e}"),
+                    audit: Some(EventBody::SkillRead {
+                        name: name.into(),
+                        content_hash: Some(skill.content_hash.clone()),
+                        refused: Some(class.into()),
+                    }),
+                }
+            }
+        }
     }
 
     fn write_specs(&self) -> Vec<ToolSpec> {
@@ -210,6 +302,7 @@ impl ToolSet {
                 Some(pat) => self.grep(pat, args["path"].as_str().unwrap_or(".")),
                 None => "缺少必填参数 pattern".into(),
             },
+            "read_skill" => return self.read_skill(args["name"].as_str()),
             "write_file" | "replace_in_file" if !self.writable => {
                 format!("拒绝:{name} 是写操作,当前工作区为只读(写入需在隔离 worktree 中进行)")
             }

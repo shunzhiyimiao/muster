@@ -1715,8 +1715,13 @@ async fn run_workspace_task(
     // 任务同样过棘轮。只让聊天守规矩的话,**跑一次任务就能绕过会话密级**
     // ——而任务送出去的内容(工作区文件、命令输出)比聊天多得多
     let session_id = format!("session:{}", channel.id);
-    let sources =
-        turn_sources_and_persist(&store, &audit, &session_id, &label_sources(&channel)).await?;
+    // 技能:仓库级 + 个人级目录里的 SKILL.md(与「技能」页同一份发现结果)。
+    // 自报了密级的技能与频道密级一起进棘轮——技能正文可能本身就是敏感做法,
+    // 不能因为它"只是说明书"就放它上云(铁律 1)。
+    let found = muster_skill::discover(&skill_roots(&workspace, &home));
+    let mut label_srcs = label_sources(&channel);
+    label_srcs.extend(found.skills.iter().filter_map(|s| s.label_source()));
+    let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
     let spec = TaskSpec {
         run_id: run_id.clone(),
         session_id: Some(session_id.clone()),
@@ -1730,7 +1735,11 @@ async fn run_workspace_task(
         workspace_root: Some(workspace_root.into()),
         propose_merge: true,
     };
-    let cfg = RunnerConfig { policy_version: POLICY_VERSION.into(), ..Default::default() };
+    let cfg = RunnerConfig {
+        policy_version: POLICY_VERSION.into(),
+        skills: found.skills,
+        ..Default::default()
+    };
 
     let a = app.clone();
     let rid = run_id.clone();
@@ -2310,6 +2319,72 @@ fn toggle_drill(state: State<'_, AppState>, on: bool) -> Result<DrillStatus, Str
             }),
         })
     }
+}
+
+// ---------------------------------------------------------------- 技能(SKILL.md)
+
+/// 技能的发现根,顺序即优先级:仓库级(`<工作区>/.agents/skills`,与 codex 同一约定,
+/// 随代码提交、团队共用)在前,个人级(`~/.muster/skills`)在后;同名先到先得。
+fn skill_roots(workspace: &str, home: &str) -> Vec<std::path::PathBuf> {
+    vec![
+        std::path::Path::new(workspace).join(muster_skill::REPO_SKILLS_DIR),
+        std::path::Path::new(home).join(".muster").join("skills"),
+    ]
+}
+
+/// 任务模式的工作区与家目录(与 run_workspace_task 同一口径)。
+fn workspace_and_home() -> Result<(String, String), String> {
+    let home = remote::home_dir()
+        .map(|p| p.display().to_string())
+        .ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
+    let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    Ok((workspace, home))
+}
+
+#[derive(Serialize)]
+struct SkillOut {
+    name: String,
+    description: String,
+    /// `workspace`(仓库级)或 `personal`(个人级)。
+    origin: String,
+    path: String,
+    /// SKILL.md 全文的 sha256——审计 skill.offer / skill.read 里记的就是它。
+    content_hash: String,
+    sensitivity: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SkillsOut {
+    /// 发现根(按优先级),不存在的也列出来——界面要告诉人"把文件放哪儿"。
+    roots: Vec<String>,
+    skills: Vec<SkillOut>,
+    /// 没能加载的技能及原因,逐条可读。
+    problems: Vec<String>,
+}
+
+/// 列出当前工作区能用的技能。**这里列出的就是任务模式会提供给 Agent 的**——
+/// 同一个发现函数,不另写一份,免得界面说有、运行时却没有。
+#[tauri::command]
+fn skills_list() -> Result<SkillsOut, String> {
+    let (workspace, home) = workspace_and_home()?;
+    let roots = skill_roots(&workspace, &home);
+    let found = muster_skill::discover(&roots);
+    Ok(SkillsOut {
+        roots: roots.iter().map(|r| r.display().to_string()).collect(),
+        skills: found
+            .skills
+            .iter()
+            .map(|s| SkillOut {
+                name: s.name.clone(),
+                description: s.description.clone(),
+                origin: if s.root == roots[0] { "workspace".into() } else { "personal".into() },
+                path: s.path.display().to_string(),
+                content_hash: s.content_hash.0.clone(),
+                sensitivity: s.sensitivity.map(|l| format!("{l:?}").to_lowercase()),
+            })
+            .collect(),
+        problems: found.problems,
+    })
 }
 
 // ---------------------------------------------------------------- P4 能力库
@@ -3327,6 +3402,7 @@ fn main() {
             approvals_pending,
             approvals_decide,
             capsules_list,
+            skills_list,
             forgeable_runs,
             capsule_forge,
             capsule_verify,

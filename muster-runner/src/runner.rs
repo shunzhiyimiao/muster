@@ -32,6 +32,9 @@ pub struct RunnerConfig {
     pub max_turns: usize,
     /// 隔离工作区保留策略(§7.4「再依据保留策略清理」)。
     pub retention: RetentionPolicy,
+    /// 本次任务被提供的技能(见 muster-skill):目录进系统提示词,正文经 `read_skill`
+    /// 按需读取,提供与读取分别落 `skill.offer` / `skill.read`。空 = 没有技能(v0 默认)。
+    pub skills: Vec<muster_skill::SkillMeta>,
 }
 
 impl Default for RunnerConfig {
@@ -43,6 +46,7 @@ impl Default for RunnerConfig {
             policy_version: "policy-v1".into(),
             max_turns: 8,
             retention: RetentionPolicy::default(),
+            skills: Vec::new(),
         }
     }
 }
@@ -305,7 +309,8 @@ pub async fn run_task_at(
         Some(wt) => ToolSet::writable(&wt.path),
         None => ToolSet::new(&spec.workspace),
     }
-    .map_err(|e| RunnerError::Workspace(e.to_string()))?;
+    .map_err(|e| RunnerError::Workspace(e.to_string()))?
+    .with_skills(cfg.skills.clone());
     let started = Instant::now();
 
     // ---- 路由(一次)。拒绝也是证据:落 route.refuse(E4),写失败按审计失败处理。
@@ -413,6 +418,15 @@ pub async fn run_task_at(
         },
     )?;
 
+    // ---- skill.offer:本次运行能看到哪些技能、各是什么版本(只记哈希,铁律 3)。
+    // 紧跟 run.start:它和工具环境一样是这次运行的条件,不是过程。
+    if !cfg.skills.is_empty() {
+        append(
+            audit,
+            EventBody::SkillOffer { skills: cfg.skills.iter().map(|s| s.audit_ref()).collect() },
+        )?;
+    }
+
     // ---- route.decide
     append(
         audit,
@@ -429,31 +443,37 @@ pub async fn run_task_at(
 
     // ---- 工具循环
     let tool_list: Vec<&str> = tool_names.iter().map(String::as_str).collect();
-    let mut messages = vec![
-        ChatMessage::system(if cfg.system_prompt == muster_prompt::SYSTEM_PROMPT {
-            // 默认提示词走 A1 的标准拼装(工作区 + 工具清单在同一处维护)
-            let mut s = muster_prompt::with_mode(
-                &tools.workspace().display().to_string(),
-                &tool_list,
-                tools.is_writable(),
-            );
-            if let Some(wt) = &worktree {
-                s.push_str(&format!(
-                    "\n这是本任务的隔离工作区(分支 {}),改动不影响主仓;完成后会以 diff 呈交人工复核。",
-                    wt.branch
-                ));
-            }
-            s
-        } else {
-            format!(
-                "{}\n工作区:{}(工具:{})",
-                cfg.system_prompt,
-                tools.workspace().display(),
-                tool_list.join(" / ")
-            )
-        }),
-        ChatMessage::user(spec.prompt.clone()),
-    ];
+    let mut system_text = if cfg.system_prompt == muster_prompt::SYSTEM_PROMPT {
+        // 默认提示词走 A1 的标准拼装(工作区 + 工具清单在同一处维护)
+        let mut s = muster_prompt::with_mode(
+            &tools.workspace().display().to_string(),
+            &tool_list,
+            tools.is_writable(),
+        );
+        if let Some(wt) = &worktree {
+            s.push_str(&format!(
+                "\n这是本任务的隔离工作区(分支 {}),改动不影响主仓;完成后会以 diff 呈交人工复核。",
+                wt.branch
+            ));
+        }
+        s
+    } else {
+        format!(
+            "{}\n工作区:{}(工具:{})",
+            cfg.system_prompt,
+            tools.workspace().display(),
+            tool_list.join(" / ")
+        )
+    };
+    // 技能目录只放名字与一句描述(渐进披露),正文由 read_skill 按需读取——
+    // 提示词是公共上下文,技能正文的每个字都在跟任务本身抢窗口。
+    // 追加在 A1 提示词之后:SYSTEM_PROMPT 常量原样不动,A7 闸门证据不受影响。
+    if !cfg.skills.is_empty() {
+        system_text.push_str("\n\n");
+        system_text.push_str(&muster_skill::render_catalog(&cfg.skills));
+    }
+    let mut messages =
+        vec![ChatMessage::system(system_text), ChatMessage::user(spec.prompt.clone())];
     let mut total_prompt: u64 = 0;
     let mut total_completion: u64 = 0;
     let mut final_text = String::new();

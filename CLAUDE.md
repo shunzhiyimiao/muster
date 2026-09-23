@@ -13,6 +13,7 @@
 - muster-audit：append-only + SHA-256 链，"8幕→SQL"见其 README
 - muster-eval：A7 评测，20 固定样本，A1 提示词改动后必须重跑
 - muster-runner：B1 任务执行器；每 run 独立 worktree（写权限由隔离换取，主仓零污染，产出 diff）；重试属 Runner 不属路由
+- muster-skill：技能（SKILL.md，与 codex 同一约定：仓库级 .agents/skills/ + 个人级 ~/.muster/skills/）；只从本地发现不联网、目录进提示词而正文经 read_skill 按需读、审计只记哈希（skill.offer / skill.read）、自报密级即成为标签来源
 - muster-gateway：对外 Responses / 对内 chat，让 codex 用上 chat 系模型
 - muster-prompt：A1 系统提示词唯一出处（改它必须重跑 A7 评测）
 - muster-identity：P2 权限语义内核；can() 判定纯函数按 §4.4 顺序，五不变量穷举验证（13,500 组）
@@ -22,7 +23,7 @@
 - apps/desktop：点将台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
 
 ## 约定
-- 动手前后都跑 cargo test（当前基线 159 项全绿；桌面壳另有 4 项需在 apps/desktop/src-tauri 下跑）
+- 动手前后都跑 cargo test（当前基线 246 项全绿；桌面壳另有 36 项需在 apps/desktop/src-tauri 下跑）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
 - 总体规划在 docs/（16 周 P0–P6，任务号 P0-01…P6-08）；A2/A7/E1–E3/A9 等是其细化分解；codex fork 分仓在 ../muster-codex

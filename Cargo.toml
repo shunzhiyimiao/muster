@@ -8,6 +8,7 @@ members = [
     "muster-route",
     "muster-audit",
     "muster-runner",
+    "muster-skill",
     "muster-gateway",
     "muster-server",
     "muster-meeting-agent",

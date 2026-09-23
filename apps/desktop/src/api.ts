@@ -300,6 +300,25 @@ export interface StoredMsg {
   ts_ms: number;
 }
 
+/** 技能(SKILL.md):任务模式会提供给 Agent 的过程性知识。正文不在这里——Agent 在任务里经 read_skill 读 */
+export interface SkillOut {
+  name: string;
+  description: string;
+  /** workspace = 仓库级(.agents/skills,随代码提交);personal = 个人级(~/.muster/skills) */
+  origin: "workspace" | "personal";
+  path: string;
+  /** SKILL.md 全文的 sha256——审计 skill.offer / skill.read 里记的就是它 */
+  content_hash: string;
+  sensitivity: string | null;
+}
+export interface SkillsOut {
+  /** 发现根,按优先级;不存在的也列出来,好告诉人把文件放哪儿 */
+  roots: string[];
+  skills: SkillOut[];
+  /** 没能加载的技能及原因 */
+  problems: string[];
+}
+
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   /** `threadId` 为空 = 主对话。团队频道永远是主对话:那边的历史在服务端。 */
@@ -375,6 +394,8 @@ export const api = {
     invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),
   capsulesList: () => invoke<CapsuleOut[]>("capsules_list"),
   forgeableRuns: () => invoke<ForgeableRun[]>("forgeable_runs"),
+  /** 与任务模式同一份发现结果:这里列出的就是 Agent 会拿到的 */
+  skillsList: () => invoke<SkillsOut>("skills_list"),
   capsuleForge: (runId: string, goal: string, visibility: string) =>
     invoke<string>("capsule_forge", { runId, goal, visibility }),
   capsuleVerify: (capsuleId: string) => invoke<string>("capsule_verify", { capsuleId }),

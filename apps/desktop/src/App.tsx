@@ -9,7 +9,7 @@ import {
 import { T } from "./theme";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
-  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut,
+  CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, SkillsOut,
   Sensitivity, TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
 import { useChat, ChatPane } from "./chat";
@@ -20,6 +20,7 @@ import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
 import { MeetingRoom, type TranscriptLine } from "./views/Meeting";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
+import { SkillsView } from "./views/Skills";
 
 const RAIL = [
   { id: "console", icon: LayoutDashboard, label: "控制台", ok: true },
@@ -73,6 +74,7 @@ export default function App() {
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
+  const [skills, setSkills] = useState<SkillsOut | null>(null);
   const [me, setMe] = useState<WhoAmI | null>(null);
   const [drillOn, setDrillOn] = useState(false);
   const [drillId, setDrillId] = useState<string | null>(null);
@@ -88,6 +90,7 @@ export default function App() {
     api.approvalsPending().then(setApprovals).catch(() => {});
     api.capsulesList().then(setCapsules).catch(() => {});
     api.forgeableRuns().then(setForgeable).catch(() => {});
+    api.skillsList().then(setSkills).catch(() => {});
     api.whoami().then(setMe).catch(() => {});
     api.remoteRestore().then((r) => {
       setRemote(r);
@@ -485,7 +488,8 @@ export default function App() {
               <SideItem icon={<Clock size={16} />} label="任务" onClick={() => soft("任务")} />
               <SideSec>积累</SideSec>
               <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />
-              <SideItem icon={<Sparkles size={16} />} label="技能" onClick={() => soft("技能")} />
+              <SideItem icon={<Sparkles size={16} />} label="技能" active={view === "skills"} onClick={() => { setView("skills"); setNotice(""); refreshAll(); }}
+                extra={skills && skills.skills.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "skills" ? "#DCDCFE" : T.faint }}>{skills.skills.length}</span> : undefined} />
               <SideItem icon={<BookOpen size={16} />} label="知识库" onClick={() => soft("知识库")} />
               <SideItem icon={<Link2 size={16} />} label="连接器" onClick={() => soft("连接器")} />
               <SideItem icon={<Lock size={16} />} label="权限" onClick={() => soft("权限")} />
@@ -598,6 +602,7 @@ export default function App() {
                 onOpenChannel={(c) => (c.personal ? goPersonalChat() : goChannel(c.team_id, c.id))} />
             )}
             {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat} />}
+            {view === "skills" && <SkillsView data={skills} onRefresh={refreshAll} />}
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">

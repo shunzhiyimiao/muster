@@ -1915,6 +1915,7 @@ dependencies = [
  "muster-provider",
  "muster-route",
  "muster-runner",
+ "muster-skill",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -1975,8 +1976,18 @@ dependencies = [
  "muster-prompt",
  "muster-provider",
  "muster-route",
+ "muster-skill",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "muster-skill"
+version = "0.1.0"
+dependencies = [
+ "muster-audit",
+ "muster-route",
  "thiserror 1.0.69",
 ]
 

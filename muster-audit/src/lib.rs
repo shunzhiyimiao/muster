@@ -53,7 +53,7 @@ pub mod store;
 
 pub use event::{
     Actor, ActorKind, AuditEvent, ContentHash, EgressBytes, EventBody, ModelRef, NewEvent,
-    Parsed, ReplayRefs, RunOutcome, Scope,
+    Parsed, ReplayRefs, RunOutcome, Scope, SkillRef,
 };
 pub use queries::{
     actor_first_seen, capsules, day_throughput, decision_of, distinct_runs, downgrades_zh,
