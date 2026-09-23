@@ -1,4 +1,4 @@
-/* 计划表 · 自定义工作流:WORKFLOW.md 定义的定时计划,到点由桌面壳拉起 Agent 跑一次。
+/* 我的工作台 › 任务 › 工作流:WORKFLOW.md 定义的定时计划,到点由桌面壳拉起 Agent 跑一次。
    这一页回答:有哪些工作流、下次什么时候跑、上次跑成什么样、产物在哪、为什么有的没加载。 */
 import { useState } from "react";
 import { AlertTriangle, Calendar, Clock, FolderOpen, Globe, Lock, Play, RefreshCw, Sparkles } from "lucide-react";
@@ -56,7 +56,7 @@ export function WorkflowsView({ data, onRefresh }: { data: WorkflowsOut | null; 
       <div className="flex items-center mb-4">
         <div className="flex items-center gap-2">
           <Calendar size={16} style={{ color: T.indigo }} />
-          <b className="text-[15px]">计划表 · 工作流</b>
+          <b className="text-[15px]">工作流</b>
           <span className="text-[11px]" style={{ color: T.sub }}>
             {flows.length} 个 · 壳开着才会到点执行,错过的时刻在下次打开时补跑一次
           </span>

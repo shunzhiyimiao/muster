@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Clock, Hash, Home,
   LayoutDashboard, Library, LineChart, Link2, Lock, MessageSquare, Network, Puzzle, Search,
-  Pencil, Plus, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X,
+  Pencil, Plus, Repeat, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X,
 } from "lucide-react";
 import { T } from "./theme";
 import {
@@ -29,7 +29,7 @@ const RAIL = [
   { id: "team", icon: Users, label: "团队", ok: true },
   { id: "setting", icon: Settings, label: "设置", ok: false },
   { id: "ext", icon: Puzzle, label: "模块扩展", ok: false },
-  { id: "plan", icon: Calendar, label: "计划表", ok: true },
+  { id: "plan", icon: Calendar, label: "计划表", ok: false },
   { id: "term", icon: Terminal, label: "终端", ok: false },
   { id: "remote", icon: Network, label: "远程连接", ok: false },
 ];
@@ -194,7 +194,7 @@ export default function App() {
     }
     setNotice("");
     setModule(r.id);
-    setView(r.id === "console" ? "home" : r.id === "personal" ? "phome" : r.id === "plan" ? "workflows" : "channel");
+    setView(r.id === "console" ? "home" : r.id === "personal" ? "phome" : "channel");
   };
   const goChannel = (tid: string, cid: string) => {
     setTeam(tid);
@@ -379,7 +379,7 @@ export default function App() {
         {/* ===== 二级:随模块切换 ===== */}
         <aside className="w-56 shrink-0 flex flex-col px-3 py-4 overflow-y-auto" style={{ background: T.panel, borderRight: `1px solid ${T.line}` }}>
           <div className="px-2 pb-2 text-[13px] font-bold">
-            {module === "console" ? "控制台" : module === "personal" ? "我的工作台" : module === "plan" ? "计划表" : "团队"}
+            {module === "console" ? "控制台" : module === "personal" ? "我的工作台" : "团队"}
           </div>
 
           {module === "console" && (
@@ -489,6 +489,8 @@ export default function App() {
                 )}
               </div>
               <SideItem icon={<Clock size={16} />} label="任务" onClick={() => soft("任务")} />
+              <SideItem icon={<Repeat size={16} />} label="工作流" active={view === "workflows"} onClick={() => { setView("workflows"); setNotice(""); refreshAll(); }}
+                extra={workflows && workflows.workflows.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "workflows" ? "#DCDCFE" : T.faint }}>{workflows.workflows.length}</span> : undefined} />
               <SideSec>积累</SideSec>
               <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />
               <SideItem icon={<Sparkles size={16} />} label="技能" active={view === "skills"} onClick={() => { setView("skills"); setNotice(""); refreshAll(); }}
@@ -521,15 +523,6 @@ export default function App() {
             </>
           )}
 
-          {module === "plan" && (
-            <>
-              <SideItem icon={<Calendar size={16} />} label="工作流" active={view === "workflows"} onClick={() => { setView("workflows"); setNotice(""); refreshAll(); }}
-                extra={workflows && workflows.workflows.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "workflows" ? "#DCDCFE" : T.faint }}>{workflows.workflows.length}</span> : undefined} />
-              <div className="px-3 pt-3 text-[10.5px] leading-relaxed" style={{ color: T.faint }}>
-                定时跑的 Agent 计划:到点自动执行、产出报告、发到频道。定义文件放在仓库或个人目录,页面里有示例。
-              </div>
-            </>
-          )}
           {module === "team" && (
             <>
               <SideItem icon={<Video size={16} />} label="会议室" active={view === "meeting"} onClick={() => { setView("meeting"); setNotice(""); }}
@@ -888,7 +881,7 @@ function TopBar({
           <span className="text-[21px] font-bold tracking-tight">{t}</span>
           <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md"
             style={{ background: module === "personal" ? T.tealSoft : module === "team" ? T.indigoSoft : T.soft, color: module === "personal" ? T.teal : module === "team" ? T.indigo : T.sub }}>
-            {module === "personal" ? "个人" : module === "team" ? "团队" : module === "plan" ? "计划" : "组织"}
+            {module === "personal" ? "个人" : module === "team" ? "团队" : "组织"}
           </span>
         </div>
         <div className="text-xs mt-0.5" style={{ color: T.sub }}>{s}</div>

@@ -2387,7 +2387,7 @@ fn skills_list() -> Result<SkillsOut, String> {
     })
 }
 
-// ---------------------------------------------------------------- 计划表:自定义工作流(muster-workflow)
+// ---------------------------------------------------------------- 我的工作台 › 任务 › 工作流(muster-workflow)
 
 /// 正在跑的工作流名:同一工作流同一时刻只跑一个(定时与手动共用这把锁)。
 #[derive(Default)]
@@ -3873,7 +3873,7 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(WorkflowRuntime::default())
-        // 计划表:定时工作流的调度循环(壳开着才跑,见 muster-workflow)
+        // 工作流:定时调度循环(壳开着才跑,见 muster-workflow);入口在我的工作台 › 任务 › 工作流
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(workflow_scheduler(handle));

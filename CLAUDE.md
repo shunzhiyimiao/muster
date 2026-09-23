@@ -14,7 +14,7 @@
 - muster-eval：A7 评测，20 固定样本，A1 提示词改动后必须重跑
 - muster-runner：B1 任务执行器；每 run 独立 worktree（写权限由隔离换取，主仓零污染，产出 diff）；重试属 Runner 不属路由
 - muster-skill：技能（SKILL.md，与 codex 同一约定：仓库级 .agents/skills/ + 个人级 ~/.muster/skills/）；只从本地发现不联网、目录进提示词而正文经 read_skill 按需读、审计只记哈希（skill.offer / skill.read）、自报密级即成为标签来源
-- muster-workflow：自定义工作流（WORKFLOW.md：schedule / skills / egress / outputs / channel + 步骤正文；仓库级 .agents/workflows/ + 个人级 ~/.muster/workflows/）；工作流自有仓库产出自动合入（只合自己名下的仓库，不走审批）；http_get 只许白名单主机、每次落 tool.egress 计入演习报告；调度器 v0 在桌面壳里（错过补跑一次）；PDF 靠本机 Chrome headless，pptx 未实现
+- muster-workflow：自定义工作流（WORKFLOW.md：schedule / skills / egress / outputs / channel + 步骤正文；仓库级 .agents/workflows/ + 个人级 ~/.muster/workflows/）；工作流自有仓库产出自动合入（只合自己名下的仓库，不走审批）；http_get 只许白名单主机、每次落 tool.egress 计入演习报告；调度器 v0 在桌面壳里（错过补跑一次），入口在我的工作台 › 任务 › 工作流；PDF 靠本机 Chrome headless，pptx 未实现
 - muster-gateway：对外 Responses / 对内 chat，让 codex 用上 chat 系模型
 - muster-prompt：A1 系统提示词唯一出处（改它必须重跑 A7 评测）
 - muster-identity：P2 权限语义内核；can() 判定纯函数按 §4.4 顺序，五不变量穷举验证（13,500 组）
