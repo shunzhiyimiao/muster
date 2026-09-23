@@ -1790,6 +1790,7 @@ async fn run_workspace_task(
     // 点将:谁来干。只读工牌不建隔离工作区(没有写权限可换),其余按岗位卡装配
     let roster = load_roster()?;
     let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0)?;
+    let all_skills = found.skills.clone();
     let skills = skills_for(&agent, found.skills)?;
     let spec = TaskSpec {
         run_id: run_id.clone(),
@@ -1804,13 +1805,45 @@ async fn run_workspace_task(
         workspace_root: if agent.tools == muster_roster::ToolMode::ReadOnly { None } else { Some(workspace_root.into()) },
         propose_merge: true,
     };
-    let cfg = runner_cfg_for(&agent, skills);
+    let mut cfg = runner_cfg_for(&agent, skills);
+    // 多 Agent(第二步):名册里还有别人时,主 Agent 可以把子任务委派出去,
+    // 子 run 在同一个隔离工作区里跑,用对方的岗位卡与白名单,审计链父子相连
+    let ws_slot: Arc<Mutex<Option<(std::path::PathBuf, bool)>>> = Arc::new(Mutex::new(None));
+    if agent.tools == muster_roster::ToolMode::ReadOnly {
+        *ws_slot.lock().unwrap() = Some((spec.workspace.clone(), false));
+    }
+    if roster.agents.len() > 1 {
+        let (a2, rid2, chan2, tr2) = (app.clone(), run_id.clone(), channel.id.clone(), transcript.clone());
+        let ctx = muster_roster::delegate::DelegateContext {
+            router: router.clone(),
+            audit: audit.clone(),
+            roster: roster.clone(),
+            from: agent.clone(),
+            parent_run_id: run_id.clone(),
+            session_id: Some(session_id.clone()),
+            team: Some(channel.team.clone()),
+            channel: Some(channel.id.clone()),
+            sources: spec.sources.clone(),
+            effective: muster_route::effective_sensitivity(&spec.sources).0,
+            policy_version: POLICY_VERSION.into(),
+            workspace: ws_slot.clone(),
+            skills: all_skills,
+            default_provider: Some(agent.model.clone().unwrap_or_else(|| "kimi".into())),
+            max_turns: 12,
+            on_event: Arc::new(move |ev| forward_runner_event(&a2, &rid2, &chan2, &tr2, ev)),
+        };
+        cfg.extra_tools.push(muster_roster::delegate::DelegateTool::new(ctx).into_extra_tool());
+    }
 
     let a = app.clone();
     let rid = run_id.clone();
     let chan = channel.id.clone();
     let tr = transcript.clone();
+    let ws_fill = ws_slot.clone();
     let result = run_task(&router, &audit, &cfg, spec, move |ev| {
+        if let RunnerEvent::WorkspaceReady { path, .. } = &ev {
+            *ws_fill.lock().unwrap() = Some((std::path::PathBuf::from(path), true));
+        }
         forward_runner_event(&a, &rid, &chan, &tr, ev)
     })
     .await;

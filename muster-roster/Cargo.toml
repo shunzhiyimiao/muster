@@ -10,8 +10,12 @@ description = "Muster Agent 编制:工牌(AGENT.md)—岗位、别名、技能�
 muster-audit = { path = "../muster-audit" }
 muster-route = { path = "../muster-route" }
 muster-skill = { path = "../muster-skill" }
+muster-runner = { path = "../muster-runner" }
+muster-provider = { path = "../muster-provider" }
 serde_json = "1"
+futures = "0.3"
 thiserror = "1"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros"] }

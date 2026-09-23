@@ -42,6 +42,9 @@
 //!    说明书(提示词后缀)、命令白名单、能力哈希;审批申请里记的就是这个哈希,
 //!    名册改了能力,审批人看到的申请依据随之变。工具档位(只读 / 隔离可写)由调用方
 //!    用 `workspace_root` 表达,Runner 不认识名册。
+//! 9. **委派的子 run 复用父 run 的工作区**([`WorkspaceOverride`]):不建 worktree、不取 diff、
+//!    不申请合入,只留自己的审计链;父 run 结束时统一取 diff 与申请。谁委派、委派给谁,由
+//!    调用方落 `run.delegate` 事件(见 muster-roster 的 delegate 工具)。
 //!
 //! ## 诚实边界(v0)
 //!
@@ -81,7 +84,8 @@ pub use capsule::{
     CapsuleSpec, CapsuleStore, ForgeOutcome, VerifyOutcome,
 };
 pub use runner::{
-    run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec, RATE_LIMIT_ATTEMPTS,
+    run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec, WorkspaceOverride,
+    RATE_LIMIT_ATTEMPTS,
 };
 pub use command::CommandPolicy;
 pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};

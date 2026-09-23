@@ -350,6 +350,16 @@ pub enum EventBody {
         refused: Option<String>,
     },
 
+    /// 一次委派:本 run 的 Agent 把子任务交给另一张工牌,在同一工作区里跑一个子 run。
+    /// 子 run 有自己的 run_id 与完整链(actor 是被委派的工牌);这条事件把父子连起来,
+    /// 指令正文只留哈希。
+    #[serde(rename = "run.delegate")]
+    RunDelegate {
+        to_badge: String,
+        sub_run_id: String,
+        instructions_hash: ContentHash,
+    },
+
     /// 一次命令执行(B2)。总体规划 §"运行了哪些命令、退出码和耗时"要求留痕,
     /// **被拒的命令同样留痕**——Agent 想跑却没跑成的东西,恰恰是最该看见的信号。
     ///
@@ -451,6 +461,7 @@ impl EventBody {
             EventBody::WorkflowTrigger { .. } => "workflow.trigger",
             EventBody::WorkflowOutput { .. } => "workflow.output",
             EventBody::ToolEgress { .. } => "tool.egress",
+            EventBody::RunDelegate { .. } => "run.delegate",
             EventBody::TranscriptPurge { .. } => "transcript.purge",
             EventBody::TranscriptExport { .. } => "transcript.export",
             EventBody::AuditArchived { .. } => "audit.archived",

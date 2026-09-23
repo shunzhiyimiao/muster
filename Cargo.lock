@@ -1949,12 +1949,16 @@ dependencies = [
 name = "muster-roster"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "muster-audit",
+ "muster-provider",
  "muster-route",
+ "muster-runner",
  "muster-skill",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

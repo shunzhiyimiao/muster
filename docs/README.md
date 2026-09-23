@@ -32,6 +32,6 @@
 | P4 工作流共享 | 能力库 / Capsule | ✅ 锻造 → 存储(哈希防篡改)→ 影子重放验真 → 跨团队引入 |
 | 技能(规划外,与 codex 同一 SKILL.md 约定) | muster-skill | ✅ v0(2026-09-22):本地发现、目录进提示词、read_skill、skill.offer / skill.read 只记哈希 |
 | 自定义工作流(规划外,入口:我的工作台 › 任务 › 工作流) | muster-workflow | ✅ v0(2026-09-23):定时(cron)+ 技能 + 白名单 http_get + 自有仓库自动合入 + html/pdf 产物;调度器在桌面壳内;pptx 未实现 |
-| Agent 编制(多 Agent 第一步) | muster-roster | ✅ v0(2026-09-23):写死的 A-007 变成名册;聊天/任务/工作流按工牌装配提示词、技能、命令白名单、能力哈希;Agent 档案页列名册;第二步(一次任务多 Agent 接力)与第三步(频道引入多 Agent)未做 |
+| Agent 编制(多 Agent 第一步) | muster-roster | ✅ v0(2026-09-23):写死的 A-007 变成名册;聊天/任务/工作流按工牌装配提示词、技能、命令白名单、能力哈希;Agent 档案页列名册;第二步 ✅ 委派(delegate 工具:同一隔离工作区里的子 run,run.delegate 相连);第三步(频道引入多 Agent)未做 |
 
 细化分解的总表(A1–A9 / B / C / D / E / G0′ / W3 / 8幕 全集)不在磁盘上;找到后请入库本目录。

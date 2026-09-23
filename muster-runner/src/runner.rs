@@ -28,6 +28,15 @@ use muster_route::{LabelSource, RoutePlan, RouteRequest, Router};
 use crate::tools::{ExtraTool, ToolSet};
 use crate::worktree::{enforce_retention, RetentionPolicy, RunDiff, Worktree};
 
+/// 在**已有目录**上跑,不建隔离工作区、不取 diff、不申请合入——给委派用:
+/// 子 run 在父 run 的隔离工作区里干活,diff 与合入仍由父 run 统一处理。
+#[derive(Debug, Clone)]
+pub struct WorkspaceOverride {
+    pub path: PathBuf,
+    /// 可写 ⇒ 写工具与 run_command 开放;这只应指向一个隔离 worktree。
+    pub writable: bool,
+}
+
 /// 同一回合因限流最多尝试几次(含第一次)。
 pub const RATE_LIMIT_ATTEMPTS: usize = 4;
 /// provider 没给 Retry-After 时的等待。
@@ -53,6 +62,8 @@ pub struct RunnerConfig {
     pub command_policy: Option<crate::command::CommandPolicy>,
     /// 工牌当前能力的哈希(见 muster-roster),进 `approval.request`;`None` = 旧常量。
     pub capabilities_hash: Option<ContentHash>,
+    /// 复用已有工作区(见 [`WorkspaceOverride`]);`None` = 正常建隔离 worktree 或直连只读。
+    pub workspace_override: Option<WorkspaceOverride>,
 }
 
 impl Default for RunnerConfig {
@@ -69,6 +80,7 @@ impl Default for RunnerConfig {
             persona: None,
             command_policy: None,
             capabilities_hash: None,
+            workspace_override: None,
         }
     }
 }
@@ -312,7 +324,12 @@ pub async fn run_task_at(
     // ---- 工作区:worktree 隔离(可写)或直连(只读)
     // 非 git 仓不假装隔离——如实降级为只读并告知,绝不在用户工作区上开写权限。
     let mut worktree: Option<Worktree> = None;
-    if let Some(root) = &spec.workspace_root {
+    // 复用已有工作区(委派的子 run):不建 worktree,也就没有 diff 与合入——那是父 run 的事
+    if cfg.workspace_override.is_some() {
+        on_event(RunnerEvent::Notice {
+            text: format!("在父任务的工作区里工作:{}", cfg.workspace_override.as_ref().map(|o| o.path.display().to_string()).unwrap_or_default()),
+        });
+    } else if let Some(root) = &spec.workspace_root {
         match Worktree::create_at(&spec.workspace, root, &spec.run_id, at) {
             Ok(wt) => {
                 on_event(RunnerEvent::WorkspaceReady {
@@ -327,9 +344,11 @@ pub async fn run_task_at(
             }),
         }
     }
-    let tools = match &worktree {
-        Some(wt) => ToolSet::writable(&wt.path),
-        None => ToolSet::new(&spec.workspace),
+    let tools = match (&cfg.workspace_override, &worktree) {
+        (Some(o), _) if o.writable => ToolSet::writable(&o.path),
+        (Some(o), _) => ToolSet::new(&o.path),
+        (None, Some(wt)) => ToolSet::writable(&wt.path),
+        (None, None) => ToolSet::new(&spec.workspace),
     }
     .map_err(|e| RunnerError::Workspace(e.to_string()))?
     .with_skills(cfg.skills.clone());
