@@ -354,6 +354,8 @@ export interface WorkflowOut {
 export interface WorkflowsOut {
   roots: string[];
   runs_root: string;
+  /** 在终端 touch `<run_now_dir>/<name>` 即可触发一次 */
+  run_now_dir: string;
   /** 本机有没有能打 PDF 的浏览器 */
   chrome: boolean;
   workflows: WorkflowOut[];

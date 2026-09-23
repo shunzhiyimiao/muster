@@ -16,6 +16,9 @@ use crate::WorkflowError;
 pub const SHOW_CAP: usize = 24_000;
 /// 从网络上最多读取的字节数(超出停止读取;计量按实际读取数)。
 pub const READ_CAP: usize = 2 * 1024 * 1024;
+/// URL 长度上限。抓回来的网页是不可信输入,模型可能被它带偏;出口只有白名单主机,
+/// 但查询串仍能带走信息——审计只记 URL 哈希,看不见内容。限长是给这个口子封顶。
+pub const MAX_URL_LEN: usize = 2048;
 
 pub struct HttpFetch {
     allow: Vec<String>,
@@ -72,6 +75,12 @@ impl HttpFetch {
                 refused: refused.map(str::to_owned),
             }
         };
+        if url_str.len() > MAX_URL_LEN {
+            return ToolOutcome {
+                text: format!("拒绝:URL 超过 {MAX_URL_LEN} 字节(只允许简短的公开接口地址)"),
+                audit: Some(egress(String::new(), 0, 0, None, Some("url_too_long"), started)),
+            };
+        }
         let url = match reqwest::Url::parse(url_str) {
             Ok(u) => u,
             Err(e) => {
@@ -113,6 +122,11 @@ impl HttpFetch {
             }
         };
         let status = resp.status().as_u16();
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let ctype = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -160,8 +174,14 @@ impl HttpFetch {
         } else {
             text.into_owned()
         };
+        let redirect_note = match (&location, status) {
+            (Some(l), 300..=399) => format!(
+                "\n重定向到:{l}\n(本工具不跟随重定向;若该主机在白名单内,请直接请求这个地址;不在则说明白名单在起作用)"
+            ),
+            _ => String::new(),
+        };
         ToolOutcome {
-            text: format!("HTTP {status} · {} · {bytes_in} 字节{read_note}\n\n{shown}", if ctype.is_empty() { "无 content-type" } else { &ctype }),
+            text: format!("HTTP {status} · {} · {bytes_in} 字节{read_note}{redirect_note}\n\n{shown}", if ctype.is_empty() { "无 content-type" } else { &ctype }),
             audit: Some(egress(host, bytes_out, bytes_in, Some(status), None, started)),
         }
     }
@@ -236,6 +256,9 @@ mod tests {
         assert_eq!(refused_class(&o).as_deref(), Some("scheme"));
         let o = f.get("not a url").await;
         assert_eq!(refused_class(&o).as_deref(), Some("url"));
+        let long = format!("https://api.example.test/q?x={}", "a".repeat(MAX_URL_LEN));
+        let o = f.get(&long).await;
+        assert_eq!(refused_class(&o).as_deref(), Some("url_too_long"));
     }
 
     #[tokio::test]
@@ -255,6 +278,23 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed_but_the_target_is_shown() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 301 Moved Permanently\r\nLocation: https://api.example.dev/v1/latest\r\nContent-Type: text/html\r\nContent-Length: 4\r\nConnection: close\r\n\r\n<ok>");
+        });
+        let f = HttpFetch::new(vec![addr.clone()]).unwrap();
+        let o = f.get(&format!("http://{addr}/latest")).await;
+        assert!(o.text.starts_with("HTTP 301"), "{}", o.text);
+        assert!(o.text.contains("重定向到:https://api.example.dev/v1/latest"), "{}", o.text);
+        assert!(refused_class(&o).is_none(), "3xx 不是拒绝,是如实回报");
     }
 
     #[tokio::test]

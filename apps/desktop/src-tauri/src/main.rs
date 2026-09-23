@@ -2402,6 +2402,34 @@ fn workflow_roots(workspace: &str, home: &str) -> Vec<std::path::PathBuf> {
     ]
 }
 
+/// 「立即运行」的第二个入口:在这个目录下 touch 一个以工作流名命名的文件,下一个调度周期
+/// (最多 60 秒)就当作手动触发跑一次,文件随即删除。给脚本、系统 cron 与 SSH 用——
+/// 不必开着界面点按钮;壳没开则文件留在那里,下次打开时补跑。
+fn workflow_run_now_dir(home: &str) -> std::path::PathBuf {
+    std::path::Path::new(home).join(".muster").join("workflow-run-now")
+}
+
+/// 取走并清空触发文件(先删再跑:跑挂了也不会因为文件还在而反复重跑)。
+fn take_run_now_requests(home: &str) -> Vec<String> {
+    let dir = workflow_run_now_dir(home);
+    let _ = std::fs::create_dir_all(&dir);
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.path().is_file())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names.dedup();
+    for n in &names {
+        let _ = std::fs::remove_file(dir.join(n));
+    }
+    names
+}
+
 /// 工作流自有仓库与产物的根(`MUSTER_WORKFLOW_RUNS` 可改)。
 fn workflow_runs_root(home: &str) -> std::path::PathBuf {
     std::env::var("MUSTER_WORKFLOW_RUNS")
@@ -2445,6 +2473,8 @@ struct WorkflowOut {
 struct WorkflowsOut {
     roots: Vec<String>,
     runs_root: String,
+    /// touch `<run_now_dir>/<name>` 即可从终端触发一次。
+    run_now_dir: String,
     chrome: bool,
     workflows: Vec<WorkflowOut>,
     problems: Vec<String>,
@@ -2501,6 +2531,7 @@ fn workflows_list(state: State<'_, AppState>, rt: State<'_, WorkflowRuntime>) ->
     Ok(WorkflowsOut {
         roots: roots.iter().map(|r| r.display().to_string()).collect(),
         runs_root: runs_root.display().to_string(),
+        run_now_dir: workflow_run_now_dir(&home).display().to_string(),
         chrome: muster_workflow::find_chrome().is_some(),
         workflows,
         problems: found.problems,
@@ -2514,7 +2545,7 @@ async fn workflow_run_now(
     rt: State<'_, WorkflowRuntime>,
     name: String,
 ) -> Result<String, String> {
-    run_workflow(&app, &state, &rt, &name, "manual", None).await
+    run_workflow(&app, &state, &rt, &name, "manual", None).await.map(|(rid, _)| rid)
 }
 
 /// 跑一次工作流(定时器与「立即运行」共用)。同一工作流同一时刻只跑一个。
@@ -2525,7 +2556,7 @@ async fn run_workflow(
     name: &str,
     trigger: &str,
     scheduled_for_ms: Option<u64>,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let (workspace, home) = workspace_and_home()?;
     let found = muster_workflow::discover(&workflow_roots(&workspace, &home));
     let problems = found.problems.clone();
@@ -2547,6 +2578,10 @@ async fn run_workflow(
 }
 
 /// 与任务模式同一条 Runner 路径,外加:自有仓库、技能按名取、白名单抓取、产物渲染、收尾审计。
+/// 返回 (run_id, outcome)。
+///
+/// **触发事件先于一切校验落链**:此后任何失败都配一个收尾事件(`failed:setup` 等)。
+/// 调度器靠"上次触发"算下一次,没有触发就永远"到点"——一个坏掉的定义会被每分钟重试一遍。
 async fn run_workflow_inner(
     app: &tauri::AppHandle,
     state: &State<'_, AppState>,
@@ -2555,38 +2590,104 @@ async fn run_workflow_inner(
     scheduled_for_ms: Option<u64>,
     workspace: &str,
     home: &str,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let (router, audit, store, cloud_max, egress_locked) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
         (b.router.clone(), b.audit.clone(), b.state.clone(), b.router.policy_snapshot().cloud_max(), b.router.egress_locked())
     };
-    let channel_id = spec.channel.clone().unwrap_or_else(|| "personal".into());
-    let channel = resolve_channel(state, &channel_id).await?;
-    require(muster_identity::Action::CreateTask, muster_identity::Scope::Channel(channel.id.clone()))?;
-
     let now = muster_workflow::ms_to_local(muster_workflow::now_ms());
     let run_id = format!("WF-{}-{}", spec.name, muster_workflow::stamp(&now));
-    let runs = muster_workflow::Runs::open(workflow_runs_root(home)).map_err(|e| e.to_string())?;
-    let repo = runs.ensure_repo(&spec.name).map_err(|e| e.to_string())?;
-
-    // 技能按名取;缺一个就不跑——工作流写明要用的技能,少了跑出来的东西不是它要的
-    let skills_found = muster_skill::discover(&skill_roots(workspace, home));
-    let mut skills = Vec::new();
-    for s in &spec.skills {
-        match skills_found.skills.iter().find(|k| &k.name == s) {
-            Some(k) => skills.push(k.clone()),
-            None => return Err(format!("工作流 {} 需要技能 {s},但技能目录里没有它", spec.name)),
-        }
-    }
-
-    // 密级:频道 + 技能 + 工作流自报,一起过棘轮
+    let channel_id = spec.channel.clone().unwrap_or_else(|| "personal".into());
     let session_id = format!("session:workflow:{}", spec.name);
-    let mut label_srcs = label_sources(&channel);
-    label_srcs.extend(skills.iter().filter_map(|s| s.label_source()));
-    label_srcs.extend(spec.label_source());
-    let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
-    let (effective, _) = muster_route::effective_sensitivity(&sources);
+    let rmt = remote_of(state);
+
+    let append = |actor: Actor, scope: Scope, label: Option<Sensitivity>, body: EventBody| -> Result<(), String> {
+        audit
+            .lock()
+            .unwrap()
+            .append(NewEvent {
+                ts_ms: None,
+                actor,
+                scope,
+                run_id: Some(run_id.clone()),
+                session_id: Some(session_id.clone()),
+                policy_version: Some(POLICY_VERSION.into()),
+                label,
+                locality: None,
+                body,
+            })
+            .map(|_| ())
+            .map_err(|e| format!("审计写入失败:{e}"))
+    };
+    let finish = |scope: Scope, label: Option<Sensitivity>, outcome: &str, artifacts: Vec<muster_audit::ArtifactRef>, merged: Option<String>| {
+        append(
+            Actor::agent(AGENT_BADGE),
+            scope,
+            label,
+            EventBody::WorkflowOutput { workflow: spec.name.clone(), outcome: outcome.into(), artifacts, merged_commit: merged },
+        )
+    };
+
+    // ---- 1. 触发先落链(频道此时还没解析,scope 只带原始频道 id)
+    let raw_scope = Scope { team: None, channel: Some(channel_id.clone()) };
+    append(
+        if trigger == "manual" { Actor::human(current_principal().id) } else { Actor::system("workflow-scheduler") },
+        raw_scope.clone(),
+        None,
+        EventBody::WorkflowTrigger {
+            workflow: spec.name.clone(),
+            definition_hash: spec.definition_hash.clone(),
+            trigger: trigger.into(),
+            scheduled_for_ms,
+        },
+    )?;
+
+    // ---- 2. 准备:频道、权限、自有仓库、技能、密级。任何一步失败 ⇒ failed:setup,不重试
+    type Prepared = (ChannelInfo, muster_workflow::Runs, std::path::PathBuf, Vec<muster_skill::SkillMeta>, Vec<LabelSource>, Sensitivity);
+    let prepared: Result<Prepared, String> = async {
+        let channel = resolve_channel(state, &channel_id).await?;
+        require(muster_identity::Action::CreateTask, muster_identity::Scope::Channel(channel.id.clone()))?;
+        let runs = muster_workflow::Runs::open(workflow_runs_root(home)).map_err(|e| e.to_string())?;
+        let repo = runs.ensure_repo(&spec.name).map_err(|e| e.to_string())?;
+        // 技能按名取;缺一个就不跑——工作流写明要用的技能,少了跑出来的东西不是它要的
+        let skills_found = muster_skill::discover(&skill_roots(workspace, home));
+        let mut skills = Vec::new();
+        for s in &spec.skills {
+            match skills_found.skills.iter().find(|k| &k.name == s) {
+                Some(k) => skills.push(k.clone()),
+                None => return Err(format!("需要技能 {s},但技能目录里没有它")),
+            }
+        }
+        // 密级:频道 + 技能 + 工作流自报,一起过棘轮
+        let mut label_srcs = label_sources(&channel);
+        label_srcs.extend(skills.iter().filter_map(|s| s.label_source()));
+        label_srcs.extend(spec.label_source());
+        let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
+        let (effective, _) = muster_route::effective_sensitivity(&sources);
+        Ok((channel, runs, repo, skills, sources, effective))
+    }
+    .await;
+    let (channel, runs, repo, skills, sources, effective) = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            finish(raw_scope, None, "failed:setup", Vec::new(), None)?;
+            // 频道可能就是解析失败的那个,退回个人空间说一声——别让人只在 stderr 里看到原因
+            let _ = record_msg(
+                rmt.as_ref(),
+                &store,
+                &main_thread("personal"),
+                "personal",
+                "agent",
+                &format!("⚠️ 工作流 {} 无法开始:{e}", spec.name),
+                Some(&run_id),
+                "failed",
+            )
+            .await;
+            return Err(format!("工作流 {} 无法开始:{e}", spec.name));
+        }
+    };
+    let scope = Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) };
 
     // 联网:白名单非空,且未演习锁定、有效密级不高于上云阈值——外发就是外发,与模型走同一条线
     let network = !spec.egress_hosts.is_empty() && !egress_locked && effective <= cloud_max;
@@ -2596,33 +2697,6 @@ async fn run_workflow_inner(
         extra_tools.push(fetch.into_extra_tool());
     }
 
-    let scope = Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) };
-    audit
-        .lock()
-        .unwrap()
-        .append(NewEvent {
-            ts_ms: None,
-            actor: if trigger == "manual" {
-                Actor::human(current_principal().id)
-            } else {
-                Actor::system("workflow-scheduler")
-            },
-            scope: scope.clone(),
-            run_id: Some(run_id.clone()),
-            session_id: Some(session_id.clone()),
-            policy_version: Some(POLICY_VERSION.into()),
-            label: Some(effective),
-            locality: None,
-            body: EventBody::WorkflowTrigger {
-                workflow: spec.name.clone(),
-                definition_hash: spec.definition_hash.clone(),
-                trigger: trigger.into(),
-                scheduled_for_ms,
-            },
-        })
-        .map_err(|e| format!("审计写入失败:{e}"))?;
-
-    let rmt = remote_of(state);
     let thread = main_thread(&channel.id);
     record_msg(
         rmt.as_ref(),
@@ -2682,36 +2756,37 @@ async fn run_workflow_inner(
 
     let wt_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let (a, rid, chan, tr, wp) = (app.clone(), run_id.clone(), channel.id.clone(), transcript.clone(), wt_path.clone());
-    let result = run_task(&router, &audit, &cfg, task, move |ev| {
-        if let RunnerEvent::WorkspaceReady { path, .. } = &ev {
-            *wp.lock().unwrap() = Some(path.clone());
-        }
-        forward_runner_event(&a, &rid, &chan, &tr, ev)
-    })
+    // 墙钟上限:一次卡住会挡住所有后续调度。超时即放弃这次运行,隔离工作区留给保留策略
+    let budget = std::time::Duration::from_secs(60 * spec.timeout_minutes as u64);
+    let result = tokio::time::timeout(
+        budget,
+        run_task(&router, &audit, &cfg, task, move |ev| {
+            if let RunnerEvent::WorkspaceReady { path, .. } = &ev {
+                *wp.lock().unwrap() = Some(path.clone());
+            }
+            forward_runner_event(&a, &rid, &chan, &tr, ev)
+        }),
+    )
     .await;
-
     let saved = transcript.lock().unwrap().clone();
-    let finish = |outcome: String, artifacts: Vec<muster_audit::ArtifactRef>, merged: Option<String>| -> Result<(), String> {
-        audit
-            .lock()
-            .unwrap()
-            .append(NewEvent {
-                ts_ms: None,
-                actor: Actor::agent(AGENT_BADGE),
-                scope: scope.clone(),
-                run_id: Some(run_id.clone()),
-                session_id: Some(session_id.clone()),
-                policy_version: Some(POLICY_VERSION.into()),
-                label: Some(effective),
-                locality: None,
-                body: EventBody::WorkflowOutput { workflow: spec.name.clone(), outcome, artifacts, merged_commit: merged },
-            })
-            .map(|_| ())
-            .map_err(|e| format!("审计写入失败:{e}"))
-    };
 
     match result {
-        Ok(s) => {
+        Err(_elapsed) => {
+            finish(scope.clone(), Some(effective), "failed:timeout", Vec::new(), None)?;
+            let _ = record_msg(
+                rmt.as_ref(),
+                &store,
+                &thread,
+                &channel.id,
+                "agent",
+                &format!("{saved}\n\n⏱ 工作流 {} 超过 {} 分钟未完成,已终止;这次的隔离工作区留待保留策略回收", spec.name, spec.timeout_minutes),
+                Some(&run_id),
+                "failed",
+            )
+            .await;
+            Ok((run_id, "failed:timeout".into()))
+        }
+        Ok(Ok(s)) => {
             let mut notes: Vec<String> = Vec::new();
             // 1. 合入自有仓库(Runner 已把变更提交在隔离分支上;这里没有人的代码,不走审批)
             let mut merged = None;
@@ -2733,7 +2808,7 @@ async fn run_workflow_inner(
             } else {
                 "no_output".to_string()
             };
-            finish(outcome.clone(), rendered.artifacts.iter().map(|a| a.audit_ref()).collect(), merged.clone())?;
+            finish(scope.clone(), Some(effective), &outcome, rendered.artifacts.iter().map(|a| a.audit_ref()).collect(), merged.clone())?;
             // 3. 发到频道:摘要 + 产物路径。失败也发——失败对人一样是信息
             let mut text = format!("📊 工作流 {} 完成({})\n", spec.name, outcome);
             if let Some(sum) = muster_workflow::Runs::summary_text(&repo) {
@@ -2751,15 +2826,15 @@ async fn run_workflow_inner(
             }
             let status = if outcome == "success" { "done" } else { "failed" };
             let _ = record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status).await;
-            Ok(run_id)
+            Ok((run_id, outcome))
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             let class = match &e {
                 RunnerError::Model(_) => "failed:stream",
                 RunnerError::Refused(_) => "refused",
                 _ => "failed",
             };
-            finish(class.into(), Vec::new(), None)?;
+            finish(scope.clone(), Some(effective), class, Vec::new(), None)?;
             let _ = record_msg(
                 rmt.as_ref(),
                 &store,
@@ -2771,7 +2846,7 @@ async fn run_workflow_inner(
                 "failed",
             )
             .await;
-            Ok(run_id)
+            Ok((run_id, class.into()))
         }
     }
 }
@@ -2785,6 +2860,17 @@ async fn workflow_scheduler(app: tauri::AppHandle) {
         tick.tick().await;
         let state = app.state::<AppState>();
         let rt = app.state::<WorkflowRuntime>();
+        // 终端触发(touch 文件)先于定时:人明确要的先跑
+        let requested: Vec<String> = match workspace_and_home() {
+            Ok((_, home)) => take_run_now_requests(&home),
+            Err(_) => Vec::new(),
+        };
+        for name in requested {
+            match run_workflow(&app, &state, &rt, &name, "manual", None).await {
+                Ok((rid, outcome)) => eprintln!("工作流 {name} 终端触发结束:{rid} · {outcome}"),
+                Err(e) => eprintln!("工作流 {name} 终端触发失败:{e}"),
+            }
+        }
         let due: Vec<(String, u64)> = {
             let Ok((workspace, home)) = workspace_and_home() else { continue };
             let found = muster_workflow::discover(&workflow_roots(&workspace, &home));
@@ -2806,7 +2892,7 @@ async fn workflow_scheduler(app: tauri::AppHandle) {
         };
         for (name, scheduled_for) in due {
             match run_workflow(&app, &state, &rt, &name, "scheduled", Some(scheduled_for)).await {
-                Ok(rid) => eprintln!("工作流 {name} 定时运行完成:{rid}"),
+                Ok((rid, outcome)) => eprintln!("工作流 {name} 定时运行结束:{rid} · {outcome}"),
                 Err(e) => eprintln!("工作流 {name} 定时运行失败:{e}"),
             }
         }

@@ -5,8 +5,7 @@ schedule: daily 12:00
 skills: [report-html]
 egress:
   - query1.finance.yahoo.com
-  - api.frankfurter.app
-  - stooq.com
+  - api.frankfurter.dev
 outputs: [html, pdf]
 channel: personal
 ---
@@ -17,8 +16,7 @@ channel: personal
 - 指数:用 Yahoo 的 chart 接口取近 5 个交易日收盘价,例如
   https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=5d&interval=1d
   依次取 ^GSPC(标普 500)、^IXIC(纳指)、^DJI(道指)、^N225(日经 225)、^HSI(恒指)、000001.SS(上证)。
-  备用:https://stooq.com/q/l/?s=^spx&f=sd2t2ohlcv&h&e=csv(CSV)。
-- 汇率:https://api.frankfurter.app/latest?from=USD&to=CNY,JPY,EUR,GBP
+- 汇率:https://api.frankfurter.dev/v1/latest?base=USD&symbols=CNY,JPY,EUR,GBP
 - 只取公开行情,URL 里不带任何账号或个人参数。
 
 ## 2. 存数据

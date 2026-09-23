@@ -264,7 +264,10 @@ fn print_pdf(chrome: &Path, html: &Path, pdf: &Path) -> Result<Vec<u8>, String> 
     let _ = std::fs::remove_file(pdf);
     let profile = pdf.parent().unwrap_or(Path::new(".")).join(".chrome-profile");
     let _ = std::fs::create_dir_all(&profile);
-    let url = format!("file://{}", html.display());
+    // 用 Url::from_file_path 而不是拼字符串:Windows 的 `C:\\…` 拼出来不是合法 URL
+    let url = reqwest::Url::from_file_path(html)
+        .map(|u| u.to_string())
+        .unwrap_or_else(|_| format!("file://{}", html.display()));
     let mut child = Command::new(chrome)
         .args([
             "--headless=new",

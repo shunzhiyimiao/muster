@@ -12,6 +12,10 @@ pub const WORKFLOW_FILE: &str = "WORKFLOW.md";
 /// 仓库级工作流目录(相对工作区),与技能的 `.agents/skills` 并列。
 pub const REPO_WORKFLOWS_DIR: &str = ".agents/workflows";
 pub const DESCRIPTION_MAX: usize = 1024;
+/// 单次运行的墙钟上限(分钟)。默认 45:抓几份数据、写一份报告绰绰有余;
+/// 一次卡住会挡住所有后续调度,所以必须有上限。
+pub const DEFAULT_TIMEOUT_MINUTES: u32 = 45;
+pub const MAX_TIMEOUT_MINUTES: u32 = 240;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputKind {
@@ -53,6 +57,8 @@ pub struct WorkflowSpec {
     pub channel: Option<String>,
     /// 工作流自报的密级(同技能:进棘轮,只升不降)。
     pub sensitivity: Option<Sensitivity>,
+    /// 单次运行的墙钟上限(分钟),超时即终止并记 `failed:timeout`。
+    pub timeout_minutes: u32,
     /// 步骤正文(frontmatter 之后的全部内容)。
     pub body: String,
     pub path: PathBuf,
@@ -249,6 +255,16 @@ impl WorkflowSpec {
                 )))
             }
         };
+        let timeout_minutes = match scalar(&entries, "timeout_minutes") {
+            None => DEFAULT_TIMEOUT_MINUTES,
+            Some(v) => {
+                let n: u32 = v.parse().map_err(|_| WorkflowError::Format(format!("timeout_minutes `{v}` 不是整数")))?;
+                if n == 0 || n > MAX_TIMEOUT_MINUTES {
+                    return Err(WorkflowError::Format(format!("timeout_minutes 须在 1-{MAX_TIMEOUT_MINUTES} 之间")));
+                }
+                n
+            }
+        };
         if body.is_empty() {
             return Err(WorkflowError::Format("正文为空:frontmatter 之后要写工作流步骤".into()));
         }
@@ -261,6 +277,7 @@ impl WorkflowSpec {
             outputs,
             channel,
             sensitivity,
+            timeout_minutes,
             body,
             path: path.to_path_buf(),
             root: root.to_path_buf(),
@@ -376,6 +393,9 @@ mod tests {
         let s = WorkflowSpec::parse(ok, Path::new("/x/a/WORKFLOW.md"), Path::new("/x"), 0).unwrap();
         assert_eq!(s.outputs, vec![OutputKind::Html], "没写 outputs 默认 html");
         assert!(s.egress_hosts.is_empty() && s.skills.is_empty() && s.channel.is_none());
+        assert_eq!(s.timeout_minutes, DEFAULT_TIMEOUT_MINUTES);
+        let t = "---\nname: a\ndescription: x\nschedule: manual\ntimeout_minutes: 10\n---\n做点事\n";
+        assert_eq!(WorkflowSpec::parse(t, Path::new("/x/a/WORKFLOW.md"), Path::new("/x"), 0).unwrap().timeout_minutes, 10);
         assert!(s.next_due(None).is_none(), "手动工作流没有下一次");
 
         let bad = [
@@ -386,6 +406,8 @@ mod tests {
             ("---\nname: a\ndescription: x\nschedule: daily 12:00\nsensitivity: secret\n---\n步骤\n", "sensitivity"),
             ("---\nname: a\ndescription: x\nschedule: daily 12:00\nmeta:\n  nested: 1\n---\n步骤\n", "嵌套"),
             ("---\nname: Bad\ndescription: x\nschedule: manual\n---\n步骤\n", "name"),
+            ("---\nname: a\ndescription: x\nschedule: manual\ntimeout_minutes: 0\n---\n步骤\n", "timeout_minutes"),
+            ("---\nname: a\ndescription: x\nschedule: manual\ntimeout_minutes: 999\n---\n步骤\n", "timeout_minutes"),
         ];
         for (text, why) in bad {
             let e = WorkflowSpec::parse(text, Path::new("/x/a/WORKFLOW.md"), Path::new("/x"), 0).unwrap_err();

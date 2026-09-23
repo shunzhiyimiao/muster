@@ -87,6 +87,12 @@ export function WorkflowsView({ data, onRefresh }: { data: WorkflowsOut | null; 
             <Tag>自有仓库与产物</Tag>
             <code className="text-[11px]" style={{ color: T.sub }}>{data?.runs_root ?? "~/.muster/workflow-runs"}/&lt;name&gt;/{"{repo,out}"}</code>
           </div>
+          <div className="flex items-center gap-2 text-[11.5px]">
+            <FolderOpen size={12} style={{ color: T.sub }} />
+            <Tag>终端触发</Tag>
+            <code className="text-[11px]" style={{ color: T.sub }}>touch {data?.run_now_dir ?? "~/.muster/workflow-run-now"}/&lt;name&gt;</code>
+            <span className="text-[10.5px]" style={{ color: T.faint }}>一分钟内当作手动运行;给脚本与 cron 用</span>
+          </div>
           <div className="text-[10.5px]" style={{ color: T.faint }}>
             PDF:{data?.chrome ? "可用(检测到本机 Chrome / Edge)" : "不可用——没找到 Chrome / Chromium / Edge,可设 MUSTER_CHROME 指向可执行文件;届时只出 HTML"}
           </div>
