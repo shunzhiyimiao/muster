@@ -163,7 +163,7 @@ fn acts_7_and_8_rebuild_from_sql_only() {
     let report = drill_report(s.conn(), t0 + 200, t0 + 400).unwrap();
     assert_eq!(
         report,
-        DrillReport { model_calls: 2, egress_bytes: 0, unmetered_calls: 0, local_calls: 2, cloud_calls: 0 }
+        DrillReport { model_calls: 2, egress_bytes: 0, unmetered_calls: 0, local_calls: 2, cloud_calls: 0, tool_egress_calls: 0 }
     );
     assert!(report.ok(), "第 8 幕:外发字节数 0,达标");
 

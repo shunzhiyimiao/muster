@@ -35,6 +35,7 @@ cargo run -p muster-eval -- --list
 | `muster-audit` | A9 | 审计事件层:append-only + 哈希链;"8 幕 → SQL"对照见其 README |
 | `muster-runner` | B1 | 任务执行器:路由 → 流式工具循环 → Capsule-ready 审计链 |
 | `muster-skill` | — | 技能:SKILL.md 过程性知识包(与 codex 同一约定);目录进提示词、正文经 `read_skill` 按需读取、审计只记哈希 |
+| `muster-workflow` | — | 自定义工作流:WORKFLOW.md 定义 + cron 定时 + 自有仓库自动合入 + 白名单抓取(tool.egress 计量)+ 报告产物(html / pdf) |
 | `muster-gateway` | — | 模型网关:对外讲 Responses,对内讲 chat |
 | `muster-eval` | A7 | 20 固定样本的工具调用评测,确定性判卷,退出码可挂 CI |
 | `muster-prompt` | A1 | Agent 系统提示词的唯一出处(执行器与评测同源) |

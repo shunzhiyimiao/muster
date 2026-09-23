@@ -120,6 +120,8 @@ export interface DrillReportOut {
   unmetered_calls: number;
   local_calls: number;
   cloud_calls: number;
+  /** 工具侧外发(http_get 等)次数;旧后端没有这个字段 */
+  tool_egress_calls?: number;
   ok: boolean;
 }
 export interface DrillStatus {
@@ -319,6 +321,45 @@ export interface SkillsOut {
   problems: string[];
 }
 
+/** 工作流的一次运行:触发与收尾按 run_id 配对;outcome 为 null = 还没收尾 */
+export interface WorkflowRunOut {
+  run_id: string;
+  ts_ms: number;
+  trigger: string;
+  scheduled_for_ms: number | null;
+  outcome: string | null;
+  /** [kind, content_hash] */
+  artifacts: [string, string][];
+  merged_commit: string | null;
+}
+export interface WorkflowOut {
+  name: string;
+  description: string;
+  schedule: string;
+  schedule_text: string;
+  /** null = 手动工作流 */
+  next_due_ms: number | null;
+  skills: string[];
+  egress: string[];
+  outputs: string[];
+  channel: string | null;
+  sensitivity: string | null;
+  origin: "workspace" | "personal";
+  path: string;
+  definition_hash: string;
+  running: boolean;
+  runs: WorkflowRunOut[];
+  out_dir: string;
+}
+export interface WorkflowsOut {
+  roots: string[];
+  runs_root: string;
+  /** 本机有没有能打 PDF 的浏览器 */
+  chrome: boolean;
+  workflows: WorkflowOut[];
+  problems: string[];
+}
+
 export const api = {
   bootstrap: () => invoke<Bootstrap>("bootstrap"),
   /** `threadId` 为空 = 主对话。团队频道永远是主对话:那边的历史在服务端。 */
@@ -396,6 +437,9 @@ export const api = {
   forgeableRuns: () => invoke<ForgeableRun[]>("forgeable_runs"),
   /** 与任务模式同一份发现结果:这里列出的就是 Agent 会拿到的 */
   skillsList: () => invoke<SkillsOut>("skills_list"),
+  workflowsList: () => invoke<WorkflowsOut>("workflows_list"),
+  /** 手动跑一次;返回 run_id,过程走与任务相同的事件流 */
+  workflowRunNow: (name: string) => invoke<string>("workflow_run_now", { name }),
   capsuleForge: (runId: string, goal: string, visibility: string) =>
     invoke<string>("capsule_forge", { runId, goal, visibility }),
   capsuleVerify: (capsuleId: string) => invoke<string>("capsule_verify", { capsuleId }),

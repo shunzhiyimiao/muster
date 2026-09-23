@@ -2387,6 +2387,432 @@ fn skills_list() -> Result<SkillsOut, String> {
     })
 }
 
+// ---------------------------------------------------------------- 计划表:自定义工作流(muster-workflow)
+
+/// 正在跑的工作流名:同一工作流同一时刻只跑一个(定时与手动共用这把锁)。
+#[derive(Default)]
+struct WorkflowRuntime(Mutex<std::collections::HashSet<String>>);
+
+/// 工作流定义的发现根,顺序即优先级:仓库级 `.agents/workflows`(随代码提交)在前,
+/// 个人级 `~/.muster/workflows` 在后。与技能同一套目录约定。
+fn workflow_roots(workspace: &str, home: &str) -> Vec<std::path::PathBuf> {
+    vec![
+        std::path::Path::new(workspace).join(muster_workflow::REPO_WORKFLOWS_DIR),
+        std::path::Path::new(home).join(".muster").join("workflows"),
+    ]
+}
+
+/// 工作流自有仓库与产物的根(`MUSTER_WORKFLOW_RUNS` 可改)。
+fn workflow_runs_root(home: &str) -> std::path::PathBuf {
+    std::env::var("MUSTER_WORKFLOW_RUNS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::Path::new(home).join(".muster").join("workflow-runs"))
+}
+
+#[derive(Serialize)]
+struct WorkflowRunOut {
+    run_id: String,
+    ts_ms: u64,
+    trigger: String,
+    scheduled_for_ms: Option<u64>,
+    /// `None` = 没有收尾事件(还在跑,或进程中途没了)。
+    outcome: Option<String>,
+    artifacts: Vec<(String, String)>,
+    merged_commit: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WorkflowOut {
+    name: String,
+    description: String,
+    schedule: String,
+    schedule_text: String,
+    next_due_ms: Option<u64>,
+    skills: Vec<String>,
+    egress: Vec<String>,
+    outputs: Vec<String>,
+    channel: Option<String>,
+    sensitivity: Option<String>,
+    origin: String,
+    path: String,
+    definition_hash: String,
+    running: bool,
+    runs: Vec<WorkflowRunOut>,
+    out_dir: String,
+}
+
+#[derive(Serialize)]
+struct WorkflowsOut {
+    roots: Vec<String>,
+    runs_root: String,
+    chrome: bool,
+    workflows: Vec<WorkflowOut>,
+    problems: Vec<String>,
+}
+
+/// 列出工作流及其最近运行。下一次时刻按 muster-workflow 的规则算(上次触发从审计链查)。
+#[tauri::command]
+fn workflows_list(state: State<'_, AppState>, rt: State<'_, WorkflowRuntime>) -> Result<WorkflowsOut, String> {
+    let (workspace, home) = workspace_and_home()?;
+    let roots = workflow_roots(&workspace, &home);
+    let runs_root = workflow_runs_root(&home);
+    let found = muster_workflow::discover(&roots);
+    let running = rt.0.lock().unwrap().clone();
+    let guard = state.0.lock().unwrap();
+    let b = guard.as_ref().ok_or("后端未初始化")?;
+    let store = b.audit.lock().unwrap();
+    let mut workflows = Vec::new();
+    for w in &found.workflows {
+        let last = muster_audit::workflow_last_trigger(store.conn(), &w.name).map_err(|e| e.to_string())?;
+        let runs = muster_audit::workflow_runs(store.conn(), &w.name, 8).map_err(|e| e.to_string())?;
+        workflows.push(WorkflowOut {
+            name: w.name.clone(),
+            description: w.description.clone(),
+            schedule: match &w.schedule {
+                muster_workflow::Schedule::Manual => "manual".into(),
+                muster_workflow::Schedule::Cron(c) => c.text().to_string(),
+            },
+            schedule_text: w.schedule.describe_zh(),
+            next_due_ms: w.next_due(last).map(|t| t.timestamp_millis() as u64),
+            skills: w.skills.clone(),
+            egress: w.egress_hosts.clone(),
+            outputs: w.outputs.iter().map(|o| o.as_str().to_string()).collect(),
+            channel: w.channel.clone(),
+            sensitivity: w.sensitivity.map(|l| format!("{l:?}").to_lowercase()),
+            origin: if w.root == roots[0] { "workspace".into() } else { "personal".into() },
+            path: w.path.display().to_string(),
+            definition_hash: w.definition_hash.0.clone(),
+            running: running.contains(&w.name),
+            runs: runs
+                .into_iter()
+                .map(|r| WorkflowRunOut {
+                    run_id: r.run_id,
+                    ts_ms: r.ts_ms,
+                    trigger: r.trigger,
+                    scheduled_for_ms: r.scheduled_for_ms,
+                    outcome: r.outcome,
+                    artifacts: r.artifacts,
+                    merged_commit: r.merged_commit,
+                })
+                .collect(),
+            out_dir: runs_root.join(&w.name).join("out").display().to_string(),
+        });
+    }
+    Ok(WorkflowsOut {
+        roots: roots.iter().map(|r| r.display().to_string()).collect(),
+        runs_root: runs_root.display().to_string(),
+        chrome: muster_workflow::find_chrome().is_some(),
+        workflows,
+        problems: found.problems,
+    })
+}
+
+#[tauri::command]
+async fn workflow_run_now(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    rt: State<'_, WorkflowRuntime>,
+    name: String,
+) -> Result<String, String> {
+    run_workflow(&app, &state, &rt, &name, "manual", None).await
+}
+
+/// 跑一次工作流(定时器与「立即运行」共用)。同一工作流同一时刻只跑一个。
+async fn run_workflow(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    rt: &State<'_, WorkflowRuntime>,
+    name: &str,
+    trigger: &str,
+    scheduled_for_ms: Option<u64>,
+) -> Result<String, String> {
+    let (workspace, home) = workspace_and_home()?;
+    let found = muster_workflow::discover(&workflow_roots(&workspace, &home));
+    let problems = found.problems.clone();
+    let spec = found
+        .workflows
+        .into_iter()
+        .find(|w| w.name == name)
+        .ok_or_else(|| format!("没有名为 {name} 的工作流({})", if problems.is_empty() { "定义目录里找不到".to_string() } else { problems.join(";") }))?;
+    {
+        let mut running = rt.0.lock().unwrap();
+        if !running.insert(name.to_string()) {
+            return Err(format!("工作流 {name} 正在运行"));
+        }
+    }
+    let result = run_workflow_inner(app, state, &spec, trigger, scheduled_for_ms, &workspace, &home).await;
+    rt.0.lock().unwrap().remove(name);
+    app.emit("workflows-changed", ()).ok();
+    result
+}
+
+/// 与任务模式同一条 Runner 路径,外加:自有仓库、技能按名取、白名单抓取、产物渲染、收尾审计。
+async fn run_workflow_inner(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    spec: &muster_workflow::WorkflowSpec,
+    trigger: &str,
+    scheduled_for_ms: Option<u64>,
+    workspace: &str,
+    home: &str,
+) -> Result<String, String> {
+    let (router, audit, store, cloud_max, egress_locked) = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
+        (b.router.clone(), b.audit.clone(), b.state.clone(), b.router.policy_snapshot().cloud_max(), b.router.egress_locked())
+    };
+    let channel_id = spec.channel.clone().unwrap_or_else(|| "personal".into());
+    let channel = resolve_channel(state, &channel_id).await?;
+    require(muster_identity::Action::CreateTask, muster_identity::Scope::Channel(channel.id.clone()))?;
+
+    let now = muster_workflow::ms_to_local(muster_workflow::now_ms());
+    let run_id = format!("WF-{}-{}", spec.name, muster_workflow::stamp(&now));
+    let runs = muster_workflow::Runs::open(workflow_runs_root(home)).map_err(|e| e.to_string())?;
+    let repo = runs.ensure_repo(&spec.name).map_err(|e| e.to_string())?;
+
+    // 技能按名取;缺一个就不跑——工作流写明要用的技能,少了跑出来的东西不是它要的
+    let skills_found = muster_skill::discover(&skill_roots(workspace, home));
+    let mut skills = Vec::new();
+    for s in &spec.skills {
+        match skills_found.skills.iter().find(|k| &k.name == s) {
+            Some(k) => skills.push(k.clone()),
+            None => return Err(format!("工作流 {} 需要技能 {s},但技能目录里没有它", spec.name)),
+        }
+    }
+
+    // 密级:频道 + 技能 + 工作流自报,一起过棘轮
+    let session_id = format!("session:workflow:{}", spec.name);
+    let mut label_srcs = label_sources(&channel);
+    label_srcs.extend(skills.iter().filter_map(|s| s.label_source()));
+    label_srcs.extend(spec.label_source());
+    let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
+    let (effective, _) = muster_route::effective_sensitivity(&sources);
+
+    // 联网:白名单非空,且未演习锁定、有效密级不高于上云阈值——外发就是外发,与模型走同一条线
+    let network = !spec.egress_hosts.is_empty() && !egress_locked && effective <= cloud_max;
+    let mut extra_tools = Vec::new();
+    if network {
+        let fetch = Arc::new(muster_workflow::HttpFetch::new(spec.egress_hosts.clone()).map_err(|e| e.to_string())?);
+        extra_tools.push(fetch.into_extra_tool());
+    }
+
+    let scope = Scope { team: Some(channel.team.clone()), channel: Some(channel.id.clone()) };
+    audit
+        .lock()
+        .unwrap()
+        .append(NewEvent {
+            ts_ms: None,
+            actor: if trigger == "manual" {
+                Actor::human(current_principal().id)
+            } else {
+                Actor::system("workflow-scheduler")
+            },
+            scope: scope.clone(),
+            run_id: Some(run_id.clone()),
+            session_id: Some(session_id.clone()),
+            policy_version: Some(POLICY_VERSION.into()),
+            label: Some(effective),
+            locality: None,
+            body: EventBody::WorkflowTrigger {
+                workflow: spec.name.clone(),
+                definition_hash: spec.definition_hash.clone(),
+                trigger: trigger.into(),
+                scheduled_for_ms,
+            },
+        })
+        .map_err(|e| format!("审计写入失败:{e}"))?;
+
+    let rmt = remote_of(state);
+    let thread = main_thread(&channel.id);
+    record_msg(
+        rmt.as_ref(),
+        &store,
+        &thread,
+        &channel.id,
+        "user",
+        &format!("▶ 工作流:{}({})", spec.name, if trigger == "manual" { "手动" } else { "定时" }),
+        None,
+        "done",
+    )
+    .await?;
+    let transcript = Arc::new(Mutex::new(String::new()));
+    if !spec.egress_hosts.is_empty() && !network {
+        transcript.lock().unwrap().push_str(&format!(
+            "⚠️ 外部数据源本次不可用({}),Agent 只能用已有数据\n",
+            if egress_locked { "演习锁定" } else { "有效密级高于上云阈值" }
+        ));
+    }
+
+    let today = muster_workflow::today(&now);
+    let data_files = muster_workflow::Runs::data_files(&repo);
+    let scheduled_txt = scheduled_for_ms.map(|ms| muster_workflow::ms_to_local(ms).format("%Y-%m-%d %H:%M").to_string());
+    let prompt = muster_workflow::build_prompt(
+        spec,
+        &muster_workflow::PromptContext {
+            today: &today,
+            trigger,
+            scheduled_for: scheduled_txt.as_deref(),
+            data_files: &data_files,
+            network,
+        },
+    );
+    let workspace_root = std::env::var("MUSTER_WORKSPACE_ROOT").unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+    let task = TaskSpec {
+        run_id: run_id.clone(),
+        session_id: Some(session_id.clone()),
+        team: Some(channel.team.clone()),
+        channel: Some(channel.id.clone()),
+        sources,
+        requested_provider: None,
+        default_provider: Some("kimi".into()),
+        prompt,
+        workspace: repo.clone(),
+        workspace_root: Some(workspace_root.into()),
+        // 产出由本函数合入自有仓库,不进审批队列
+        propose_merge: false,
+    };
+    let cfg = RunnerConfig {
+        policy_version: POLICY_VERSION.into(),
+        skills,
+        extra_tools,
+        // 抓数据 + 写报告 + 自查,比一次代码改动多几轮
+        max_turns: 24,
+        ..Default::default()
+    };
+
+    let wt_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let (a, rid, chan, tr, wp) = (app.clone(), run_id.clone(), channel.id.clone(), transcript.clone(), wt_path.clone());
+    let result = run_task(&router, &audit, &cfg, task, move |ev| {
+        if let RunnerEvent::WorkspaceReady { path, .. } = &ev {
+            *wp.lock().unwrap() = Some(path.clone());
+        }
+        forward_runner_event(&a, &rid, &chan, &tr, ev)
+    })
+    .await;
+
+    let saved = transcript.lock().unwrap().clone();
+    let finish = |outcome: String, artifacts: Vec<muster_audit::ArtifactRef>, merged: Option<String>| -> Result<(), String> {
+        audit
+            .lock()
+            .unwrap()
+            .append(NewEvent {
+                ts_ms: None,
+                actor: Actor::agent(AGENT_BADGE),
+                scope: scope.clone(),
+                run_id: Some(run_id.clone()),
+                session_id: Some(session_id.clone()),
+                policy_version: Some(POLICY_VERSION.into()),
+                label: Some(effective),
+                locality: None,
+                body: EventBody::WorkflowOutput { workflow: spec.name.clone(), outcome, artifacts, merged_commit: merged },
+            })
+            .map(|_| ())
+            .map_err(|e| format!("审计写入失败:{e}"))
+    };
+
+    match result {
+        Ok(s) => {
+            let mut notes: Vec<String> = Vec::new();
+            // 1. 合入自有仓库(Runner 已把变更提交在隔离分支上;这里没有人的代码,不走审批)
+            let mut merged = None;
+            match (&s.diff, &s.branch) {
+                (Some(d), Some(branch)) if !d.is_empty() => {
+                    let wt = wt_path.lock().unwrap().clone().map(std::path::PathBuf::from);
+                    match runs.merge_branch(&repo, branch, wt.as_deref()) {
+                        Ok(c) => merged = Some(c),
+                        Err(e) => notes.push(format!("合入自有仓库失败:{e}")),
+                    }
+                }
+                _ => notes.push("本次没有任何文件变更".into()),
+            }
+            // 2. 渲染产物(html 原样、pdf 用本机浏览器)
+            let rendered = runs.render(&spec.name, &repo, &spec.outputs, &muster_workflow::stamp(&now));
+            notes.extend(rendered.problems.iter().cloned());
+            let outcome = if rendered.artifacts.iter().any(|a| a.kind == "html") {
+                s.outcome.clone()
+            } else {
+                "no_output".to_string()
+            };
+            finish(outcome.clone(), rendered.artifacts.iter().map(|a| a.audit_ref()).collect(), merged.clone())?;
+            // 3. 发到频道:摘要 + 产物路径。失败也发——失败对人一样是信息
+            let mut text = format!("📊 工作流 {} 完成({})\n", spec.name, outcome);
+            if let Some(sum) = muster_workflow::Runs::summary_text(&repo) {
+                text.push_str(&sum);
+                text.push('\n');
+            }
+            for a in &rendered.artifacts {
+                text.push_str(&format!("· {}:{}\n", a.kind, a.path.display()));
+            }
+            if let Some(c) = &merged {
+                text.push_str(&format!("· 已合入自有仓库 {}\n", &c[..c.len().min(8)]));
+            }
+            for n in &notes {
+                text.push_str(&format!("⚠️ {n}\n"));
+            }
+            let status = if outcome == "success" { "done" } else { "failed" };
+            let _ = record_msg(rmt.as_ref(), &store, &thread, &channel.id, "agent", &text, Some(&run_id), status).await;
+            Ok(run_id)
+        }
+        Err(e) => {
+            let class = match &e {
+                RunnerError::Model(_) => "failed:stream",
+                RunnerError::Refused(_) => "refused",
+                _ => "failed",
+            };
+            finish(class.into(), Vec::new(), None)?;
+            let _ = record_msg(
+                rmt.as_ref(),
+                &store,
+                &thread,
+                &channel.id,
+                "agent",
+                &format!("{saved}\n\n⚠️ 工作流 {} 未完成:{e}", spec.name),
+                Some(&run_id),
+                "failed",
+            )
+            .await;
+            Ok(run_id)
+        }
+    }
+}
+
+/// 调度循环:每分钟看一眼谁到点了。壳没开就不跑;错过的时刻在下次打开时补跑一次
+/// (规则在 muster-workflow 的设计决策 3)。定时运行的结果照样进频道与审计链。
+async fn workflow_scheduler(app: tauri::AppHandle) {
+    use tauri::Manager;
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        let state = app.state::<AppState>();
+        let rt = app.state::<WorkflowRuntime>();
+        let due: Vec<(String, u64)> = {
+            let Ok((workspace, home)) = workspace_and_home() else { continue };
+            let found = muster_workflow::discover(&workflow_roots(&workspace, &home));
+            let guard = state.0.lock().unwrap();
+            let Some(b) = guard.as_ref() else { continue };
+            let store = b.audit.lock().unwrap();
+            let running = rt.0.lock().unwrap();
+            let now = muster_workflow::now_ms();
+            found
+                .workflows
+                .iter()
+                .filter(|w| !w.schedule.is_manual() && !running.contains(&w.name))
+                .filter_map(|w| {
+                    let last = muster_audit::workflow_last_trigger(store.conn(), &w.name).ok().flatten();
+                    let next_ms = w.next_due(last)?.timestamp_millis() as u64;
+                    (next_ms <= now).then(|| (w.name.clone(), next_ms))
+                })
+                .collect()
+        };
+        for (name, scheduled_for) in due {
+            match run_workflow(&app, &state, &rt, &name, "scheduled", Some(scheduled_for)).await {
+                Ok(rid) => eprintln!("工作流 {name} 定时运行完成:{rid}"),
+                Err(e) => eprintln!("工作流 {name} 定时运行失败:{e}"),
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- P4 能力库
 
 #[derive(Serialize)]
@@ -3360,6 +3786,13 @@ fn verify_chain(state: State<'_, AppState>) -> Result<ChainStatus, String> {
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .manage(WorkflowRuntime::default())
+        // 计划表:定时工作流的调度循环(壳开着才跑,见 muster-workflow)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(workflow_scheduler(handle));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             send_message,
@@ -3403,6 +3836,8 @@ fn main() {
             approvals_decide,
             capsules_list,
             skills_list,
+            workflows_list,
+            workflow_run_now,
             forgeable_runs,
             capsule_forge,
             capsule_verify,

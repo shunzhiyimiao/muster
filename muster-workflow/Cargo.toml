@@ -1,0 +1,23 @@
+[package]
+name = "muster-workflow"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.85"
+description = "Muster 自定义工作流:WORKFLOW.md 定义 + cron 定时 + 自有仓库自动合入 + 白名单抓取(计量外发)+ 报告产物(html / pdf)"
+
+[dependencies]
+muster-audit = { path = "../muster-audit" }
+muster-route = { path = "../muster-route" }
+muster-runner = { path = "../muster-runner" }
+muster-provider = { path = "../muster-provider" }
+muster-skill = { path = "../muster-skill" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+futures = "0.3"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }

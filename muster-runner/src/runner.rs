@@ -21,7 +21,7 @@ use muster_provider::{
 };
 use muster_route::{LabelSource, RoutePlan, RouteRequest, Router};
 
-use crate::tools::ToolSet;
+use crate::tools::{ExtraTool, ToolSet};
 use crate::worktree::{enforce_retention, RetentionPolicy, RunDiff, Worktree};
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,8 @@ pub struct RunnerConfig {
     /// 本次任务被提供的技能(见 muster-skill):目录进系统提示词,正文经 `read_skill`
     /// 按需读取,提供与读取分别落 `skill.offer` / `skill.read`。空 = 没有技能(v0 默认)。
     pub skills: Vec<muster_skill::SkillMeta>,
+    /// 调用方提供的异步工具(见 [`ExtraTool`]),与内建工具一起公示、同名内建优先。
+    pub extra_tools: Vec<ExtraTool>,
 }
 
 impl Default for RunnerConfig {
@@ -47,6 +49,7 @@ impl Default for RunnerConfig {
             max_turns: 8,
             retention: RetentionPolicy::default(),
             skills: Vec::new(),
+            extra_tools: Vec::new(),
         }
     }
 }
@@ -366,7 +369,12 @@ pub async fn run_task_at(
                 session_id: spec.session_id.clone(),
                 policy_version: Some(cfg.policy_version.clone()),
                 label: Some(plan.effective),
-                locality: Some(plan.primary_locality),
+                // 工具侧外发就是外发,信封一律记 cloud,与模型落在哪无关
+                locality: Some(if matches!(body, EventBody::ToolEgress { .. }) {
+                    Locality::Cloud
+                } else {
+                    plan.primary_locality
+                }),
                 body,
             })
             .map(|_| ())
@@ -379,7 +387,13 @@ pub async fn run_task_at(
     let (snapshot_hash, snapshot_ref) = repo_snapshot_of(
         worktree.as_ref().map(|w| w.base.as_path()).unwrap_or(tools.workspace()),
     );
-    let specs = tools.specs();
+    let mut specs = tools.specs();
+    // 调用方的异步工具跟在内建之后;同名以内建为准,免得外部工具冒充 read_file
+    for t in &cfg.extra_tools {
+        if !specs.iter().any(|s| s.name == t.spec.name) {
+            specs.push(t.spec.clone());
+        }
+    }
     let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
     let params_repr = serde_json::json!({
         "system_prompt": cfg.system_prompt,
@@ -683,7 +697,14 @@ pub async fn run_task_at(
                 name: call.name.clone(),
                 arguments: call.arguments.clone(),
             });
-            let outcome = tools.call(&call.name, &call.arguments);
+            let extra = cfg
+                .extra_tools
+                .iter()
+                .find(|t| t.spec.name == call.name && !tools.is_builtin(&call.name));
+            let outcome = match extra {
+                Some(t) => (t.call)(call.arguments.clone()).await,
+                None => tools.call(&call.name, &call.arguments),
+            };
             // 命令执行自带审计事件(退出码/耗时/被拒),在 diff 里看不出来,必须单独落链。
             if let Some(body) = outcome.audit {
                 append(audit, body)?;

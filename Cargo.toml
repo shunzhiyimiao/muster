@@ -9,6 +9,7 @@ members = [
     "muster-audit",
     "muster-runner",
     "muster-skill",
+    "muster-workflow",
     "muster-gateway",
     "muster-server",
     "muster-meeting-agent",

@@ -12,6 +12,7 @@
 //! 可能在个人目录(工作区之外),但它也只能读发现清单里的那几个文件,不接受路径。
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use muster_audit::EventBody;
 use muster_provider::ToolSpec;
@@ -24,6 +25,27 @@ const LIST_CAP: usize = 200;
 const GREP_CAP: usize = 50;
 const GREP_FILE_CAP_BYTES: u64 = 1_000_000;
 const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", "dist", ".muster"];
+
+/// 调用方提供的**异步**工具(如工作流的 `http_get`)。
+///
+/// 内建工具集([`ToolSet`])只认工作区里的文件与命令,全是同步的;网络之类的
+/// 工具天然异步,而且 Runner 不该认识它们——认识了就得连它们的策略一起背。
+/// 所以只定义一个接口:公示什么(`spec`)、被调时做什么(`call`)。留痕仍走
+/// [`ToolOutcome::audit`],与内建工具同一条路;`tool.egress` 事件的信封 locality
+/// 由 Runner 统一记为 cloud(外发就是外发,与模型落在哪无关)。
+#[derive(Clone)]
+pub struct ExtraTool {
+    pub spec: ToolSpec,
+    pub call: Arc<dyn Fn(String) -> ExtraToolFuture + Send + Sync>,
+}
+
+pub type ExtraToolFuture = futures::future::BoxFuture<'static, ToolOutcome>;
+
+impl std::fmt::Debug for ExtraTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtraTool").field("name", &self.spec.name).finish()
+    }
+}
 
 /// 一次工具调用的结果:给模型看的文本,以及**需要留痕时**的审计事件。
 ///
@@ -108,6 +130,14 @@ impl ToolSet {
 
     pub fn skills(&self) -> &[SkillMeta] {
         &self.skills
+    }
+
+    /// 这个名字是不是内建工具(含当前模式下未公示的写工具):外部工具不得同名冒充。
+    pub fn is_builtin(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "list_dir" | "read_file" | "grep" | "write_file" | "replace_in_file" | "run_command" | "read_skill"
+        )
     }
 
     pub fn is_writable(&self) -> bool {

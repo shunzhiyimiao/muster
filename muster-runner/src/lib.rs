@@ -35,6 +35,9 @@
 //!    目录形式进系统提示词,正文经 `read_skill` 工具按需读取;哪些技能被提供、
 //!    哪些真的被读了,分别落 `skill.offer` / `skill.read`(只记哈希)。工具清单因此
 //!    随技能有无而变,`tool_env` 哈希如实反映——有技能的运行与没技能的运行不是同一种运行。
+//! 7. **调用方可以带自己的异步工具**([`ExtraTool`]):Runner 只负责公示、分派、把它
+//!    产生的审计事件落链(`tool.egress` 一律记 cloud);策略(白名单、计量)在工具自己
+//!    那边。第一个用户是 muster-workflow 的 `http_get`。
 //!
 //! ## 诚实边界(v0)
 //!
@@ -75,5 +78,5 @@ pub use runner::{
     run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec,
 };
 pub use command::CommandPolicy;
-pub use tools::{ToolOutcome, ToolSet};
+pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};
 pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};

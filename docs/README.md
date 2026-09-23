@@ -31,5 +31,6 @@
 | 会议链路(《服务端架构.md》§7) | muster-meeting-agent | ✅ 常驻 daemon 认领、听会、本地 whisper 转写、@应答、会中派活;切句仍是能量阈值,未换 Silero VAD |
 | P4 工作流共享 | 能力库 / Capsule | ✅ 锻造 → 存储(哈希防篡改)→ 影子重放验真 → 跨团队引入 |
 | 技能(规划外,与 codex 同一 SKILL.md 约定) | muster-skill | ✅ v0(2026-09-22):本地发现、目录进提示词、read_skill、skill.offer / skill.read 只记哈希 |
+| 自定义工作流(规划外,填「计划表」模块) | muster-workflow | ✅ v0(2026-09-23):定时(cron)+ 技能 + 白名单 http_get + 自有仓库自动合入 + html/pdf 产物;调度器在桌面壳内;pptx 未实现 |
 
 细化分解的总表(A1–A9 / B / C / D / E / G0′ / W3 / 8幕 全集)不在磁盘上;找到后请入库本目录。

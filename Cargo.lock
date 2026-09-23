@@ -2011,6 +2011,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "muster-workflow"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "muster-audit",
+ "muster-provider",
+ "muster-route",
+ "muster-runner",
+ "muster-skill",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

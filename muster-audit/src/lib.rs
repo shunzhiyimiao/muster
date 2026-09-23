@@ -15,9 +15,10 @@
 //! 2. **外发字节结构化记账,不靠日志解析**:[`event::EgressBytes`] 只有
 //!    `Measured(u64)` 与 `Unmetered` 两种取值;字节数不明按违规记、不按 0
 //!    记([`queries::DrillReport::ok`] 的 fail-closed 语义,与 E2 同一哲学)。
-//!    **口径边界**:这套记账覆盖的是 `model.call`。`command.run` 执行的是
+//!    **口径边界**:这套记账覆盖 `model.call` 与 `tool.egress`(工具侧外发,如工作流
+//!    的 `http_get`——同一口径,同进演习报告)。`command.run` 执行的是
 //!    工作区里的代码,其出网在本进程之外,证据层看不见——所以演习报告的
-//!    「外发字节」是 model 通道的数,不是整机的数,别把它读成「零外发」。
+//!    「外发字节」是模型与工具两条通道的数,不是整机的数,别把它读成「零外发」。
 //!    真正的封堵属操作系统层(见 muster-runner 的 `command` 模块文档)。
 //! 3. **决策事件记「依据」而不只记「结果」**:`route.decide` 携带有效密级、
 //!    促成来源、策略版本与 [`muster_route::DowngradeReason`]——第 7 幕徽章
@@ -53,12 +54,12 @@ pub mod store;
 
 pub use event::{
     Actor, ActorKind, AuditEvent, ContentHash, EgressBytes, EventBody, ModelRef, NewEvent,
-    Parsed, ReplayRefs, RunOutcome, Scope, SkillRef,
+    ArtifactRef, Parsed, ReplayRefs, RunOutcome, Scope, SkillRef,
 };
 pub use queries::{
     actor_first_seen, capsules, day_throughput, decision_of, distinct_runs, downgrades_zh,
     drill_report, forgeable, pending_approval_list, pending_approvals, recent_events,
-    recent_events_of, roster, roster_counts, run_chain, run_start_of, session_lock, CapsuleRow, DayThroughput,
-    DrillReport, PendingApproval, RosterRow,
+    recent_events_of, roster, roster_counts, run_chain, run_start_of, session_lock, workflow_last_trigger,
+    workflow_runs, CapsuleRow, DayThroughput, DrillReport, PendingApproval, RosterRow, WorkflowRunRow,
 };
 pub use store::{AuditStore, ChainError, StoreError};

@@ -120,6 +120,14 @@ pub struct SkillRef {
     pub content_hash: ContentHash,
 }
 
+/// 工作流产物引用:种类(html / pdf / summary…)+ 内容哈希。文件在产物目录里,
+/// 审计不存正文;哈希让"发到频道的那份报告是不是产物目录里这份"可查。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactRef {
+    pub kind: String,
+    pub content_hash: ContentHash,
+}
+
 // ---------------------------------------------------------------- 事件本体
 
 /// 写侧穷举的事件类型。`event_type` 采用点分命名空间,内部标签序列化
@@ -302,6 +310,46 @@ pub enum EventBody {
         refused: Option<String>,
     },
 
+    /// 工作流(muster-workflow)的一次触发:定时器到点,或人手动点。
+    /// 只记定义文件的哈希——定义正文在磁盘上,改过即与此处不符。`scheduled_for_ms`
+    /// 是本该运行的时刻,与事件自身时间戳之差就是"晚点了多久"(壳没开时补跑会晚)。
+    #[serde(rename = "workflow.trigger")]
+    WorkflowTrigger {
+        workflow: String,
+        definition_hash: ContentHash,
+        /// `scheduled` / `manual`。
+        trigger: String,
+        scheduled_for_ms: Option<u64>,
+    },
+
+    /// 工作流一次运行的收尾:产物(种类 + 哈希)与合入结果。
+    /// 工作流自有仓库的合入**不经人审批**(里面只有 Agent 自己的产出,没有人的代码),
+    /// 所以合入在这里留痕,而不是走 approval.decision。
+    #[serde(rename = "workflow.output")]
+    WorkflowOutput {
+        workflow: String,
+        /// `success` / `failed:<class>` / `no_output`。
+        outcome: String,
+        artifacts: Vec<ArtifactRef>,
+        merged_commit: Option<String>,
+    },
+
+    /// 工具侧外发(如工作流的 `http_get`):模型通道之外的**第二条**外发路径。
+    /// 与 `model.call` 同一口径记账(测不到即 Unmetered,按违规计),演习报告一并汇总;
+    /// 被拒(主机不在白名单、协议不对、非文本内容)同样留痕,`refused` 给出分类。
+    #[serde(rename = "tool.egress")]
+    ToolEgress {
+        tool: String,
+        host: String,
+        /// 完整 URL 的哈希:查询串里可能带正文,不明文入表。
+        url_hash: ContentHash,
+        bytes_out: EgressBytes,
+        bytes_in: u64,
+        status: Option<u16>,
+        latency_ms: u64,
+        refused: Option<String>,
+    },
+
     /// 一次命令执行(B2)。总体规划 §"运行了哪些命令、退出码和耗时"要求留痕,
     /// **被拒的命令同样留痕**——Agent 想跑却没跑成的东西,恰恰是最该看见的信号。
     ///
@@ -400,6 +448,9 @@ impl EventBody {
             EventBody::CommandRun { .. } => "command.run",
             EventBody::SkillOffer { .. } => "skill.offer",
             EventBody::SkillRead { .. } => "skill.read",
+            EventBody::WorkflowTrigger { .. } => "workflow.trigger",
+            EventBody::WorkflowOutput { .. } => "workflow.output",
+            EventBody::ToolEgress { .. } => "tool.egress",
             EventBody::TranscriptPurge { .. } => "transcript.purge",
             EventBody::TranscriptExport { .. } => "transcript.export",
             EventBody::AuditArchived { .. } => "audit.archived",

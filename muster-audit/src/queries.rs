@@ -15,10 +15,14 @@ use crate::store::{row_to_event, StoreError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrillReport {
     pub model_calls: u64,
+    /// 模型通道 + 工具通道(`tool.egress`)的实测外发字节之和。
     pub egress_bytes: u64,
+    /// 两条通道里测不到字节数的调用次数——按违规计。
     pub unmetered_calls: u64,
     pub local_calls: u64,
     pub cloud_calls: u64,
+    /// 工具侧外发次数(含被拒的:被拒也是一次外发企图)。
+    pub tool_egress_calls: u64,
 }
 
 impl DrillReport {
@@ -30,14 +34,15 @@ impl DrillReport {
 /// 演习窗口聚合(闭区间毫秒时间戳)。
 pub const SQL_DRILL_REPORT: &str = r#"
 SELECT
-  COUNT(*),
+  COALESCE(SUM(CASE WHEN event_type = 'model.call' THEN 1 ELSE 0 END), 0),
   COALESCE(SUM(CASE WHEN json_type(payload,'$.bytes_out') = 'object'
                     THEN json_extract(payload,'$.bytes_out.measured') ELSE 0 END), 0),
   COALESCE(SUM(CASE WHEN json_extract(payload,'$.bytes_out') = 'unmetered' THEN 1 ELSE 0 END), 0),
-  COALESCE(SUM(CASE WHEN locality = 'local' THEN 1 ELSE 0 END), 0),
-  COALESCE(SUM(CASE WHEN locality = 'cloud' THEN 1 ELSE 0 END), 0)
+  COALESCE(SUM(CASE WHEN event_type = 'model.call' AND locality = 'local' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN event_type = 'model.call' AND locality = 'cloud' THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN event_type = 'tool.egress' THEN 1 ELSE 0 END), 0)
 FROM audit_event
-WHERE event_type = 'model.call' AND ts_ms BETWEEN ?1 AND ?2
+WHERE event_type IN ('model.call', 'tool.egress') AND ts_ms BETWEEN ?1 AND ?2
 "#;
 
 pub fn drill_report(conn: &Connection, from_ms: u64, to_ms: u64) -> Result<DrillReport, StoreError> {
@@ -48,9 +53,84 @@ pub fn drill_report(conn: &Connection, from_ms: u64, to_ms: u64) -> Result<Drill
             unmetered_calls: r.get::<_, i64>(2)? as u64,
             local_calls: r.get::<_, i64>(3)? as u64,
             cloud_calls: r.get::<_, i64>(4)? as u64,
+            tool_egress_calls: r.get::<_, i64>(5)? as u64,
         })
     })?;
     Ok(r)
+}
+
+// ---------------------------------------------------------------- 工作流
+
+/// 工作流的一次运行:触发事件 + (若有)收尾事件,按 run_id 对上。
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowRunRow {
+    pub run_id: String,
+    pub ts_ms: u64,
+    pub trigger: String,
+    pub scheduled_for_ms: Option<u64>,
+    /// 没有收尾事件 ⇒ `None`(还在跑,或进程中途没了——两者都该显示为"未收尾")。
+    pub outcome: Option<String>,
+    /// (kind, content_hash)。
+    pub artifacts: Vec<(String, String)>,
+    pub merged_commit: Option<String>,
+}
+
+pub const SQL_WORKFLOW_LAST_TRIGGER: &str = r#"
+SELECT MAX(ts_ms) FROM audit_event
+WHERE event_type = 'workflow.trigger' AND json_extract(payload, '$.workflow') = ?1
+"#;
+
+/// 最近一次触发的时刻(定时器据此算"下一次");从未触发 ⇒ `None`。
+pub fn workflow_last_trigger(conn: &Connection, workflow: &str) -> Result<Option<u64>, StoreError> {
+    let v: Option<i64> = conn.query_row(SQL_WORKFLOW_LAST_TRIGGER, params![workflow], |r| r.get(0))?;
+    Ok(v.map(|x| x as u64))
+}
+
+pub const SQL_WORKFLOW_RUNS: &str = r#"
+SELECT t.run_id, t.ts_ms,
+       json_extract(t.payload, '$.trigger'),
+       json_extract(t.payload, '$.scheduled_for_ms'),
+       (SELECT o.payload FROM audit_event o
+         WHERE o.event_type = 'workflow.output' AND o.run_id = t.run_id
+         ORDER BY o.event_id DESC LIMIT 1)
+FROM audit_event t
+WHERE t.event_type = 'workflow.trigger' AND json_extract(t.payload, '$.workflow') = ?1
+ORDER BY t.ts_ms DESC
+LIMIT ?2
+"#;
+
+/// 某工作流最近 `limit` 次运行(新在前),每次带上产物与合入结果。
+pub fn workflow_runs(conn: &Connection, workflow: &str, limit: u32) -> Result<Vec<WorkflowRunRow>, StoreError> {
+    let mut stmt = conn.prepare(SQL_WORKFLOW_RUNS)?;
+    let rows = stmt.query_map(params![workflow, limit as i64], |r| {
+        let output: Option<String> = r.get(4)?;
+        let parsed = output.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let outcome = parsed.as_ref().and_then(|v| v["outcome"].as_str().map(str::to_owned));
+        let merged_commit = parsed.as_ref().and_then(|v| v["merged_commit"].as_str().map(str::to_owned));
+        let artifacts = parsed
+            .as_ref()
+            .and_then(|v| v["artifacts"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|a| {
+                Some((a["kind"].as_str()?.to_owned(), a["content_hash"].as_str()?.to_owned()))
+            })
+            .collect();
+        Ok(WorkflowRunRow {
+            run_id: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            ts_ms: r.get::<_, i64>(1)? as u64,
+            trigger: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            scheduled_for_ms: r.get::<_, Option<i64>>(3)?.map(|x| x as u64),
+            outcome,
+            artifacts,
+            merged_commit,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// 第 7 幕降级流(时间窗内所有带 downgrade 的路由决策)。
@@ -940,5 +1020,95 @@ mod home_query_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
+    }
+
+    fn at(ts_ms: u64, locality: Option<Locality>, run: &str, body: EventBody) -> NewEvent {
+        let mut e = ev(run, body);
+        e.ts_ms = Some(ts_ms);
+        e.locality = locality;
+        e
+    }
+
+    /// 工具侧外发与模型调用同进演习报告:字节相加、Unmetered 按违规计、
+    /// 模型调用计数不被工具调用污染。
+    #[test]
+    fn drill_report_counts_tool_egress_alongside_model_calls() {
+        use crate::event::{ContentHash, EgressBytes};
+        let mut store = AuditStore::open_in_memory().unwrap();
+        let egress = |bytes_out: EgressBytes, refused: Option<&str>| EventBody::ToolEgress {
+            tool: "http_get".into(),
+            host: "example.test".into(),
+            url_hash: ContentHash::sha256(b"u"),
+            bytes_out,
+            bytes_in: 30,
+            status: Some(200),
+            latency_ms: 3,
+            refused: refused.map(str::to_owned),
+        };
+        store
+            .append(at(1_000, Some(Locality::Cloud), "RUN-D", EventBody::ModelCall {
+                provider_id: "p".into(),
+                model: "m".into(),
+                locality: Locality::Cloud,
+                label: Sensitivity::Open,
+                tokens_in: None,
+                tokens_out: None,
+                bytes_in: 10,
+                bytes_out: EgressBytes::Measured(100),
+                latency_ms: 5,
+                request_hash: ContentHash::sha256(b"r"),
+            }))
+            .unwrap();
+        store.append(at(1_100, Some(Locality::Cloud), "RUN-D", egress(EgressBytes::Measured(40), None))).unwrap();
+        store.append(at(1_200, Some(Locality::Cloud), "RUN-D", egress(EgressBytes::Unmetered, None))).unwrap();
+        store.append(at(1_300, Some(Locality::Cloud), "RUN-D", egress(EgressBytes::Measured(0), Some("host")))).unwrap();
+
+        let r = drill_report(store.conn(), 0, 2_000).unwrap();
+        assert_eq!(r.model_calls, 1, "工具调用不算模型调用");
+        assert_eq!(r.cloud_calls, 1);
+        assert_eq!(r.tool_egress_calls, 3, "被拒的也是一次外发企图");
+        assert_eq!(r.egress_bytes, 140, "两条通道的实测字节相加");
+        assert_eq!(r.unmetered_calls, 1);
+        assert!(!r.ok());
+    }
+
+    /// 工作流:触发与收尾按 run_id 配对;没收尾的显示为未收尾;最近触发时刻可查。
+    #[test]
+    fn workflow_runs_pair_triggers_with_outputs() {
+        use crate::event::{ArtifactRef, ContentHash};
+        let mut store = AuditStore::open_in_memory().unwrap();
+        let trigger = |t: &str| EventBody::WorkflowTrigger {
+            workflow: "daily".into(),
+            definition_hash: ContentHash::sha256(b"def"),
+            trigger: t.into(),
+            scheduled_for_ms: Some(5),
+        };
+        store.append(at(10, None, "WF-1", trigger("scheduled"))).unwrap();
+        store
+            .append(at(15, None, "WF-1", EventBody::WorkflowOutput {
+                workflow: "daily".into(),
+                outcome: "success".into(),
+                artifacts: vec![
+                    ArtifactRef { kind: "html".into(), content_hash: ContentHash::sha256(b"h") },
+                    ArtifactRef { kind: "pdf".into(), content_hash: ContentHash::sha256(b"p") },
+                ],
+                merged_commit: Some("abc123".into()),
+            }))
+            .unwrap();
+        store.append(at(20, None, "WF-2", trigger("manual"))).unwrap();
+
+        let runs = workflow_runs(store.conn(), "daily", 10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].run_id, "WF-2");
+        assert_eq!(runs[0].trigger, "manual");
+        assert!(runs[0].outcome.is_none(), "没有收尾事件就是未收尾,不能猜成成功");
+        assert_eq!(runs[1].run_id, "WF-1");
+        assert_eq!(runs[1].outcome.as_deref(), Some("success"));
+        assert_eq!(runs[1].artifacts.len(), 2);
+        assert_eq!(runs[1].artifacts[1].0, "pdf");
+        assert_eq!(runs[1].merged_commit.as_deref(), Some("abc123"));
+        assert_eq!(workflow_last_trigger(store.conn(), "daily").unwrap(), Some(20));
+        assert_eq!(workflow_last_trigger(store.conn(), "other").unwrap(), None);
+        assert!(workflow_runs(store.conn(), "other", 10).unwrap().is_empty());
     }
 }
