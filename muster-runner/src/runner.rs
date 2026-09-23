@@ -3,6 +3,10 @@
 //! 重试策略(v0,属 Runner 不属路由):同一 provider、同一回合、整回合重试
 //! 一次;再失败即 `run.finish(Failed)`。绝不换落点——链的合法性在 resolve
 //! 时已定,换落点=重新决策,那是新任务。
+//!
+//! 例外是**限流**(429):它不是故障而是配额,立刻重试只会再撞一次。限流时按
+//! provider 给的 Retry-After(没给则 20 秒,封顶 60 秒)等一等再试,最多
+//! [`RATE_LIMIT_ATTEMPTS`] 次;等待期间发 Notice,让人知道是在排队不是卡死。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -23,6 +27,12 @@ use muster_route::{LabelSource, RoutePlan, RouteRequest, Router};
 
 use crate::tools::{ExtraTool, ToolSet};
 use crate::worktree::{enforce_retention, RetentionPolicy, RunDiff, Worktree};
+
+/// 同一回合因限流最多尝试几次(含第一次)。
+pub const RATE_LIMIT_ATTEMPTS: usize = 4;
+/// provider 没给 Retry-After 时的等待。
+const RATE_LIMIT_DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+const RATE_LIMIT_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -573,6 +583,8 @@ pub async fn run_task_at(
 
             let call_started = Instant::now();
             let mut retryable_err: Option<String> = None;
+            // 限流:Some(等待时长)。与普通错误分开对待,见模块文档。
+            let mut rate_limited: Option<std::time::Duration> = None;
             let mut text = String::new();
             let mut acc = ToolCallAccumulator::new();
             let mut prompt_tokens = 0u64;
@@ -593,13 +605,21 @@ pub async fn run_task_at(
                             }
                             Ok(StreamEvent::Finish(_)) => {}
                             Err(e) => {
+                                if let muster_provider::ProviderError::RateLimited { retry_after } = &e {
+                                    rate_limited = Some(retry_after.unwrap_or(RATE_LIMIT_DEFAULT_WAIT).min(RATE_LIMIT_MAX_WAIT));
+                                }
                                 retryable_err = Some(e.to_string());
                                 break;
                             }
                         }
                     }
                 }
-                Err(e) => retryable_err = Some(e.to_string()),
+                Err(e) => {
+                    if let muster_provider::ProviderError::RateLimited { retry_after } = &e {
+                        rate_limited = Some(retry_after.unwrap_or(RATE_LIMIT_DEFAULT_WAIT).min(RATE_LIMIT_MAX_WAIT));
+                    }
+                    retryable_err = Some(e.to_string());
+                }
             }
 
             // model.call:成功与失败的尝试都记账(外发已经发生)。
@@ -627,6 +647,17 @@ pub async fn run_task_at(
 
             match retryable_err {
                 None => break (text, acc.finish()),
+                Some(msg) if rate_limited.is_some() && attempt < RATE_LIMIT_ATTEMPTS => {
+                    let wait = rate_limited.unwrap_or(RATE_LIMIT_DEFAULT_WAIT);
+                    on_event(RunnerEvent::Notice {
+                        text: format!(
+                            "回合 {turn} 被限流,等 {} 秒再试(第 {attempt}/{RATE_LIMIT_ATTEMPTS} 次):{msg}",
+                            wait.as_secs()
+                        ),
+                    });
+                    tokio::time::sleep(wait).await;
+                    continue;
+                }
                 Some(msg) if attempt == 1 => {
                     on_event(RunnerEvent::Notice {
                         text: format!("回合 {turn} 中流失败,整回合重试一次:{msg}"),

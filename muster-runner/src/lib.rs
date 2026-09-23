@@ -75,7 +75,7 @@ pub use capsule::{
     CapsuleSpec, CapsuleStore, ForgeOutcome, VerifyOutcome,
 };
 pub use runner::{
-    run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec,
+    run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec, RATE_LIMIT_ATTEMPTS,
 };
 pub use command::CommandPolicy;
 pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};

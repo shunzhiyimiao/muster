@@ -26,6 +26,8 @@ static HANG_MARKER: std::sync::LazyLock<StreamEvent> =
 /// collide with text a real backend would emit.
 const ERR_MARKER_OPEN: &str = "\u{0}__mock_err__";
 const ERR_MARKER_CLOSE: &str = "__mock_err__\u{0}";
+/// 限流标记:开流即 429。正文是 Retry-After 秒数,`none` 表示没给。
+const RATE_MARKER: &str = "\u{0}__mock_429__";
 
 pub struct MockProvider {
     meta: ProviderMetadata,
@@ -147,6 +149,25 @@ impl MockProvider {
         self
     }
 
+    /// Script a turn that is **rate limited** (429) right away. Unlike
+    /// `with_stream_error`, this enqueues a single turn: the runner is expected
+    /// to wait and try again, so the next scripted turn is what it gets then.
+    pub fn with_rate_limited(self, retry_after_secs: Option<u64>) -> Self {
+        self.enqueue(MockTurn {
+            response: ChatResponse {
+                message: ChatMessage::assistant(""),
+                usage: None,
+                finish_reason: FinishReason::Other,
+                model: "mock-model".into(),
+            },
+            stream_events: vec![StreamEvent::TextDelta(format!(
+                "{RATE_MARKER}{}",
+                retry_after_secs.map(|s| s.to_string()).unwrap_or_else(|| "none".into())
+            ))],
+        });
+        self
+    }
+
     /// Script a turn that opens and then **fails mid-stream** (the provider
     /// hung up, rate-limited, etc.). Observed in the wild: a run does real work
     /// across several turns, then the last call gets a 429.
@@ -205,6 +226,13 @@ impl ModelProvider for MockProvider {
             return Ok(futures::stream::iter(head.into_iter().map(Ok))
                 .chain(futures::stream::pending())
                 .boxed());
+        }
+        // 限流标记:连流都开不了,直接 429(与真实 provider 在 send() 处报错一致)。
+        if let Some(StreamEvent::TextDelta(t)) = turn.stream_events.first() {
+            if let Some(rest) = t.strip_prefix(RATE_MARKER) {
+                let retry_after = rest.parse::<u64>().ok().map(std::time::Duration::from_secs);
+                return Err(ProviderError::RateLimited { retry_after });
+            }
         }
         // 中流失败标记:前面的事件照发,到它这里转成 Err(如实模拟"发了一半断了")。
         let items: Vec<Result<StreamEvent, ProviderError>> = turn
