@@ -1,4 +1,4 @@
-/* Muster 点将台 · v4 壳(双层侧栏 + 个人/团队分离)
+/* Muster 智能协作平台 · v4 壳(双层侧栏 + 个人/团队分离)
    概念稿:docs/Muster-概念稿-v4.html;真实后端接线处均标注。 */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -873,7 +873,7 @@ function TopBar({
     agent: ["Agent 档案 · 小七", "编制 A-007 · 代码评审员 · 由我日常使用"],
     pchat: ["对话 · 小七", "私有会话 · 真实路由与审计,内容不进团队"],
     channel: [`#${channelName}`, `${teamName} · 频道协作 · 共享对话与工作流`],
-    roster: [`编制 · ${teamName || "团队"}`, "团队内的人与 Agent · 点将、授权与审计"],
+    roster: [`编制 · ${teamName || "团队"}`, "团队内的人与 Agent · 协作、授权与审计"],
     meeting: ["会议室", "平台组周会 · Agent-007 / 021 在席(概念)"],
     caps: ["能力库", "组织的 Capsule 资产池(P4 概念)"],
   };
@@ -948,7 +948,7 @@ function ConnBar({ remote, onClick }: { remote: RemoteStatus | null; onClick: ()
 }
 
 /* ===== C1:服务端登录 =====
-   未连接时是单机点将台,一切照旧;连上之后团队频道来自服务端,
+   未连接时是单机智能协作平台,一切照旧;连上之后团队频道来自服务端,
    **私有会话仍然只在本机**——界面上承诺过它不进团队,连上服务器也不能破。 */
 function LoginDialog({
   current,

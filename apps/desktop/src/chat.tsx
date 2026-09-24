@@ -1,7 +1,7 @@
 /* 真实聊天/任务状态机:与后端事件通道对接(task-start/delta/done/refused/failed) */
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Bot, Play, Send } from "lucide-react";
+import { Bot, Check, ChevronDown, Play, Send } from "lucide-react";
 import { api, AgentOut, Channel, Sensitivity, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
@@ -222,9 +222,28 @@ export function ChatPane({
 }) {
   const [draft, setDraft] = useState("");
   const [hint, setHint] = useState<string | null>(null);
-  // 点将:这条输入交给哪张工牌;不选就是默认工牌,消息开头 @ 别名也能指名
+  // 协作对象:这条输入交给哪张工牌;不选就是默认工牌,消息开头 @ 别名也能指名。
+  // 选过的工牌若不在当前频道的编制里(换了频道),退回频道默认,不带着一张点不到的牌
   const [badge, setBadge] = useState<string | null>(null);
-  const effBadge = badge ?? defaultBadge ?? agents[0]?.badge ?? null;
+  const effBadge = (badge && agents.some((a) => a.badge === badge) ? badge : null) ?? defaultBadge ?? agents[0]?.badge ?? null;
+  // 「协作」弹出菜单:点外面或按 Esc 关
+  const [pickOpen, setPickOpen] = useState(false);
+  const pickRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!pickOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (pickRef.current && !pickRef.current.contains(e.target as Node)) setPickOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPickOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [pickOpen]);
   const nameOf = (b?: string | null) => agents.find((a) => a.badge === b)?.name;
   const curName = nameOf(effBadge) ?? agentName;
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -495,21 +514,71 @@ export function ChatPane({
         )}
       </div>
       <div className="px-4 pb-4">
-        {agents.length > 1 && (
-          <div className="flex items-center gap-1.5 mb-1.5 px-1 flex-wrap">
-            <span className="text-[10px]" style={{ color: T.faint }}>点将</span>
-            {agents.map((a) => {
-              const on = a.badge === effBadge;
-              return (
-                <button key={a.badge} onClick={() => setBadge(a.badge)}
-                  title={`${a.badge} · ${a.role} · ${a.tools === "read-only" ? "只读" : "可写隔离区"}${a.sensitivity_max ? ` · 密级上限 ${a.sensitivity_max}` : ""}`}
-                  className="text-[10.5px] px-2 py-0.5 rounded-lg"
-                  style={{ background: on ? T.indigo : T.soft, color: on ? "#fff" : T.sub, fontWeight: on ? 600 : 500 }}>
-                  {a.name}
-                </button>
-              );
-            })}
+        {agents.length > 0 && (
+          <div ref={pickRef} className="relative flex items-center gap-1.5 mb-1.5 px-1">
+            <span className="text-[10px]" style={{ color: T.faint }}>协作</span>
+            <button
+              onClick={() => setPickOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={pickOpen}
+              title="选择这条消息交给哪个 Agent"
+              className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-2 py-0.5 rounded-lg"
+              style={{ background: pickOpen ? T.indigo : T.indigoSoft, color: pickOpen ? "#fff" : T.indigo }}
+            >
+              <Bot size={11} />
+              {curName}
+              <span style={{ opacity: 0.7, fontWeight: 500 }}>{effBadge}</span>
+              <ChevronDown size={11} style={{ transform: pickOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
+            </button>
             <span className="text-[10px]" style={{ color: T.faint }}>或在消息开头写 @名字</span>
+            {pickOpen && (
+              <div
+                role="menu"
+                className="absolute left-0 bottom-full mb-1.5 w-72 z-40 rounded-2xl overflow-hidden fade"
+                style={{ background: "#fff", border: `1px solid ${T.line}`, boxShadow: "0 16px 40px rgba(23,24,28,.14)" }}
+              >
+                <div className="px-3 py-2 text-[10.5px] font-semibold" style={{ background: T.indigoSoft, color: T.indigo }}>
+                  选择协作的 Agent
+                </div>
+                <div style={{ maxHeight: 264, overflowY: "auto" }}>
+                  {agents.map((a) => {
+                    const on = a.badge === effBadge;
+                    return (
+                      <button
+                        key={a.badge}
+                        role="menuitemradio"
+                        aria-checked={on}
+                        onClick={() => {
+                          setBadge(a.badge);
+                          setPickOpen(false);
+                          inputRef.current?.focus();
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[#F7F8FB]"
+                        style={{ background: on ? T.soft : "transparent" }}
+                      >
+                        <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: on ? T.indigo : T.indigoSoft, color: on ? "#fff" : T.indigo }}>
+                          <Bot size={13} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <b className="text-[12px]">{a.name}</b>
+                            <span className="text-[10px]" style={{ color: T.faint }}>{a.badge}</span>
+                            {a.is_default && <Tag tone="ind">默认</Tag>}
+                          </div>
+                          <div className="text-[10.5px] truncate" style={{ color: T.sub }}>
+                            {a.role} · {a.tools === "read-only" ? "只读" : "可写隔离区"}{a.sensitivity_max ? ` · 密级上限 ${a.sensitivity_max}` : ""}
+                          </div>
+                        </div>
+                        {on && <Check size={13} style={{ color: T.indigo }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="px-3 py-2 text-[10px]" style={{ color: T.faint, borderTop: `1px solid ${T.line}` }}>
+                  消息开头写 @名字 会压过这里的选择;频道里只能选已引入的 Agent
+                </div>
+              </div>
+            )}
           </div>
         )}
         <div className="flex items-end gap-2 px-4 py-2.5 rounded-xl" style={{ background: T.soft }}>

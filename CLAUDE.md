@@ -22,7 +22,7 @@
 - muster-server：P2/P3 服务端（Axum + PostgreSQL）；权限判定复用 muster-identity 不另写一份；
   服务端不持有源码、不做全局审计链（节点各自留链，组织侧靠锚定——尚未实现）；
   依赖用 deploy/docker-compose.yml 一条命令拉起
-- apps/desktop：点将台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
+- apps/desktop：智能协作平台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
 
 ## 约定
 - 动手前后都跑 cargo test（当前基线 287 项全绿；桌面壳另有 38 项需在 apps/desktop/src-tauri 下跑）

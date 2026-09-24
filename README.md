@@ -1,4 +1,4 @@
-# Muster · 点将台
+# Muster · 智能协作平台
 
 **完全本地部署的团队 + Agent 协作系统。** 人、Agent、频道、任务、审批与审计在同一个平台上;
 模型可以是云端的,也可以是内网/本机的——**由数据密级决定,而不是由用户随手选**。
@@ -16,7 +16,7 @@
 ```bash
 cargo test --workspace                     # 全部测试
 
-# 桌面端(点将台 UI:控制台 / 个人工作台 / 团队频道 / 审计中心 / 主权演习)
+# 桌面端(智能协作平台 UI:控制台 / 个人工作台 / 团队频道 / 审计中心 / 主权演习)
 cd apps/desktop && KIMI_API_KEY=… pnpm tauri dev
 
 # 模型网关(让只讲 Responses 的 Codex 用上任何 chat 系模型)
@@ -40,7 +40,7 @@ cargo run -p muster-eval -- --list
 | `muster-gateway` | — | 模型网关:对外讲 Responses,对内讲 chat |
 | `muster-eval` | A7 | 20 固定样本的工具调用评测,确定性判卷,退出码可挂 CI |
 | `muster-prompt` | A1 | Agent 系统提示词的唯一出处(执行器与评测同源) |
-| `apps/desktop` | P1-07~09 | 点将台桌面壳(Tauri 2 + React;独立工作区) |
+| `apps/desktop` | P1-07~09 | 智能协作平台桌面壳(Tauri 2 + React;独立工作区) |
 
 ## 许可与第三方组件
 
