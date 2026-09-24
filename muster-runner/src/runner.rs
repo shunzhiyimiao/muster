@@ -159,6 +159,9 @@ pub enum RunnerEvent {
     Diff { diff: RunDiff, branch: String },
     /// 已提出合入申请,等待人工裁决(P5)。Runner 自己永不合入。
     ApprovalRequested { approval_id: String, branch: String, worktree_path: String },
+    /// 委派出去的子 run 发生的事(见 muster-roster 的 delegate):外面包一层"是谁",
+    /// 界面据此把子 Agent 的动作与主 Agent 的分开显示。
+    Delegated { badge: String, name: String, inner: Box<RunnerEvent> },
 }
 
 #[derive(Debug, Clone, Serialize)]

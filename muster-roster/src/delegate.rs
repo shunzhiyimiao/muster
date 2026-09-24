@@ -217,19 +217,28 @@ impl DelegateTool {
             propose_merge: false,
         };
         let sink = ctx.on_event.clone();
-        let to_name = to.name.clone();
+        let (to_name, to_badge) = (to.name.clone(), to.badge.clone());
         let result = run_task(&ctx.router, &ctx.audit, &cfg, task, move |ev| {
-            // 子 run 的收尾事件不能冒充父 run 的:转成通告
+            // 子 run 的事件外面包一层"是谁":收尾转成通告,不冒充父 run 的;
+            // 正文增量不转发(子 Agent 的结论会作为工具结果整段回给父 Agent)
+            let wrap = |inner: RunnerEvent| RunnerEvent::Delegated { badge: to_badge.clone(), name: to_name.clone(), inner: Box::new(inner) };
             match ev {
                 RunnerEvent::Finished { outcome, turns, .. } => {
-                    sink(RunnerEvent::Notice { text: format!("🤝 {to_name} 完成子任务({outcome},{turns} 回合)") })
+                    sink(wrap(RunnerEvent::Notice { text: format!("完成子任务({outcome},{turns} 回合)") }))
                 }
-                RunnerEvent::Planned { .. } | RunnerEvent::WorkspaceReady { .. } | RunnerEvent::Diff { .. } | RunnerEvent::ApprovalRequested { .. } => {}
-                other => sink(other),
+                RunnerEvent::ToolCall { .. } | RunnerEvent::ToolResult { .. } | RunnerEvent::Notice { .. } => sink(wrap(ev)),
+                _ => {}
             }
         })
         .await;
 
+        if let Ok(s) = &result {
+            (ctx.on_event)(RunnerEvent::Delegated {
+                badge: to.badge.clone(),
+                name: to.name.clone(),
+                inner: Box::new(RunnerEvent::Notice { text: format!("结论:{}", cap(&s.final_text, 600).replace('\n', " ")) }),
+            });
+        }
         match result {
             Ok(s) => ToolOutcome {
                 text: format!(

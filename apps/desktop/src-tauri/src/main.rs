@@ -1701,6 +1701,17 @@ fn forward_runner_event(
             tr.lock().unwrap().push_str(&line);
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
+        // 委派出去的子 run:每一行都标上是谁做的,别让它混进主 Agent 的动作里
+        RunnerEvent::Delegated { name, inner, .. } => {
+            let line = match *inner {
+                RunnerEvent::ToolCall { name: tool, arguments, .. } => format!("   {name} › 🔧 {tool} {arguments}\n"),
+                RunnerEvent::ToolResult { summary, .. } => format!("   {name} ›    ↳ {summary}\n"),
+                RunnerEvent::Notice { text } => format!("   {name} › {text}\n"),
+                _ => return,
+            };
+            tr.lock().unwrap().push_str(&line);
+            a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
+        }
         RunnerEvent::ApprovalRequested { approval_id, branch, .. } => {
             let line = format!(
                 "\n⏳ 已申请合入(审批号 {approval_id},分支 {branch})——需人工裁决,Agent 不自行合入\n"
@@ -2494,7 +2505,9 @@ fn roster_badges() -> Vec<String> {
         .unwrap_or_else(|_| vec!["A-007".into()])
 }
 
-/// 点将:指名的工牌 > 消息开头的 @ > 默认工牌;然后核对密级上限(硬闸,fail-closed)。
+/// 点将:**消息开头的 @ > 界面上选中的工牌 > 频道默认(编制第一张)> 名册默认**;
+/// 然后核对密级上限(硬闸,fail-closed)。@ 排第一,因为它是这一条消息的明确意图,
+/// 而按钮上的选择是粘住的状态——真机撞见过:按钮停在阿岩,写了 @小七,活却派给了阿岩。
 /// 返回 (工牌, 去掉称呼后的正文)。
 fn pick_agent(
     roster: &muster_roster::Roster,
@@ -2519,19 +2532,13 @@ fn pick_agent(
         }
         roster.default_agent().cloned().ok_or_else(|| "名册为空".to_string())
     };
-    let (agent, body) = if let Some(key) = requested.filter(|k| !k.trim().is_empty()) {
+    let (agent, body) = if let Some((a, body)) = roster.mention(text) {
+        in_channel(a)?;
+        (a.clone(), body)
+    } else if let Some(key) = requested.filter(|k| !k.trim().is_empty()) {
         let a = roster.find(key).ok_or_else(|| format!("名册里没有工牌 {key}"))?;
         in_channel(a)?;
-        // 指名之后消息开头若还 @ 了同一个人,称呼去掉
-        let body = roster
-            .mention(text)
-            .filter(|(m, _)| m.badge == a.badge)
-            .map(|(_, b)| b)
-            .unwrap_or_else(|| text.to_string());
-        (a.clone(), body)
-    } else if let Some((a, body)) = roster.mention(text) {
-        in_channel(a)?;
-        (a.clone(), body)
+        (a.clone(), text.to_string())
     } else {
         (channel_default()?, text.to_string())
     };
@@ -4898,6 +4905,11 @@ mod roster_tests {
         assert!(e.contains("没有引入本频道"), "{e}");
         let e = pick_agent(&r, Some("A-007"), "看看", Sensitivity::Open, &allowed).unwrap_err();
         assert!(e.contains("没有引入本频道"), "{e}");
+        // 消息开头的 @ 压过按钮上选中的工牌(真机踩过:按钮停在阿岩,@小析 却派给了阿岩)
+        let (a, body) = pick_agent(&r, Some("A-012"), "@小析 出个报告", Sensitivity::Open, &allowed).unwrap();
+        assert_eq!((a.badge.as_str(), body.as_str()), ("A-021", "出个报告"));
+        let e = pick_agent(&r, Some("A-012"), "@小七 看看", Sensitivity::Open, &allowed).unwrap_err();
+        assert!(e.contains("没有引入本频道"), "@ 了没引入的工牌要明确拒绝,不能悄悄换成按钮上的人:{e}");
         // 密级上限仍是硬闸,与编制无关
         let e = pick_agent(&r, Some("A-021"), "看看", Sensitivity::Internal, &allowed).unwrap_err();
         assert!(e.contains("密级上限"), "{e}");

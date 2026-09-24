@@ -145,7 +145,12 @@ async fn delegated_sub_run_works_in_the_parent_worktree_and_chains_link() {
     let finished = evs.iter().filter(|e| matches!(e, RunnerEvent::Finished { .. })).count();
     assert_eq!(finished, 1, "只有父 run 的 Finished");
     assert!(evs.iter().any(|e| matches!(e, RunnerEvent::Notice { text } if text.contains("交给 阿岩"))));
-    assert!(evs.iter().any(|e| matches!(e, RunnerEvent::Notice { text } if text.contains("阿岩 完成子任务"))));
+    // 子 run 的动作都包着"是谁":工具调用、收尾、结论
+    let sub_tool = evs.iter().any(|e| matches!(e, RunnerEvent::Delegated { name, inner, .. } if name == "阿岩" && matches!(**inner, RunnerEvent::ToolCall { ref name, .. } if name == "replace_in_file")));
+    assert!(sub_tool, "子 Agent 的工具调用应带上它的名字");
+    assert!(evs.iter().any(|e| matches!(e, RunnerEvent::Delegated { inner, .. } if matches!(**inner, RunnerEvent::Notice { ref text } if text.contains("完成子任务")))));
+    assert!(evs.iter().any(|e| matches!(e, RunnerEvent::Delegated { inner, .. } if matches!(**inner, RunnerEvent::Notice { ref text } if text.contains("结论:")))));
+    assert!(!evs.iter().any(|e| matches!(e, RunnerEvent::ToolCall { name, .. } if name == "replace_in_file")), "子 Agent 的动作不该裸露成父 run 的");
 }
 
 #[tokio::test]

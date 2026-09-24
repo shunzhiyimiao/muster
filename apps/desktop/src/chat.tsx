@@ -246,7 +246,10 @@ export function ChatPane({
       return;
     }
     setHint(null);
-    chat.send(channel.id, draft, asTask, thread, effBadge);
+    // 消息开头的 @ 压过按钮:与后端同一条规则,占位气泡上的名字才不会先错后改
+    const m = draft.trim().match(/^[@＠]([^\s,，:：、!！]+)/);
+    const mentioned = m ? agents.find((a) => a.badge.toLowerCase() === m[1].toLowerCase() || a.name === m[1] || a.aliases.includes(m[1]))?.badge : undefined;
+    chat.send(channel.id, draft, asTask, thread, mentioned ?? effBadge);
     setDraft("");
   };
 
