@@ -188,6 +188,13 @@ impl DelegateTool {
 
         // 子 run:被委派工牌的岗位卡 + 父工作区(档位取交集)+ 不再有 delegate
         let writable = parent_writable && to.tools == ToolMode::Worktree;
+        // 父 run 本次只读(隔离工作区没建起来,或父工牌本就只读)时,能写的工牌交过来也只能只读。
+        // 这要在结果里明说,不然父 Agent 会以为对方"写好了"
+        let readonly_note = if !parent_writable && to.tools == ToolMode::Worktree {
+            "(注意:父任务本次没有可写的隔离工作区,子任务只能只读;要真改文件得在任务模式下重来)"
+        } else {
+            ""
+        };
         let cfg = RunnerConfig {
             policy_version: ctx.policy_version.clone(),
             badge: to.badge.clone(),
@@ -242,7 +249,7 @@ impl DelegateTool {
         match result {
             Ok(s) => ToolOutcome {
                 text: format!(
-                    "{}({})已完成子任务({},{} 回合)。对方的结论:\n{}",
+                    "{}({})已完成子任务({},{} 回合){readonly_note}。对方的结论:\n{}",
                     to.name, to.badge, s.outcome, s.turns, cap(&s.final_text, 12_000)
                 ),
                 audit: None,

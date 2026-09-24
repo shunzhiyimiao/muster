@@ -8,7 +8,6 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -241,6 +240,13 @@ impl StateStore {
                 badge      TEXT NOT NULL,
                 added_ms   INTEGER NOT NULL,
                 PRIMARY KEY(channel_id, badge)
+            );
+
+            -- 杂项键值。目前只放运行号计数器 next_run_no:运行号 RUN-N 落库只增不重。
+            -- 此前是进程内计数,应用一重启就从头数,新 run 会撞上上次没跑完留下的隔离工作区。
+            CREATE TABLE IF NOT EXISTS meta(
+                key   TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
             );",
         )?;
         // 老库没有 thread_id 列。**加列 + 回填,不是重建表**——
@@ -329,6 +335,39 @@ impl StateStore {
     /// `referenced` 模式下前缀不在自己表里,要顺着 `forked_from` 往上拼。
     /// 递归有上限:分叉链坏掉(父被清、或有环)时不能把栈吃穿——
     /// 状态库是便利层,它坏了不该拖垮应用。
+    /// 库里见过的最大运行号(含子 run `RUN-N/工牌-k`),给计数器定底用。
+    fn max_run_no(&self) -> u64 {
+        let Ok(mut stmt) = self.conn.prepare("SELECT DISTINCT run_id FROM messages WHERE run_id LIKE 'RUN-%'") else { return 0 };
+        let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else { return 0 };
+        rows.flatten().filter_map(|id| parse_run_no(&id)).max().unwrap_or(0)
+    }
+
+    /// 把运行号计数器抬到至少 `floor`。只抬不降:降了就会重发已经用过的号。
+    fn seed_run_no(&self, floor: u64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES('next_run_no', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = MAX(value, excluded.value)",
+            rusqlite::params![floor as i64],
+        )?;
+        Ok(())
+    }
+
+    /// 领一个运行号:读当前值、存下一个。跨重启单调递增,这是它存在的全部理由。
+    fn alloc_run_no(&self) -> rusqlite::Result<u64> {
+        let cur = match self.conn.query_row("SELECT value FROM meta WHERE key='next_run_no'", [], |r| r.get::<_, i64>(0)) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => FIRST_RUN_NO as i64,
+            Err(e) => return Err(e),
+        }
+        .max(FIRST_RUN_NO as i64);
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES('next_run_no', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![cur + 1],
+        )?;
+        Ok(cur as u64)
+    }
+
     fn thread_history(&self, thread_id: &str) -> rusqlite::Result<Vec<StoredMsg>> {
         self.thread_history_depth(thread_id, 0)
     }
@@ -758,7 +797,6 @@ struct Backend {
     policy: OrgPolicy,
     audit: Arc<Mutex<AuditStore>>,
     state: Arc<Mutex<StateStore>>,
-    run_seq: Arc<AtomicU64>,
     drill: Arc<Mutex<Option<DrillState>>>,
     /// 已连接的服务端(C1)。`None` = 单机模式,**一切行为与从前完全一致**——
     /// 单机才是这个产品的入口形态,不能因为加了联网模式就让它退化。
@@ -870,6 +908,122 @@ const CTX_MAX_CHARS: usize = 12_000;
 ///
 /// 上下文放不下时该丢的是**最早的**。从前往后取会出现"聊了一小时,
 /// 模型只记得开头那几句"——比没有上下文更让人困惑。
+/// 第一个运行号。2231 沿用概念稿里的叙事(RUN-2231),计数器落库后从这里接着数。
+const FIRST_RUN_NO: u64 = 2231;
+
+/// `RUN-2233` / `RUN-2233/A-012-1` / `run-RUN-2233` / `muster/run-RUN-2233` → 2233;工作流的 `WF-…` → None。
+fn parse_run_no(s: &str) -> Option<u64> {
+    let i = s.find("RUN-")?;
+    let digits: String = s[i + 4..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// 隔离工作区根目录里残留的 `run-RUN-N` 中最大的 N(上次没跑完留下的)。目录不存在 = 0。
+fn leftover_run_no_max(root: &str) -> u64 {
+    std::fs::read_dir(root)
+        .map(|it| it.flatten().filter_map(|e| parse_run_no(&e.file_name().to_string_lossy())).max().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+/// 仓库里残留的 `muster/run-RUN-N` 分支中最大的 N。worktree 目录没了分支还在时,同号 run 照样建不起来。
+fn leftover_branch_run_no_max(workspace: &str) -> u64 {
+    std::process::Command::new("git")
+        .args(["-C", workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/muster/run-RUN-*"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(parse_run_no).max().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+/// 领一个运行号(落库,跨重启不重复)。计数器坏了不能瞎编:运行号是审计链与隔离工作区的键。
+fn alloc_run_id(store: &Arc<Mutex<StateStore>>) -> Result<String, String> {
+    let n = store.lock().unwrap().alloc_run_no().map_err(|e| format!("领运行号失败:{e}"))?;
+    Ok(format!("RUN-{n}"))
+}
+
+/// 某条对话的历史:主线程就是频道历史(远端频道从服务端拉);分叉出来的线程与
+/// 个人空间的子线程只在本机,走本地库(referenced 继承的那段一并带上)。
+async fn thread_history_for(
+    remote: Option<&remote::Remote>,
+    store: &Arc<Mutex<StateStore>>,
+    channel_id: &str,
+    thread: &str,
+) -> Vec<StoredMsg> {
+    if thread == main_thread(channel_id) {
+        return channel_history(remote, store, channel_id).await;
+    }
+    store.lock().unwrap().thread_history(thread).unwrap_or_default()
+}
+
+/// 任务模式带的上文,比聊天模式紧:任务提示词后面还有一整轮工具往返要占窗口。
+const TASK_CTX_MAX_MSGS: usize = 12;
+const TASK_CTX_MAX_CHARS: usize = 8_000;
+/// 单条过长取头尾:头是意图,尾是结论,中间是过程。
+const TASK_CTX_HEAD: usize = 400;
+const TASK_CTX_TAIL: usize = 900;
+
+/// 任务卡正文缩成上文:去掉工具往返行(🔧 调用、↳ 结果、🌿/📄 通告,含委派出去的「某某 › 🔧」),
+/// 只留叙述与结论;⚠️ 与 🤝 留着——"上次失败了""交给过谁"对下一轮是信息。
+fn condense_for_context(text: &str) -> String {
+    let is_tool_line = |l: &str| {
+        let t = l.trim_start();
+        ["🔧", "↳", "🌿", "📄"].iter().any(|m| t.starts_with(m)) || t.contains("› 🔧") || t.contains("› ↳") || t.contains("›    ↳")
+    };
+    let kept: Vec<&str> = text.lines().filter(|l| !is_tool_line(l)).collect();
+    let joined = kept.join("\n");
+    let s = joined.trim();
+    let n = s.chars().count();
+    if n <= TASK_CTX_HEAD + TASK_CTX_TAIL {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(TASK_CTX_HEAD).collect();
+    let tail: String = s.chars().skip(n - TASK_CTX_TAIL).collect();
+    format!("{head}\n…(中间略去 {} 字)…\n{tail}", n - TASK_CTX_HEAD - TASK_CTX_TAIL)
+}
+
+/// 把对话此前的消息裁成一段,跟在任务提示词后面。`None` = 没有上文。
+///
+/// 此前任务模式一个字的上文都不带:用户接着上一轮说"2,你直接写",Agent 只看到这五个字,
+/// 只能反问"2 是什么"。聊天模式早就带历史了,任务模式没理由例外。
+fn task_context(history: &[StoredMsg], roster: &muster_roster::Roster) -> Option<String> {
+    let mut picked: Vec<String> = Vec::new();
+    let mut chars = 0usize;
+    for m in history.iter().rev() {
+        if m.role == "system" {
+            continue;
+        }
+        let body = if m.role == "user" { m.text.trim().to_string() } else { condense_for_context(&m.text) };
+        if body.is_empty() {
+            continue;
+        }
+        let who = if m.role == "user" {
+            "用户".to_string()
+        } else {
+            match m.badge.as_deref() {
+                Some(b) => roster.find(b).map(|a| format!("{} {}", a.name, a.badge)).unwrap_or_else(|| b.to_string()),
+                None => "Agent".to_string(),
+            }
+        };
+        let line = format!("[{who}] {body}");
+        let n = line.chars().count();
+        if picked.len() >= TASK_CTX_MAX_MSGS || (chars + n > TASK_CTX_MAX_CHARS && !picked.is_empty()) {
+            break;
+        }
+        chars += n;
+        picked.push(line);
+    }
+    if picked.is_empty() {
+        return None;
+    }
+    picked.reverse();
+    Some(format!(
+        "———\n【对话上文】下面是这个对话此前的消息(时间正序;工具往返已省略,过长的取头尾)。\
+         它们只用来理解本次任务里的指代与承接;本次要做的事只有最上面那一条,别把上文里的旧任务再做一遍。\n\n{}\n【上文结束】",
+        picked.join("\n\n")
+    ))
+}
+
 fn context_window(history: &[StoredMsg], max_msgs: usize, max_chars: usize) -> Vec<&StoredMsg> {
     let mut picked: Vec<&StoredMsg> = Vec::new();
     let mut chars = 0usize;
@@ -1303,13 +1457,22 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
         verify_or_refuse(&audit)?;
         let state_db = format!("{dir}/desktop-state.db");
         let state = StateStore::open(&state_db).map_err(|e| format!("状态库打开失败:{e}"))?;
+        // 运行号接着上次数。底线取三者最大:库里见过的 RUN-N、工作区根目录里残留的
+        // run-RUN-N 目录、仓库里残留的 run 分支——上次没跑完的 run 这三处都可能留痕
+        let ws_for_seed = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+        let wt_root_for_seed = std::env::var("MUSTER_WORKSPACE_ROOT").unwrap_or_else(|_| format!("{home}/.muster/worktrees"));
+        let floor = state
+            .max_run_no()
+            .max(leftover_run_no_max(&wt_root_for_seed))
+            .max(leftover_branch_run_no_max(&ws_for_seed))
+            + 1;
+        state.seed_run_no(floor.max(FIRST_RUN_NO)).map_err(|e| format!("运行号计数器初始化失败:{e}"))?;
 
         *guard = Some(Backend {
             router,
             policy,
             audit: Arc::new(Mutex::new(audit)),
             state: Arc::new(Mutex::new(state)),
-            run_seq: Arc::new(AtomicU64::new(0)),
             drill: Arc::new(Mutex::new(None)),
             remote: Arc::new(Mutex::new(None)),
         });
@@ -1366,13 +1529,13 @@ async fn send_message(
     // 点将:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
     badge: Option<String>,
 ) -> Result<String, String> {
-    let (router, audit, store, run_seq) = {
+    let (router, audit, store) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
-        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
+        (b.router.clone(), b.audit.clone(), b.state.clone())
     };
     let channel = resolve_channel(&state, &channel_id).await?;
-    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
+    let run_id = alloc_run_id(&store)?;
     let session_id = format!("session:{}", channel.id);
     let rmt = remote_of(&state);
     let thread = thread_id.clone().unwrap_or_else(|| main_thread(&channel.id));
@@ -1498,9 +1661,10 @@ async fn send_message(
     .to_string();
     let request_bytes = request_repr.len() as u64;
 
-    // 带上本频道的历史。**在 record_msg 之后取**——刚写进去的那条提问
-    // 已经在里面了,所以下面要把它排除,否则模型会看到同一句问两遍。
-    let history = channel_history(rmt.as_ref(), &store, &channel.id).await;
+    // 带上本对话的历史(分叉/个人子线程用自己那条,主线程就是频道历史)。
+    // **在 record_msg 之后取**——刚写进去的那条提问已经在里面了,所以下面要把它排除,
+    // 否则模型会看到同一句问两遍。
+    let history = thread_history_for(rmt.as_ref(), &store, &channel.id, &thread).await;
     let ctx = context_window(&history, CTX_MAX_MSGS, CTX_MAX_CHARS);
     let mut messages = Vec::with_capacity(ctx.len() + 2);
     messages.push(ChatMessage::system(system_prompt.clone()));
@@ -1791,10 +1955,10 @@ async fn run_workspace_task(
     // 点将:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
     badge: Option<String>,
 ) -> Result<String, String> {
-    let (router, audit, store, run_seq) = {
+    let (router, audit, store) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化(先调用 bootstrap)")?;
-        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
+        (b.router.clone(), b.audit.clone(), b.state.clone())
     };
     let channel = resolve_channel(&state, &channel_id).await?;
     // P2:发起任务需权限(访客不得调用敏感 Runner;禁任务频道对谁都禁)
@@ -1802,13 +1966,15 @@ async fn run_workspace_task(
         muster_identity::Action::CreateTask,
         muster_identity::Scope::Channel(channel.id.clone()),
     )?;
-    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
+    let run_id = alloc_run_id(&store)?;
     let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
     // **上服务端。** 只写本地的话,队友完全看不见你在这个频道跑了什么任务
     // ——而团队频道存在的理由就是彼此看得见
     let rmt = remote_of(&state);
     let thread = thread_id.clone().unwrap_or_else(|| main_thread(&channel.id));
+    // 上文在记这条任务之前取,免得把它自己也算进去
+    let prior = thread_history_for(rmt.as_ref(), &store, &channel.id, &thread).await;
     record_msg(rmt.as_ref(), &store, &thread, &channel.id, "user", &format!("▶ 任务:{text}"), None, "done")
         .await?;
     // 持久化的任务轨迹 = 前端看到的一切(文本增量 + 工具行 + 通告)。
@@ -1834,6 +2000,11 @@ async fn run_workspace_task(
     let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0, &allowed)?;
     let all_skills = found.skills.clone();
     let skills = skills_for(&agent, found.skills)?;
+    // 与聊天模式同一份历史,裁紧一点跟在任务后面:首行仍是任务本身,它还要当 commit 主题
+    let prompt = match task_context(&prior, &roster) {
+        Some(ctx) => format!("{ask}\n\n{ctx}"),
+        None => ask,
+    };
     let spec = TaskSpec {
         run_id: run_id.clone(),
         session_id: Some(session_id.clone()),
@@ -1842,7 +2013,7 @@ async fn run_workspace_task(
         sources,
         requested_provider: None,
         default_provider: Some(agent.model.clone().unwrap_or_else(|| "kimi".into())),
-        prompt: ask,
+        prompt,
         workspace: workspace.into(),
         workspace_root: if agent.tools == muster_roster::ToolMode::ReadOnly { None } else { Some(workspace_root.into()) },
         propose_merge: true,
@@ -1850,10 +2021,9 @@ async fn run_workspace_task(
     let mut cfg = runner_cfg_for(&agent, skills);
     // 多 Agent(第二步):名册里还有别人时,主 Agent 可以把子任务委派出去,
     // 子 run 在同一个隔离工作区里跑,用对方的岗位卡与白名单,审计链父子相连
-    let ws_slot: Arc<Mutex<Option<(std::path::PathBuf, bool)>>> = Arc::new(Mutex::new(None));
-    if agent.tools == muster_roster::ToolMode::ReadOnly {
-        *ws_slot.lock().unwrap() = Some((spec.workspace.clone(), false));
-    }
+    // 先按只读填上主仓路径,隔离工作区建好(WorkspaceReady)再升级成可写。建不起来时
+    // runner 降级只读,委派也跟着只读并明说——而不是拿"工作区尚未就绪"把委派挡在门外
+    let ws_slot: Arc<Mutex<Option<(std::path::PathBuf, bool)>>> = Arc::new(Mutex::new(Some((spec.workspace.clone(), false))));
     if roster.agents.len() > 1 {
         let (a2, rid2, chan2, tr2) = (app.clone(), run_id.clone(), channel.id.clone(), transcript.clone());
         let ctx = muster_roster::delegate::DelegateContext {
@@ -3493,12 +3663,12 @@ async fn capsule_run(
         muster_identity::Scope::Channel(channel.id.clone()),
     )?;
 
-    let (router, audit, store_state, run_seq) = {
+    let (router, audit, store_state) = {
         let guard = state.0.lock().unwrap();
         let b = guard.as_ref().ok_or("后端未初始化")?;
-        (b.router.clone(), b.audit.clone(), b.state.clone(), b.run_seq.clone())
+        (b.router.clone(), b.audit.clone(), b.state.clone())
     };
-    let run_id = format!("RUN-{}", 2231 + run_seq.fetch_add(1, Ordering::SeqCst));
+    let run_id = alloc_run_id(&store_state)?;
     let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
     let workspace = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
     let root = std::env::var("MUSTER_WORKSPACE_ROOT")
@@ -4927,5 +5097,108 @@ mod roster_tests {
         s.set_channel_agent("platform", "A-012", false).unwrap();
         assert_eq!(s.channel_agents("platform"), vec!["A-007"]);
         assert!(s.channel_agents("pay").is_empty(), "别的频道不受影响");
+    }
+}
+
+/// 上下文连续性:运行号跨重启不重复;任务模式带对话上文。
+#[cfg(test)]
+mod continuity_tests {
+    use super::*;
+
+    fn roster() -> muster_roster::Roster {
+        let card = |b: &str, name: &str| {
+            muster_roster::AgentSpec::parse(
+                &format!("---\nname: {name}\nrole: r\ndescription: d\n---\n说明书\n"),
+                std::path::Path::new(&format!("/x/{b}/AGENT.md")),
+                std::path::Path::new("/x"),
+            )
+            .unwrap()
+        };
+        muster_roster::Roster { agents: vec![card("A-007", "小七"), card("A-012", "阿岩")], problems: vec![] }
+    }
+
+    fn msg(role: &str, text: &str, badge: Option<&str>) -> StoredMsg {
+        StoredMsg {
+            channel_id: "platform".into(),
+            thread_id: "main:platform".into(),
+            role: role.into(),
+            text: text.into(),
+            run_id: None,
+            status: "done".into(),
+            ts_ms: 1,
+            badge: badge.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn run_no_counter_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.db");
+        let s = StateStore::open(p.to_str().unwrap()).unwrap();
+        assert_eq!(s.alloc_run_no().unwrap(), FIRST_RUN_NO, "第一次从 2231 起");
+        assert_eq!(s.alloc_run_no().unwrap(), FIRST_RUN_NO + 1);
+        drop(s);
+        let s = StateStore::open(p.to_str().unwrap()).unwrap();
+        assert_eq!(s.alloc_run_no().unwrap(), FIRST_RUN_NO + 2, "重开接着数,不从头来");
+        s.seed_run_no(3000).unwrap();
+        assert_eq!(s.alloc_run_no().unwrap(), 3000, "底线抬高后从底线起");
+        s.seed_run_no(10).unwrap();
+        assert_eq!(s.alloc_run_no().unwrap(), 3001, "底线只抬不降");
+    }
+
+    #[test]
+    fn run_no_floor_reads_messages_dirs_and_ids() {
+        assert_eq!(parse_run_no("RUN-2233"), Some(2233));
+        assert_eq!(parse_run_no("RUN-2233/A-012-1"), Some(2233), "子 run 也算父号");
+        assert_eq!(parse_run_no("run-RUN-2232"), Some(2232));
+        assert_eq!(parse_run_no("muster/run-RUN-2231"), Some(2231));
+        assert_eq!(parse_run_no("WF-daily-finance-brief-2026-09-23-180751"), None);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("run-RUN-2240")).unwrap();
+        std::fs::create_dir_all(dir.path().join("run-RUN-2238")).unwrap();
+        std::fs::create_dir_all(dir.path().join("junk")).unwrap();
+        assert_eq!(leftover_run_no_max(dir.path().to_str().unwrap()), 2240);
+        assert_eq!(leftover_run_no_max(dir.path().join("nope").to_str().unwrap()), 0, "目录不存在不是错");
+        let s = StateStore::open(dir.path().join("s.db").to_str().unwrap()).unwrap();
+        assert_eq!(s.max_run_no(), 0);
+        s.insert_in_as("main:platform", "platform", "agent", "x", Some("RUN-2233"), "done", Some("A-007"));
+        s.insert_in_as("main:platform", "platform", "agent", "y", Some("RUN-2235/A-012-1"), "done", Some("A-012"));
+        s.insert_in_as("main:platform", "platform", "agent", "z", Some("WF-daily-2026"), "done", None);
+        assert_eq!(s.max_run_no(), 2235);
+    }
+
+    #[test]
+    fn condense_drops_tool_lines_and_keeps_head_tail() {
+        let card = "🌿 隔离工作区就绪 · 分支 muster/run-RUN-2232\n我先看一下现状。\n🔧 list_dir {\"path\":\".\"}\n   ↳ a ⏎ b\n   阿岩 › 🔧 read_file {}\n   阿岩 ›    ↳ 内容\n   阿岩 › 结论:没问题\n⚠️ 任务未完成:failed:stream\n📄 本次运行没有产生代码改动";
+        let c = condense_for_context(card);
+        assert_eq!(c, "我先看一下现状。\n   阿岩 › 结论:没问题\n⚠️ 任务未完成:failed:stream");
+        let long = format!("{}{}{}", "头".repeat(500), "中".repeat(2000), "尾".repeat(1000));
+        let c = condense_for_context(&long);
+        assert!(c.starts_with(&"头".repeat(TASK_CTX_HEAD)));
+        assert!(c.ends_with(&"尾".repeat(TASK_CTX_TAIL)));
+        assert!(c.contains("中间略去"));
+    }
+
+    #[test]
+    fn task_context_orders_labels_and_caps() {
+        let r = roster();
+        let h = vec![
+            msg("user", "▶ 任务:@小七 补 README", None),
+            msg("agent", "我先看一下。\n🔧 list_dir {}\n两条路:\n1. 你推动\n2. 我直接写", Some("A-007")),
+            msg("system", "已转发 2 条到 #dev", None),
+        ];
+        let ctx = task_context(&h, &r).unwrap();
+        assert!(ctx.contains("[用户] ▶ 任务:@小七 补 README"));
+        assert!(ctx.contains("[小七 A-007] 我先看一下。\n两条路:"), "工牌换成名字,工具行去掉:{ctx}");
+        assert!(ctx.contains("2. 我直接写"));
+        assert!(!ctx.contains("已转发"), "系统消息不进上文");
+        assert!(ctx.find("[用户]").unwrap() < ctx.find("[小七").unwrap(), "时间正序");
+        assert!(task_context(&[], &r).is_none());
+        // 条数上限:只留最近的 TASK_CTX_MAX_MSGS 条
+        let many: Vec<StoredMsg> = (0..30).map(|i| msg("user", &format!("第{i}句"), None)).collect();
+        let ctx = task_context(&many, &r).unwrap();
+        assert!(!ctx.contains("[用户] 第0句") && ctx.contains("[用户] 第29句"));
+        assert!(ctx.contains(&format!("[用户] 第{}句", 30 - TASK_CTX_MAX_MSGS)));
+        assert!(!ctx.contains(&format!("[用户] 第{}句", 29 - TASK_CTX_MAX_MSGS)));
     }
 }
