@@ -39,6 +39,13 @@ pub struct WorkspaceOverride {
     pub writable: bool,
 }
 
+/// 回合预算收尾:倒数第二回合提醒,最后一回合不给工具。
+/// 到上限时结论为空,委派方与人什么都拿不到——那比失败本身更糟。
+const WRAP_UP_NOTICE: &str = "(系统提示)你还剩 2 回合(含本回合)就到本次任务的回合上限。请开始收尾:\
+最多再做一次必要的工具调用,然后用文字给出结论——做了什么、改了哪些文件、没做完的部分与原因、建议的下一步。";
+const LAST_TURN_NOTICE: &str = "(系统提示)这是最后一回合,本回合不提供工具。请直接用文字写出结论:\
+做了什么、改了哪些文件、没做完的部分与原因、建议的下一步。";
+
 /// 同一回合因限流最多尝试几次(含第一次)。
 pub const RATE_LIMIT_ATTEMPTS: usize = 4;
 /// 限流退避的基准:第 n 次等 基准 × n(与 Retry-After 取较大者),封顶 [`RATE_LIMIT_MAX_WAIT`]。
@@ -554,6 +561,9 @@ pub async fn run_task_at(
     let mut total_prompt: u64 = 0;
     let mut total_completion: u64 = 0;
     let mut final_text = String::new();
+    // 撞上限时用来交代"最后在做什么":最后一回合的文字与它想调的工具
+    let mut last_text = String::new();
+    let mut last_tools: Vec<String> = Vec::new();
 
     // P5:有变更就提合入申请。Runner 只申请,绝不自行合入。
     //
@@ -612,13 +622,23 @@ pub async fn run_task_at(
     };
 
     for turn in 1..=cfg.max_turns {
+        // 回合预算(见模块文档第 10 条):本回合之后还剩几回合
+        let remaining = cfg.max_turns - turn;
+        let last_turn = remaining == 0 && cfg.max_turns >= 2;
+        if remaining == 1 && cfg.max_turns >= 3 {
+            messages.push(ChatMessage::user(WRAP_UP_NOTICE));
+            on_event(RunnerEvent::Notice { text: format!("回合预算:还剩 2 回合(上限 {}),已提醒收尾", cfg.max_turns) });
+        } else if last_turn {
+            messages.push(ChatMessage::user(LAST_TURN_NOTICE));
+            on_event(RunnerEvent::Notice { text: format!("回合预算:最后一回合(上限 {}),本回合不提供工具,只收结论", cfg.max_turns) });
+        }
         let mut attempt = 0usize;
         let (text, tool_calls) = loop {
             attempt += 1;
             let req = ChatRequest {
                 messages: messages.clone(),
-                tools: specs.clone(),
-                tool_choice: Some(ToolChoice::Auto),
+                tools: if last_turn { Vec::new() } else { specs.clone() },
+                tool_choice: if last_turn { None } else { Some(ToolChoice::Auto) },
                 run_id: Some(spec.run_id.clone()),
                 ..Default::default()
             };
@@ -773,6 +793,13 @@ pub async fn run_task_at(
             });
         }
 
+        // 最后一回合没给工具还硬调:不执行(结果没人看得到),按到达上限收尾
+        last_text = text.clone();
+        last_tools = tool_calls.iter().map(|c| c.name.clone()).collect();
+        if last_turn {
+            break;
+        }
+
         // 有工具调用:执行并回传,进入下一回合。
         messages.push(ChatMessage {
             role: Role::Assistant,
@@ -812,6 +839,16 @@ pub async fn run_task_at(
         }
     }
 
+    // 撞上限也要交代:有文字就用文字,没有就说明最后在做什么——不能回空串
+    final_text = if !last_text.trim().is_empty() {
+        last_text
+    } else {
+        format!(
+            "(到达 {} 回合上限,没来得及写结论;最后一回合想调用的工具:{})",
+            cfg.max_turns,
+            if last_tools.is_empty() { "无".to_string() } else { last_tools.join("、") }
+        )
+    };
     let (diff, branch) = take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
     propose(&diff, worktree.as_ref(), "max_turns", &mut on_event)?;
     finish_failed(audit, "max_turns", &started, &append)?;

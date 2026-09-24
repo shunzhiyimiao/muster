@@ -507,57 +507,72 @@ impl ToolSet {
         text
     }
 
+    /// 在一个文件里找包含 `pattern` 的行,命中追加到 `hits`(带 `路径:行号:`),到 GREP_CAP 为止。
+    fn grep_file(&self, path: &std::path::Path, pattern: &str, hits: &mut Vec<String>) {
+        let Ok(bytes) = std::fs::read(path) else { return };
+        let text = String::from_utf8_lossy(&bytes);
+        for (ln, line) in text.lines().enumerate() {
+            if hits.len() >= GREP_CAP {
+                break;
+            }
+            if line.contains(pattern) {
+                let rel_path = path.strip_prefix(&self.workspace).unwrap_or(path);
+                let mut shown: String = line.trim().chars().take(200).collect();
+                if line.trim().chars().count() > 200 {
+                    shown.push('…');
+                }
+                // 分隔符一律用 `/`:这些路径要进提示词,模型还会原样传回来。
+                // 让同一个仓库在 Windows 上显示成 `sub\a.rs`、在别处显示成
+                // `sub/a.rs`,等于给模型两套路径写法。Windows 也吃 `/`。
+                let shown_path = rel_path.to_string_lossy().replace('\\', "/");
+                hits.push(format!("{shown_path}:{}: {shown}", ln + 1));
+            }
+        }
+    }
+
     fn grep(&self, pattern: &str, rel: &str) -> String {
         let root = match self.resolve(rel) {
             Ok(p) => p,
             Err(e) => return e,
         };
         let mut hits = Vec::new();
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
-            if hits.len() >= GREP_CAP {
-                break;
+        // 路径指向单个文件:就搜这个文件。此前只会 read_dir,对文件一律答"未找到"——
+        // 模型按常识传了文件路径,得到的是一个错误的否定答案,还会信以为真,
+        // 真机上一次委派为此白白烧掉十几个回合
+        if root.is_file() {
+            if root.metadata().map(|m| m.len() > GREP_FILE_CAP_BYTES).unwrap_or(true) {
+                return format!("文件超过 {GREP_FILE_CAP_BYTES} 字节,grep 不搜它;请用 read_file 分段读");
             }
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-            entries.sort_by_key(|e| e.file_name());
-            for entry in entries {
+            self.grep_file(&root, pattern, &mut hits);
+        } else {
+            let mut stack = vec![root];
+            while let Some(dir) = stack.pop() {
                 if hits.len() >= GREP_CAP {
                     break;
                 }
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let Ok(ft) = entry.file_type() else { continue };
-                if ft.is_dir() {
-                    if !SKIP_DIRS.contains(&name.as_str()) {
-                        stack.push(path);
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+                entries.sort_by_key(|e| e.file_name());
+                for entry in entries {
+                    if hits.len() >= GREP_CAP {
+                        break;
                     }
-                    continue;
-                }
-                if !ft.is_file() {
-                    continue;
-                }
-                if entry.metadata().map(|m| m.len() > GREP_FILE_CAP_BYTES).unwrap_or(true) {
-                    continue;
-                }
-                let Ok(bytes) = std::fs::read(&path) else { continue };
-                let text = String::from_utf8_lossy(&bytes);
-                for (ln, line) in text.lines().enumerate() {
-                    if line.contains(pattern) {
-                        let rel_path = path.strip_prefix(&self.workspace).unwrap_or(&path);
-                        let mut shown: String = line.trim().chars().take(200).collect();
-                        if line.trim().chars().count() > 200 {
-                            shown.push('…');
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_dir() {
+                        if !SKIP_DIRS.contains(&name.as_str()) {
+                            stack.push(path);
                         }
-                        // 分隔符一律用 `/`:这些路径要进提示词,模型还会原样传回来。
-                        // 让同一个仓库在 Windows 上显示成 `sub\a.rs`、在别处显示成
-                        // `sub/a.rs`,等于给模型两套路径写法。Windows 也吃 `/`。
-                        let shown_path = rel_path.to_string_lossy().replace('\\', "/");
-                        hits.push(format!("{shown_path}:{}: {shown}", ln + 1));
-                        if hits.len() >= GREP_CAP {
-                            break;
-                        }
+                        continue;
                     }
+                    if !ft.is_file() {
+                        continue;
+                    }
+                    if entry.metadata().map(|m| m.len() > GREP_FILE_CAP_BYTES).unwrap_or(true) {
+                        continue;
+                    }
+                    self.grep_file(&path, pattern, &mut hits);
                 }
             }
         }
@@ -596,6 +611,18 @@ mod tests {
         assert!(rf.contains("你好,Muster"), "{rf}");
         let gr = t.execute("grep", r#"{"pattern":"needle"}"#);
         assert!(gr.contains("hello.txt:2") && gr.contains("sub/a.rs:1"), "{gr}");
+    }
+
+    /// grep 的 path 是文件时搜这个文件:此前一律"未找到",模型信以为真。
+    #[test]
+    fn grep_accepts_a_file_path() {
+        let (_d, t) = ws();
+        let one = t.execute("grep", r#"{"pattern":"needle","path":"sub/a.rs"}"#);
+        assert!(one.contains("sub/a.rs:1") && !one.contains("hello.txt"), "{one}");
+        let none = t.execute("grep", r#"{"pattern":"needle","path":"sub/nope.rs"}"#);
+        assert!(!none.contains("sub/a.rs"), "不存在的文件不该命中:{none}");
+        let miss = t.execute("grep", r#"{"pattern":"absent","path":"hello.txt"}"#);
+        assert!(miss.contains("未找到"), "{miss}");
     }
 
     /// 带根路径的判定,**逐平台列举**。

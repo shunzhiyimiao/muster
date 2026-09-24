@@ -2041,7 +2041,7 @@ async fn run_workspace_task(
             workspace: ws_slot.clone(),
             skills: all_skills,
             default_provider: Some(agent.model.clone().unwrap_or_else(|| "kimi".into())),
-            max_turns: 12,
+            max_turns: 24,
             on_event: Arc::new(move |ev| forward_runner_event(&a2, &rid2, &chan2, &tr2, ev)),
         };
         cfg.extra_tools.push(muster_roster::delegate::DelegateTool::new(ctx).into_extra_tool());
@@ -2754,7 +2754,7 @@ fn runner_cfg_for(agent: &muster_roster::AgentSpec, skills: Vec<muster_skill::Sk
         command_policy: agent.commands.as_ref().map(|c| CommandPolicy::with_allow(c.clone())),
         capabilities_hash: Some(agent.capabilities_hash.clone()),
         // 看代码 + 委派 + 复核,比一次纯改动多几轮;真机 8 轮不够用
-        max_turns: 12,
+        max_turns: 24,
         ..Default::default()
     }
 }
