@@ -2576,6 +2576,8 @@ fn runner_cfg_for(agent: &muster_roster::AgentSpec, skills: Vec<muster_skill::Sk
         skills,
         command_policy: agent.commands.as_ref().map(|c| CommandPolicy::with_allow(c.clone())),
         capabilities_hash: Some(agent.capabilities_hash.clone()),
+        // 看代码 + 委派 + 复核,比一次纯改动多几轮;真机 8 轮不够用
+        max_turns: 12,
         ..Default::default()
     }
 }
