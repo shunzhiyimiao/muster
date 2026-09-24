@@ -4,9 +4,11 @@
 //! 一次;再失败即 `run.finish(Failed)`。绝不换落点——链的合法性在 resolve
 //! 时已定,换落点=重新决策,那是新任务。
 //!
-//! 例外是**限流**(429):它不是故障而是配额,立刻重试只会再撞一次。限流时按
-//! provider 给的 Retry-After(没给则 20 秒,封顶 60 秒)等一等再试,最多
-//! [`RATE_LIMIT_ATTEMPTS`] 次;等待期间发 Notice,让人知道是在排队不是卡死。
+//! 例外是**限流**(429):它不是故障而是配额,立刻重试只会再撞一次。限流时等一等再试,
+//! 最多 [`RATE_LIMIT_ATTEMPTS`] 次;等待期间发 Notice,让人知道是在排队不是卡死。
+//! 等多久:取 provider 给的 Retry-After 与「基准 × 第几次」中的**较大者**,封顶 60 秒。
+//! 真机撞见 Moonshot 的 Retry-After 恒为 1 秒而配额按分钟算——照它说的等,四次全撞在
+//! 同一个窗口里。所以 Retry-After 只当下限,不当答案。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -39,9 +41,9 @@ pub struct WorkspaceOverride {
 
 /// 同一回合因限流最多尝试几次(含第一次)。
 pub const RATE_LIMIT_ATTEMPTS: usize = 4;
-/// provider 没给 Retry-After 时的等待。
-const RATE_LIMIT_DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
-const RATE_LIMIT_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 限流退避的基准:第 n 次等 基准 × n(与 Retry-After 取较大者),封顶 [`RATE_LIMIT_MAX_WAIT`]。
+pub const RATE_LIMIT_BASE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+pub const RATE_LIMIT_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
@@ -64,6 +66,8 @@ pub struct RunnerConfig {
     pub capabilities_hash: Option<ContentHash>,
     /// 复用已有工作区(见 [`WorkspaceOverride`]);`None` = 正常建隔离 worktree 或直连只读。
     pub workspace_override: Option<WorkspaceOverride>,
+    /// 限流退避基准(见模块文档);测试用 mock 时调小。
+    pub rate_limit_base_wait: std::time::Duration,
 }
 
 impl Default for RunnerConfig {
@@ -81,6 +85,7 @@ impl Default for RunnerConfig {
             command_policy: None,
             capabilities_hash: None,
             workspace_override: None,
+            rate_limit_base_wait: RATE_LIMIT_BASE_WAIT,
         }
     }
 }
@@ -645,7 +650,7 @@ pub async fn run_task_at(
                             Ok(StreamEvent::Finish(_)) => {}
                             Err(e) => {
                                 if let muster_provider::ProviderError::RateLimited { retry_after } = &e {
-                                    rate_limited = Some(retry_after.unwrap_or(RATE_LIMIT_DEFAULT_WAIT).min(RATE_LIMIT_MAX_WAIT));
+                                    rate_limited = Some(retry_after.unwrap_or(std::time::Duration::ZERO));
                                 }
                                 retryable_err = Some(e.to_string());
                                 break;
@@ -655,7 +660,7 @@ pub async fn run_task_at(
                 }
                 Err(e) => {
                     if let muster_provider::ProviderError::RateLimited { retry_after } = &e {
-                        rate_limited = Some(retry_after.unwrap_or(RATE_LIMIT_DEFAULT_WAIT).min(RATE_LIMIT_MAX_WAIT));
+                        rate_limited = Some(retry_after.unwrap_or(std::time::Duration::ZERO));
                     }
                     retryable_err = Some(e.to_string());
                 }
@@ -687,7 +692,11 @@ pub async fn run_task_at(
             match retryable_err {
                 None => break (text, acc.finish()),
                 Some(msg) if rate_limited.is_some() && attempt < RATE_LIMIT_ATTEMPTS => {
-                    let wait = rate_limited.unwrap_or(RATE_LIMIT_DEFAULT_WAIT);
+                    // Retry-After 只当下限:配额多半按分钟算,它却常常说 1 秒
+                    let wait = rate_limited
+                        .unwrap_or(std::time::Duration::ZERO)
+                        .max(cfg.rate_limit_base_wait * attempt as u32)
+                        .min(RATE_LIMIT_MAX_WAIT);
                     on_event(RunnerEvent::Notice {
                         text: format!(
                             "回合 {turn} 被限流,等 {} 秒再试(第 {attempt}/{RATE_LIMIT_ATTEMPTS} 次):{msg}",

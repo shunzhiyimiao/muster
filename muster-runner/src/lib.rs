@@ -85,7 +85,7 @@ pub use capsule::{
 };
 pub use runner::{
     run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec, WorkspaceOverride,
-    RATE_LIMIT_ATTEMPTS,
+    RATE_LIMIT_ATTEMPTS, RATE_LIMIT_BASE_WAIT, RATE_LIMIT_MAX_WAIT,
 };
 pub use command::CommandPolicy;
 pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};
