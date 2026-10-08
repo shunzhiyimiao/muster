@@ -37,11 +37,14 @@
 构造经 `EventBody::route_refuse` 单一出处) / `approval.request`(记「申请
 能力 vs 工牌能力」差值) / `approval.decision` / `badge.update` /
 `policy.update` / `session.lock.raise`(E3 棘轮抬升,记污染发生的**瞬间**) /
-`drill.start` / `drill.end`。
+`drill.start` / `drill.end` / 会议线七条(2026-10-08,muster-server 写入服务端链):
+`meeting.start`(标题只留哈希,带密级) / `meeting.join`(入会票给了什么:能否开麦、能否录) /
+`meeting.leave` / `meeting.end`(时长与行数) / `meeting.transcript`(**每行纪要只记哈希**,
+正文在 PostgreSQL 正文侧) / `meeting.level.raise`(只升不降) / `meeting.agent`(请 Agent 进会 = 音频开始被转写)。
 
 v1.x 预留(占位注释在 `lib.rs`,零成本):`capsule.forge/verify/adopt`、
 `session.stream.start`、`stream.viewer.join`、`session.stream.stop`、
-`share.block`、`convo.share`、`meeting.transcribe`。
+`share.block`、`convo.share`(`meeting.transcribe` 已落地为上面的会议线七条)。
 
 ## Capsule-ready 检查单(新事件类型上线前必过)
 

@@ -431,6 +431,50 @@ pub enum EventBody {
         verified_before_break: u64,
     },
 
+    /// 会议开始(muster-server)。会议音频是全系统密级最高的数据流,它的源头
+    /// 什么时候存在、在哪个频道、什么密级,必须留痕;标题是正文,只留哈希。
+    #[serde(rename = "meeting.start")]
+    MeetingStart {
+        meeting_id: String,
+        channel_id: String,
+        title_hash: ContentHash,
+        level: Sensitivity,
+    },
+
+    /// 有人入会。记的是服务端发出的入会票**说了什么**:能不能开麦、能不能录——
+    /// 两者都由权限内核与会议密级共同判出,事后要能回答"谁拿到过录制权"。
+    #[serde(rename = "meeting.join")]
+    MeetingJoin { meeting_id: String, can_publish: bool, can_record: bool },
+
+    /// 有人离会(客户端主动报告)。掉线不会报,所以"没有 leave"不等于"还在"。
+    #[serde(rename = "meeting.leave")]
+    MeetingLeave { meeting_id: String },
+
+    /// 会议结束。时长与纪要行数是统计口径,不是正文。
+    #[serde(rename = "meeting.end")]
+    MeetingEnd { meeting_id: String, duration_ms: u64, transcript_lines: u64 },
+
+    /// 一行纪要落库。正文在服务端的正文存储侧(PostgreSQL),这里只有哈希——
+    /// 与 `model.call` 的 request_hash 同一姿态:事后能验"纪要有没有被改过",
+    /// 却读不出说了什么。`speaker_id` 是账号 id,属元数据。
+    #[serde(rename = "meeting.transcript")]
+    MeetingTranscript { meeting_id: String, speaker_id: String, text_hash: ContentHash },
+
+    /// 会议密级抬升:只升不降,与 `session.lock.raise` 同一语义,主体换成会议。
+    /// 抬升理由(共享了什么)可能带正文,只留哈希。
+    #[serde(rename = "meeting.level.raise")]
+    MeetingLevelRaise {
+        meeting_id: String,
+        from_level: Sensitivity,
+        to_level: Sensitivity,
+        cause_hash: ContentHash,
+    },
+
+    /// 请 Agent 进会 / 请它离开。Agent 进会意味着**音频开始被转写**——
+    /// 这是治理事项,与把一张工牌引入频道(`channel.roster`)同一待遇。
+    #[serde(rename = "meeting.agent")]
+    MeetingAgent { meeting_id: String, wanted: bool },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -471,6 +515,13 @@ impl EventBody {
             EventBody::TranscriptPurge { .. } => "transcript.purge",
             EventBody::TranscriptExport { .. } => "transcript.export",
             EventBody::AuditArchived { .. } => "audit.archived",
+            EventBody::MeetingStart { .. } => "meeting.start",
+            EventBody::MeetingJoin { .. } => "meeting.join",
+            EventBody::MeetingLeave { .. } => "meeting.leave",
+            EventBody::MeetingEnd { .. } => "meeting.end",
+            EventBody::MeetingTranscript { .. } => "meeting.transcript",
+            EventBody::MeetingLevelRaise { .. } => "meeting.level.raise",
+            EventBody::MeetingAgent { .. } => "meeting.agent",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }

@@ -32,17 +32,22 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
 
     let chan_routes = Router::new()
         .route("/channels/:cid/messages", get(message::list).post(message::post))
+        // C2:实时通道只有 SSE 这一条。WebSocket 的 /ws 已删——两条实时通道
+        // 并存久了,就会有人只修其中一条。
+        .route("/events", get(events::handler))
+        .with_state(with_hub);
+
+    // 会议:每个改变状态的接口都先落服务端审计链再动库(见 meeting.rs 模块文档)
+    let meeting_routes = Router::new()
         .route("/channels/:cid/meetings", get(meeting::list).post(meeting::start))
         .route("/meetings/:mid/join", post(meeting::join))
+        .route("/meetings/:mid/leave", post(meeting::leave))
         .route("/meetings/:mid/transcript", get(meeting::transcript).post(meeting::add_transcript))
         .route("/meetings/:mid/level", post(meeting::raise_level))
         .route("/meetings/:mid/end", post(meeting::end))
         .route("/meetings/:mid/agent", post(meeting::set_wants_agent))
         .route("/meetings/agent-wanted", get(meeting::agent_wanted))
-        // C2:实时通道只有 SSE 这一条。WebSocket 的 /ws 已删——两条实时通道
-        // 并存久了,就会有人只修其中一条。
-        .route("/events", get(events::handler))
-        .with_state(with_hub);
+        .with_state((db.clone(), hub.clone(), audit.clone()));
 
     // 行动项:提案由 Agent 落,**确认必须由人**——见 action.rs 的模块文档
     let action_routes = Router::new()
@@ -61,6 +66,7 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/app.js", get(web_app_js))
         .merge(auth_routes)
         .merge(chan_routes)
+        .merge(meeting_routes)
         .merge(action_routes)
         .layer(axum::Extension(std::sync::Arc::new(LoginLimiter::new())))
         .layer(cors())

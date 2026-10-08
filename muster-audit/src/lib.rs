@@ -43,7 +43,10 @@
 //! (`command.run` 已随 B2 落地,不再是预留;被拒的命令同样入链)、
 //! `session.stream.start` / `stream.viewer.join` / `session.stream.stop`、
 //! (`session.lock.raise` 已随 E3 于 v1 落地,不再是预留)、
-//! `share.block`(密级拦截)、`convo.share`、`meeting.transcribe`。
+//! `share.block`(密级拦截)、`convo.share`、
+//! (`meeting.transcribe` 已于 2026-10-08 随会议线落地为 `meeting.start` / `meeting.join` /
+//! `meeting.leave` / `meeting.end` / `meeting.transcript`(只记哈希)/ `meeting.level.raise` /
+//! `meeting.agent`,由 muster-server 写入服务端自己的链,不再是预留)。
 //! 上线任一类型前,先过 README 的「Capsule-ready 检查单」。
 
 pub mod event;

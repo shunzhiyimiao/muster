@@ -33,6 +33,17 @@ pub enum Push {
     /// 提案不广播的话,**会上说完那句话,界面上什么都不会发生**——
     /// 人会以为 Agent 没听见,于是再说一遍,于是多出一条重复的待批项。
     ActionItem(crate::action::ActionItemOut),
+    /// 会议本身的状态变化:`started` / `ended` / `agent`(请了 Agent 或请它离开)/
+    /// `level`(密级抬升)。大厅与侧栏徽标据此重拉,正在会里的人据此知道"会被结束了",
+    /// agent-daemon 据此**立刻**认领而不是等下一轮轮询。
+    Meeting {
+        meeting_id: String,
+        channel_id: String,
+        event: String,
+        title: String,
+        level: String,
+        wants_agent: bool,
+    },
 }
 
 #[derive(Clone, Default)]
