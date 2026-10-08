@@ -45,8 +45,8 @@ cargo run -p muster-eval -- --list
 ## 许可与第三方组件
 
 第三方依赖清单与许可证记录见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)
-(`cargo metadata` 生成,依赖变更后需重新生成)。Codex fork 遵循 Apache-2.0,
-义务落实见 `../muster-codex/NOTICE` 与 `FORK.md`。
+(`cargo metadata` 生成,依赖变更后需重新生成)。同级目录 `../muster-codex` 是 openai/codex 的只读参考快照
+(未修改、不随 Muster 分发,因此没有 Apache-2.0 §4(b) 的修改声明义务);日后若引入其代码,按 THIRD-PARTY-NOTICES 流程登记。
 
 Muster 自身采用 **AGPL-3.0-or-later**(2026-09-23 定,全文见根目录 `LICENSE`):自托管部署
 与内部修改不受影响;把修改版作为网络服务提供给他人时,须向使用者提供对应源码(§13)。
@@ -61,5 +61,5 @@ Muster 自带运行时(muster-runner),**不以 Codex 为执行器**;从 Codex �
 SKILL.md 技能格式(仓库级 `.agents/skills/` 与 Codex 同一份文件)、Responses 线协议(经 muster-gateway
 让只讲 Responses 的 Codex 用上 chat 系模型;经网关的流量同样过密级路由并落审计链)、会话分叉语义,并按同一规则读仓库根的 AGENTS.md
 (`AGENTS.override.md` 优先,32 KiB 预算)。个人技能也兼读 Codex 的 `~/.agents/skills`;命令执行的出网闸照它 network-proxy 的形态实现(回环代理 + 白名单 + 逐连接记账,不链接其代码)。
-下一步:进程级沙箱(sandbox-exec / netns)把出网只放给代理端口。同级目录 `../muster-codex` 是零代码改动的参考 fork,去留待定。
+下一步:进程级沙箱(sandbox-exec / netns)把出网只放给代理端口。同级目录 `../muster-codex` 是固定在 rust-v0.161.0 的只读参考快照,2026-10-08 起不再是 fork(原 FORK.md 存档在 `docs/history/`)。
 这一定位在 2026-10-08 的吻合度评审后确定(路 B),见 `docs/评审-与Codex吻合度-2026-10-08.md`。
