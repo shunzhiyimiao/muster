@@ -20,13 +20,25 @@
 //! cargo run -p muster-meeting-agent --features livekit --example daemon
 //! ```
 //!
+//! ## 推送为主,轮询兜底(2026-10-08 起)
+//!
+//! 订着服务端的 SSE(`/events`):`meeting` 事件(建会 / 请 Agent / 结束)一到,
+//! 主循环立刻去服务端对一次账——该进的进、该退的退。所以点了按钮通常一秒内它就进来。
+//! SSE 断了、漏了,每 30 秒的兜底对账也会把事情捞回来;推送只是加速器,不是唯一通道。
+//!
+//! 对账是**双向**的:不再被请的会议(散会了、或有人请它离开)会被叫停——先退出房间,
+//! **再做散会提炼**(行动项提案),然后任务结束。不等 LiveKit 房间自己散:Agent 自己就是
+//! 参会者,它不走房间永远不空,以前的"散会提炼"实际上只有 Ctrl-C 才会触发。
+//! 叫停 60 秒还没收尾完的任务才 abort。
+//!
 //! ## 诚实边界
 //!
-//! - **轮询,不是推送**:间隔 5 秒,所以点了按钮最多等 5 秒它才进来。
-//!   服务端已有 SSE,换成订阅是后续的事;当前这样简单且不会漏。
-//! - 单进程:所有会议在同一个进程里跑,一场会拖垮进程会连累别的会。
+//! - 单进程:所有会议在同一个进程里跑(每会一个 tokio 任务),一场会 panic 不会连累别的会,
+//!   但 CPU 与内存是共享的。
+//! - 令牌 12 小时过期:对账遇到 401 会自动重登;**已经在会里的任务**用的是入会时的令牌,
+//!   一场超过 12 小时的会,它回传纪要会开始失败。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,11 +50,27 @@ use muster_provider::{ProviderRegistry, SpeechCompatProvider, SpeechConfig, Spee
 use muster_route::{OrgPolicy, Router, Sensitivity, SpeechRouter};
 use tokio::sync::Mutex;
 
-const POLL: Duration = Duration::from_secs(5);
+/// 兜底对账间隔。平时靠推送叫醒,这个只管"推送漏了"的情况。
+const POLL: Duration = Duration::from_secs(30);
+/// 查询失败后的重试间隔。
+const RETRY: Duration = Duration::from_secs(5);
+/// 叫停一场会后,给它退出房间 + 散会提炼的时间;超过就 abort。
+const STOP_GRACE: Duration = Duration::from_secs(60);
+
+/// 正在服务的一场会。
+struct Served {
+    handle: tokio::task::JoinHandle<()>,
+    /// 叫停信号:退出房间、做散会提炼、任务结束
+    stop: Arc<tokio::sync::Notify>,
+    stop_requested: Option<std::time::Instant>,
+}
 
 struct Cfg {
     server: String,
-    token: String,
+    /// 可换:令牌 12 小时过期,对账遇到 401 就重登一次。
+    token: tokio::sync::RwLock<String>,
+    account: String,
+    password: String,
     stt_url: String,
     stt_model: Option<String>,
     stt_prompt: Option<String>,
@@ -69,7 +97,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("MUSTER_PASSWORD").map_err(|_| "需要 MUSTER_PASSWORD")?,
     );
     let cfg = Arc::new(Cfg {
-        token: login(&http, &server, &acct, &pw).await?,
+        token: tokio::sync::RwLock::new(login(&http, &server, &acct, &pw).await?),
+        account: acct.clone(),
+        password: pw,
         server: server.clone(),
         stt_url: std::env::var("MUSTER_STT_URL")
             .unwrap_or_else(|_| "http://localhost:9000/v1".into()),
@@ -89,28 +119,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  作答 {}",
         if cfg.provider_config.is_some() { "已启用" } else { "未启用(只转写)" }
     );
-    println!("  每 {}s 查一次谁请了 Agent\n", POLL.as_secs());
+    println!("  订阅服务端推送,{}s 兜底对账一次\n", POLL.as_secs());
 
-    let mut joined: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    // 推送一到就叫醒主循环;Notify 会存下一个许可,主循环正忙时也不会漏
+    let wake = Arc::new(tokio::sync::Notify::new());
+    tokio::spawn(subscribe_pushes(http.clone(), cfg.clone(), wake.clone()));
+
+    let mut joined: HashMap<String, Served> = HashMap::new();
     loop {
-        // 令牌过期就重登。守护进程活得比令牌久,这是常态不是异常。
-        let wanted = match wanted_meetings(&http, &cfg.server, &cfg.token).await {
+        let wanted = match wanted_meetings(&http, &cfg).await {
             Ok(v) => v,
-            Err(e) => {
+            Err(Fetch::Unauthorized) => {
+                // 令牌过期就重登。守护进程活得比令牌久,这是常态不是异常。
+                match login(&http, &cfg.server, &cfg.account, &cfg.password).await {
+                    Ok(t) => {
+                        *cfg.token.write().await = t;
+                        tracing::info!("令牌已过期,重新登录成功");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "重新登录失败,稍后重试");
+                        tokio::time::sleep(RETRY).await;
+                    }
+                }
+                continue;
+            }
+            Err(Fetch::Other(e)) => {
                 tracing::warn!(error = %e, "查询失败,稍后重试");
-                tokio::time::sleep(POLL).await;
+                tokio::time::sleep(RETRY).await;
                 continue;
             }
         };
+        let wanted_ids: HashSet<String> =
+            wanted.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect();
 
-        // 已结束或被请离的:任务自己会退出,这里清掉句柄
-        joined.retain(|id, h| {
-            if h.is_finished() {
+        // 对账:自己退出的清句柄;不再被请的(散会 / 被请离)叫停——退出房间、做散会提炼;
+        // 叫停太久还没收尾完的才 abort
+        joined.retain(|id, s| {
+            if s.handle.is_finished() {
                 tracing::info!(meeting = %id, "已退出该会议");
-                false
-            } else {
-                true
+                return false;
             }
+            if !wanted_ids.contains(id) {
+                match s.stop_requested {
+                    None => {
+                        s.stop.notify_one();
+                        s.stop_requested = Some(std::time::Instant::now());
+                        tracing::info!(meeting = %id, "会议已结束或被请离,正在退出该会议");
+                    }
+                    Some(at) if at.elapsed() > STOP_GRACE => {
+                        s.handle.abort();
+                        tracing::warn!(meeting = %id, "收尾超时,强制退出该会议");
+                        return false;
+                    }
+                    Some(_) => {}
+                }
+            }
+            true
         });
 
         for m in wanted {
@@ -121,9 +185,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let title = m["title"].as_str().unwrap_or("").to_string();
             tracing::info!(meeting = %id, %title, "被请去开会");
             let c = cfg.clone();
-            joined.insert(id.clone(), tokio::spawn(async move { serve_meeting(c, id).await }));
+            let stop = Arc::new(tokio::sync::Notify::new());
+            let (id2, stop2) = (id.clone(), stop.clone());
+            joined.insert(
+                id,
+                Served {
+                    handle: tokio::spawn(async move { serve_meeting(c, id2, stop2).await }),
+                    stop,
+                    stop_requested: None,
+                },
+            );
         }
-        tokio::time::sleep(POLL).await;
+
+        // 等推送;POLL 内没动静就兜底对账一次
+        tokio::select! {
+            _ = wake.notified() => {}
+            _ = tokio::time::sleep(POLL) => {}
+        }
+    }
+}
+
+/// 订服务端的 SSE,`meeting` 事件一到就叫醒主循环。断了退避重连;
+/// 这条流只是加速器——漏一条也有兜底对账,所以这里不做任何状态判断,只负责叫醒。
+async fn subscribe_pushes(http: reqwest::Client, cfg: Arc<Cfg>, wake: Arc<tokio::sync::Notify>) {
+    use futures::StreamExt;
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let url = format!("{}/events?token={}", cfg.server, cfg.token.read().await);
+        let resp = match http.get(&url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), "订阅推送被拒,{}s 后重试", backoff.as_secs());
+                if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    // 令牌过期:叫醒主循环去重登,下一轮再用新令牌订
+                    wake.notify_one();
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "订阅推送失败,{}s 后重试", backoff.as_secs());
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        tracing::info!("已订阅服务端推送");
+        backoff = Duration::from_secs(1);
+
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        while let Some(chunk) = stream.next().await {
+            let Ok(chunk) = chunk else { break };
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(pos) = buf.find("\n\n") {
+                let frame: String = buf.drain(..pos + 2).collect();
+                let data: Vec<&str> =
+                    frame.lines().filter_map(|l| l.strip_prefix("data:")).map(str::trim).collect();
+                if data.is_empty() {
+                    continue; // keep-alive 注释行
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data.join("\n")) {
+                    if v["type"] == "meeting" {
+                        tracing::debug!(event = %v["event"], meeting = %v["meeting_id"], "收到会议推送");
+                        wake.notify_one();
+                    }
+                }
+            }
+        }
+        tracing::warn!("推送流断开,重连");
     }
 }
 
@@ -135,10 +266,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// (桌面壳那边更严:拿不到就不算连上。区别在于桌面壳前面坐着一个人,
 /// 他能立刻看见并决定重试;守护进程没有。)
-async fn fetch_catalog(http: &reqwest::Client, cfg: &Cfg) -> Option<serde_json::Value> {
+async fn fetch_catalog(http: &reqwest::Client, cfg: &Cfg, token: &str) -> Option<serde_json::Value> {
     let r = http
         .get(format!("{}/providers/catalog", cfg.server))
-        .bearer_auth(&cfg.token)
+        .bearer_auth(token)
         .send()
         .await
         .ok()?;
@@ -177,35 +308,47 @@ async fn login(
         .ok_or_else(|| format!("登录失败:{}", v["error"].as_str().unwrap_or("未知原因")))
 }
 
-async fn wanted_meetings(
-    http: &reqwest::Client,
-    server: &str,
-    token: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    let r = http
-        .get(format!("{server}/meetings/agent-wanted"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !r.status().is_success() {
-        return Err(format!("HTTP {}", r.status()));
-    }
-    r.json().await.map_err(|e| e.to_string())
+/// 查询失败的两类:令牌不认了(要重登)/ 别的(稍后重试)。
+enum Fetch {
+    Unauthorized,
+    Other(String),
 }
 
-/// 在一场会里干活,直到房间断开或被请离。
-async fn serve_meeting(cfg: Arc<Cfg>, meeting: String) {
-    if let Err(e) = serve_inner(cfg, &meeting).await {
+async fn wanted_meetings(http: &reqwest::Client, cfg: &Cfg) -> Result<Vec<serde_json::Value>, Fetch> {
+    let token = cfg.token.read().await.clone();
+    let r = http
+        .get(format!("{}/meetings/agent-wanted", cfg.server))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| Fetch::Other(e.to_string()))?;
+    if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Fetch::Unauthorized);
+    }
+    if !r.status().is_success() {
+        return Err(Fetch::Other(format!("HTTP {}", r.status())));
+    }
+    r.json().await.map_err(|e| Fetch::Other(e.to_string()))
+}
+
+/// 在一场会里干活,直到房间断开或被叫停(散会 / 被请离)。
+async fn serve_meeting(cfg: Arc<Cfg>, meeting: String, stop: Arc<tokio::sync::Notify>) {
+    if let Err(e) = serve_inner(cfg, &meeting, stop).await {
         tracing::warn!(meeting = %meeting, error = %e, "这场会没能服务");
     }
 }
 
-async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_inner(
+    cfg: Arc<Cfg>,
+    meeting: &str,
+    stop: Arc<tokio::sync::Notify>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
+    // 这场会全程用入会这一刻的令牌(12 小时有效,够一场会)
+    let tok = cfg.token.read().await.clone();
     let join: serde_json::Value = http
         .post(format!("{}/meetings/{meeting}/join", cfg.server))
-        .bearer_auth(&cfg.token)
+        .bearer_auth(&tok)
         .send()
         .await?
         .json()
@@ -228,7 +371,7 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
         scfg.model = m.clone();
     }
     let stt: Arc<dyn SpeechProvider> = Arc::new(SpeechCompatProvider::new("whisper", scfg)?);
-    let sink = Arc::new(HttpSink::new(&cfg.server, &cfg.token, meeting));
+    let sink = Arc::new(HttpSink::new(&cfg.server, &tok, meeting));
     let mut pipeline =
         Pipeline::new(Arc::new(SpeechRouter::new(vec![stt])), sink.clone()).with_language("zh");
     if let Some(p) = &cfg.stt_prompt {
@@ -244,7 +387,7 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
     //
     // 本地那份 TOML 只在服务端没有目录时兜底,而且会告警:决定 restricted
     // 内容能不能出门的 `locality`,不该由跑模型的这台机器自己声明。
-    let toml_from_server = fetch_catalog(&http, &cfg).await;
+    let toml_from_server = fetch_catalog(&http, &cfg, &tok).await;
     let (answerer, extractor) = match (&toml_from_server, &cfg.provider_config) {
         (Some(_), _) | (None, Some(_)) => {
             let reg = match &toml_from_server {
@@ -272,7 +415,7 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
     let ctx = Arc::new(Mutex::new(Context::default()));
     if let Ok(r) = http
         .get(format!("{}/meetings/{meeting}/transcript", cfg.server))
-        .bearer_auth(&cfg.token)
+        .bearer_auth(&tok)
         .send()
         .await
     {
@@ -294,7 +437,7 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
     let name = cfg.agent_name.clone();
     let ex_live = extractor.clone();
 
-    room::run(&lk_url, &lk_token, ChunkConfig::default(), EnergyGate::default(), move |u| {
+    let in_room = room::run(&lk_url, &lk_token, ChunkConfig::default(), EnergyGate::default(), move |u| {
         let (p, pol, ctx, ans, sink, name, ex) = (
             pipeline.clone(),
             policy.clone(),
@@ -359,8 +502,14 @@ async fn serve_inner(cfg: Arc<Cfg>, meeting: &str) -> Result<(), Box<dyn std::er
                 }
             }
         }
-    })
-    .await?;
+    });
+    // 被叫停就放下房间(drop 即断开),然后照常做散会提炼——结论往往在最后
+    tokio::select! {
+        r = in_room => r?,
+        _ = stop.notified() => {
+            tracing::info!(meeting = %meeting, "被叫停,退出房间");
+        }
+    }
 
     // 散会提炼:提案,确认归人
     if let Some(ex) = extractor {

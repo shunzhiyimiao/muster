@@ -26,7 +26,8 @@ async-trait = "0.1"
 # 详见 docs/A1-livekit-探针结论.md。**不要改成跟 main**:上游随时会再次失配。
 livekit = { git = "https://github.com/livekit/rust-sdks", rev = "00258d1e52e563327f3ed75807ea03a189a5c2d2", default-features = false, features = ["tokio", "native-tls"], optional = true }
 futures = { version = "0.3", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# stream:daemon 订服务端 SSE 用(推送到了立刻认领,不等轮询)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 [features]
 default = []
