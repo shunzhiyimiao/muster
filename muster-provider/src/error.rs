@@ -22,6 +22,11 @@ pub enum ProviderError {
     #[error("rate limited by provider")]
     RateLimited { retry_after: Option<Duration> },
 
+    /// 429 的另一种:配额用尽 / 余额不足 / 账户暂停。与限流同一个状态码,但等多久都
+    /// 不会好,重试只是在烧时间。必须立刻、响亮地告诉人去充值或换 provider。
+    #[error("provider quota exhausted or account suspended: {0}")]
+    QuotaExhausted(String),
+
     #[error("authentication failed: {0}")]
     Auth(String),
 
@@ -59,13 +64,21 @@ impl ProviderError {
     /// operator mistakes that must surface loudly, not be papered over by a
     /// silent model downgrade.
     pub fn should_failover(&self) -> bool {
-        self.is_retryable()
+        // 配额用尽不值得对同一 provider 重试,但换到本地 provider 是正当的(只会更严,不会更松)
+        self.is_retryable() || matches!(self, Self::QuotaExhausted(_))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_exhausted_is_not_retryable_but_may_failover() {
+        let e = ProviderError::QuotaExhausted("insufficient balance".into());
+        assert!(!e.is_retryable(), "等多久都不会好,不该对同一 provider 重试");
+        assert!(e.should_failover(), "换本地 provider 是正当的");
+    }
 
     #[test]
     fn failover_matrix() {

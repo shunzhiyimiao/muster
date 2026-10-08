@@ -990,7 +990,7 @@ fn task_context(history: &[StoredMsg], roster: &muster_roster::Roster) -> Option
     let mut picked: Vec<String> = Vec::new();
     let mut chars = 0usize;
     for m in history.iter().rev() {
-        if m.role == "system" {
+        if m.role == "system" || is_workflow_record(m) {
             continue;
         }
         let body = if m.role == "user" { m.text.trim().to_string() } else { condense_for_context(&m.text) };
@@ -1024,11 +1024,28 @@ fn task_context(history: &[StoredMsg], roster: &muster_roster::Roster) -> Option
     ))
 }
 
+/// 聊天模式开流失败的提示语。配额 / 余额用尽单独说清:它不是"网络不好再试试"。
+fn stream_open_failure(e: &muster_provider::ProviderError) -> String {
+    match e {
+        muster_provider::ProviderError::QuotaExhausted(m) => {
+            format!("⛔ 模型账户配额用尽或已暂停,请充值或换一个 provider:{m}")
+        }
+        _ => format!("⚠️ 开流失败:{e}"),
+    }
+}
+
+/// 工作流的运行记录(「▶ 工作流:…」与 `WF-…` 的结果卡)是系统写进个人空间的,不是对话。
+/// 每天一张卡,几周就把真正的对话顶出窗口;失败卡尤其没有参考价值。
+fn is_workflow_record(m: &StoredMsg) -> bool {
+    m.run_id.as_deref().is_some_and(|r| r.starts_with("WF-"))
+        || (m.role == "user" && m.text.trim_start().starts_with("▶ 工作流:"))
+}
+
 fn context_window(history: &[StoredMsg], max_msgs: usize, max_chars: usize) -> Vec<&StoredMsg> {
     let mut picked: Vec<&StoredMsg> = Vec::new();
     let mut chars = 0usize;
     for m in history.iter().rev() {
-        if m.status == "failed" || m.text.trim().is_empty() {
+        if m.status == "failed" || m.text.trim().is_empty() || is_workflow_record(m) {
             continue;
         }
         if picked.len() >= max_msgs {
@@ -1699,14 +1716,14 @@ async fn send_message(
                 &thread,
                 &channel.id,
                 "agent",
-                &format!("⚠️ 开流失败:{e}"),
+                &stream_open_failure(&e),
                 Some(&run_id),
                 "failed",
             )
             .await;
             app.emit(
                 "task-failed",
-                FailPayload { run_id: run_id.clone(), channel_id: channel.id.clone(), message: format!("开流失败:{e}") },
+                FailPayload { run_id: run_id.clone(), channel_id: channel.id.clone(), message: stream_open_failure(&e) },
             )
             .ok();
             return Ok(run_id);
@@ -5194,6 +5211,20 @@ mod continuity_tests {
         assert!(!ctx.contains("已转发"), "系统消息不进上文");
         assert!(ctx.find("[用户]").unwrap() < ctx.find("[小七").unwrap(), "时间正序");
         assert!(task_context(&[], &r).is_none());
+        // 工作流记录不是对话:个人空间里每天一张卡,不能把真正的对话顶出去
+        let mut wf = h.clone();
+        for i in 0..20 {
+            wf.push(msg("user", &format!("▶ 工作流:daily-finance-brief(定时)#{i}"), None));
+            let mut card = msg("agent", "🌿 隔离工作区就绪\n⚠️ 回合 1 被限流", None);
+            card.run_id = Some(format!("WF-daily-finance-brief-2026-10-0{}", i % 9 + 1));
+            card.status = "failed".into();
+            wf.push(card);
+        }
+        let ctx = task_context(&wf, &r).unwrap();
+        assert!(ctx.contains("2. 我直接写") && !ctx.contains("工作流") && !ctx.contains("限流"), "{ctx}");
+        let chat: Vec<&StoredMsg> = context_window(&wf, CTX_MAX_MSGS, CTX_MAX_CHARS);
+        // 聊天上文一向保留系统备注(如"已转发"),所以是 2 条对话 + 1 条系统备注
+        assert!(chat.iter().all(|m| !is_workflow_record(m)) && chat.len() == 3, "聊天上文同样跳过工作流记录:{}", chat.len());
         // 条数上限:只留最近的 TASK_CTX_MAX_MSGS 条
         let many: Vec<StoredMsg> = (0..30).map(|i| msg("user", &format!("第{i}句"), None)).collect();
         let ctx = task_context(&many, &r).unwrap();

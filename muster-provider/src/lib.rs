@@ -13,6 +13,8 @@
 //!    （[`registry::ProviderRegistry::endpoints`]）。
 //! 3. **错误分类服务于 fail-closed**：[`error::ProviderError::should_failover`] 是
 //!    "云不可达 → 降落本地" 的唯一判定入口；Auth/配置错误刻意不触发降级，必须炸响。
+//!    配额 / 余额用尽（[`error::ProviderError::QuotaExhausted`]）从 429 里单独认出来：
+//!    对同一 provider 不重试（它不会自己好），但允许降落本地。
 //! 4. **对象安全优先**：注册表分发 `Arc<dyn ModelProvider>`，激活哪个 provider 永远是
 //!    运行时决定（配置 / 路由策略），因此用 `async_trait` 而非原生 AFIT。
 //! 5. **token 计量信任厂商回报值**：不内置分词器；`stream_options.include_usage`

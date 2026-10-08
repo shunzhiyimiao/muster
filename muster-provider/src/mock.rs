@@ -28,6 +28,7 @@ const ERR_MARKER_OPEN: &str = "\u{0}__mock_err__";
 const ERR_MARKER_CLOSE: &str = "__mock_err__\u{0}";
 /// 限流标记:开流即 429。正文是 Retry-After 秒数,`none` 表示没给。
 const RATE_MARKER: &str = "\u{0}__mock_429__";
+const QUOTA_MARKER: &str = "\u{0}__mock_quota__";
 
 pub struct MockProvider {
     meta: ProviderMetadata,
@@ -168,6 +169,21 @@ impl MockProvider {
         self
     }
 
+    /// Script a turn that fails with **quota exhausted / account suspended**: a 429
+    /// that never recovers. Consumers must fail fast instead of backing off.
+    pub fn with_quota_exhausted(self, msg: &str) -> Self {
+        self.enqueue(MockTurn {
+            response: ChatResponse {
+                message: ChatMessage::assistant(""),
+                usage: None,
+                finish_reason: FinishReason::Other,
+                model: "mock-model".into(),
+            },
+            stream_events: vec![StreamEvent::TextDelta(format!("{QUOTA_MARKER}{msg}"))],
+        });
+        self
+    }
+
     /// Script a turn that opens and then **fails mid-stream** (the provider
     /// hung up, rate-limited, etc.). Observed in the wild: a run does real work
     /// across several turns, then the last call gets a 429.
@@ -232,6 +248,9 @@ impl ModelProvider for MockProvider {
             if let Some(rest) = t.strip_prefix(RATE_MARKER) {
                 let retry_after = rest.parse::<u64>().ok().map(std::time::Duration::from_secs);
                 return Err(ProviderError::RateLimited { retry_after });
+            }
+            if let Some(rest) = t.strip_prefix(QUOTA_MARKER) {
+                return Err(ProviderError::QuotaExhausted(rest.to_string()));
             }
         }
         // 中流失败标记:前面的事件照发,到它这里转成 Err(如实模拟"发了一半断了")。

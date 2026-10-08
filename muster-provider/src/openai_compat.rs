@@ -154,10 +154,34 @@ pub(crate) fn map_status(status: u16, body: &str, retry_after: Option<Duration>)
     let message = truncate_at_char_boundary(body, 512);
     match status {
         401 | 403 => ProviderError::Auth(message),
+        429 if looks_like_quota_problem(body) => ProviderError::QuotaExhausted(message),
         429 => ProviderError::RateLimited { retry_after },
         400 | 404 | 422 => ProviderError::InvalidRequest(message),
         s => ProviderError::Api { status: s, message },
     }
+}
+
+/// 429 里装着两种完全不同的东西:限流(等一会儿就好)与配额 / 余额用尽(等多久都不会好)。
+/// Moonshot 的 `exceeded_current_quota_error`("insufficient balance … suspended")、
+/// OpenAI 的 `insufficient_quota` 都属后者。只认明确的账单字眼,不拿 "quota" 一个词当证据——
+/// 限流信息里也常出现它。真机教训:账户欠费 11 天,每天的工作流都被当成限流慢慢重试,
+/// 卡 20 到 80 分钟后以"超时"收场,没人看出是没钱了。
+fn looks_like_quota_problem(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "exceeded_current_quota",
+        "insufficient balance",
+        "insufficient_balance",
+        "suspended",
+        "recharge",
+        "billing",
+        "余额不足",
+        "欠费",
+        "已暂停",
+    ]
+    .iter()
+    .any(|k| b.contains(k))
 }
 
 fn truncate_at_char_boundary(s: &str, max: usize) -> String {
@@ -634,6 +658,14 @@ mod tests {
     fn status_mapping_matrix() {
         assert!(matches!(map_status(401, "", None), ProviderError::Auth(_)));
         assert!(matches!(map_status(429, "", Some(Duration::from_secs(3))), ProviderError::RateLimited { retry_after: Some(_) }));
+        assert!(matches!(
+            map_status(429, r#"{"error":{"message":"Rate limit reached for requests, quota per minute"}}"#, Some(Duration::from_secs(1))),
+            ProviderError::RateLimited { .. }
+        ), "普通限流照旧,哪怕信息里带 quota 一词");
+        let moonshot = r#"{"error":{"message":"Your account org-x <ak-y> is suspended due to insufficient balance, please recharge your account","type":"exceeded_current_quota_error"}}"#;
+        assert!(matches!(map_status(429, moonshot, Some(Duration::from_secs(1))), ProviderError::QuotaExhausted(_)), "Moonshot 欠费暂停");
+        let openai = r#"{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota"}}"#;
+        assert!(matches!(map_status(429, openai, None), ProviderError::QuotaExhausted(_)), "OpenAI 配额用尽");
         assert!(matches!(map_status(400, "bad", None), ProviderError::InvalidRequest(_)));
         assert!(matches!(map_status(503, "", None), ProviderError::Api { status: 503, .. }));
     }

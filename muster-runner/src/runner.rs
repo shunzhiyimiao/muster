@@ -195,7 +195,7 @@ pub enum RunnerError {
     Workspace(String),
     #[error("审计写入失败:{0}")]
     Audit(String),
-    #[error("模型调用失败(已重试):{0}")]
+    #[error("模型调用失败:{0}")]
     Model(String),
 }
 
@@ -652,6 +652,8 @@ pub async fn run_task_at(
             let mut retryable_err: Option<String> = None;
             // 限流:Some(等待时长)。与普通错误分开对待,见模块文档。
             let mut rate_limited: Option<std::time::Duration> = None;
+            // 配额 / 余额用尽:Some(原因)。与限流同码不同命——它不会自己好
+            let mut quota: Option<String> = None;
             let mut text = String::new();
             let mut acc = ToolCallAccumulator::new();
             let mut prompt_tokens = 0u64;
@@ -675,6 +677,9 @@ pub async fn run_task_at(
                                 if let muster_provider::ProviderError::RateLimited { retry_after } = &e {
                                     rate_limited = Some(retry_after.unwrap_or(std::time::Duration::ZERO));
                                 }
+                                if let muster_provider::ProviderError::QuotaExhausted(m) = &e {
+                                    quota = Some(m.clone());
+                                }
                                 retryable_err = Some(e.to_string());
                                 break;
                             }
@@ -684,6 +689,9 @@ pub async fn run_task_at(
                 Err(e) => {
                     if let muster_provider::ProviderError::RateLimited { retry_after } = &e {
                         rate_limited = Some(retry_after.unwrap_or(std::time::Duration::ZERO));
+                    }
+                    if let muster_provider::ProviderError::QuotaExhausted(m) = &e {
+                        quota = Some(m.clone());
                     }
                     retryable_err = Some(e.to_string());
                 }
@@ -714,6 +722,26 @@ pub async fn run_task_at(
 
             match retryable_err {
                 None => break (text, acc.finish()),
+                Some(_) if quota.is_some() => {
+                    // 配额 / 余额用尽:等多久都不会好,重试只是在烧时间——真机上一个工作流
+                    // 为此卡了 79 分钟,连续失败 11 天才被看见。立刻失败,把话说明白
+                    let why = quota.clone().unwrap_or_default();
+                    on_event(RunnerEvent::Notice {
+                        text: format!("⛔ 模型账户配额用尽或已暂停,不再重试:{why}。请充值,或换一个 provider"),
+                    });
+                    let (d, _) =
+                        take_diff(&mut worktree, cfg.retention, &cfg.badge, &subject, &mut on_event);
+                    propose(&d, worktree.as_ref(), "failed:quota", &mut on_event)?;
+                    finish_failed(audit, "quota", &started, &append)?;
+                    on_event(RunnerEvent::Finished {
+                        outcome: "failed:quota".into(),
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        turns: turn,
+                        prompt_tokens: total_prompt,
+                        completion_tokens: total_completion,
+                    });
+                    return Err(RunnerError::Model(format!("账户配额用尽或已暂停,未重试:{why}")));
+                }
                 Some(msg) if rate_limited.is_some() && attempt < RATE_LIMIT_ATTEMPTS => {
                     // Retry-After 只当下限:配额多半按分钟算,它却常常说 1 秒
                     let wait = rate_limited
@@ -748,7 +776,7 @@ pub async fn run_task_at(
                         prompt_tokens: total_prompt,
                         completion_tokens: total_completion,
                     });
-                    return Err(RunnerError::Model(msg));
+                    return Err(RunnerError::Model(format!("已重试一次仍失败:{msg}")));
                 }
             }
         };
