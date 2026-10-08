@@ -29,7 +29,7 @@
 //! 对账是**双向**的:不再被请的会议(散会了、或有人请它离开)会被叫停——先退出房间,
 //! **再做散会提炼**(行动项提案),然后任务结束。不等 LiveKit 房间自己散:Agent 自己就是
 //! 参会者,它不走房间永远不空,以前的"散会提炼"实际上只有 Ctrl-C 才会触发。
-//! 叫停 60 秒还没收尾完的任务才 abort。
+//! 叫停 180 秒还没收尾完的任务才 abort(提炼 + 回顾是两次模型调用)。
 //!
 //! ## 诚实边界
 //!
@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use muster_meeting_agent::{
     room, Answer, Answerer, ChunkConfig, Context, EnergyGate, ExtractOutcome, Extractor, HttpSink,
-    MentionRules, Pipeline,
+    MentionRules, Pipeline, Summarizer, SummaryOutcome, Translation, Translator,
 };
 use muster_provider::{ProviderRegistry, SpeechCompatProvider, SpeechConfig, SpeechProvider};
 use muster_route::{OrgPolicy, Router, Sensitivity, SpeechRouter};
@@ -54,8 +54,9 @@ use tokio::sync::Mutex;
 const POLL: Duration = Duration::from_secs(30);
 /// 查询失败后的重试间隔。
 const RETRY: Duration = Duration::from_secs(5);
-/// 叫停一场会后,给它退出房间 + 散会提炼的时间;超过就 abort。
-const STOP_GRACE: Duration = Duration::from_secs(60);
+/// 叫停一场会后,给它退出房间 + 散会提炼 + 写回顾的时间(两次模型调用,慢的 provider
+/// 一次就要半分钟);超过就 abort。
+const STOP_GRACE: Duration = Duration::from_secs(180);
 
 /// 正在服务的一场会。
 struct Served {
@@ -77,6 +78,28 @@ struct Cfg {
     provider_config: Option<String>,
     aliases: Vec<String>,
     agent_name: String,
+    /// 原文语言:转写提示语言,也是纪要原文行的 lang。
+    lang: String,
+}
+
+/// 翻译目标语言的缓存:在场的人各自选的字幕语言,10 秒内不重复问服务端。
+struct LangCache {
+    inner: Mutex<(Option<std::time::Instant>, Vec<String>)>,
+}
+
+impl LangCache {
+    fn new() -> Self {
+        Self { inner: Mutex::new((None, vec![])) }
+    }
+    async fn current(&self, sink: &HttpSink) -> Vec<String> {
+        let mut g = self.inner.lock().await;
+        let stale = g.0.map(|t| t.elapsed() > Duration::from_secs(10)).unwrap_or(true);
+        if stale {
+            g.1 = sink.caption_langs().await;
+            g.0 = Some(std::time::Instant::now());
+        }
+        g.1.clone()
+    }
 }
 
 #[tokio::main]
@@ -110,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
             .unwrap_or_else(|_| MentionRules::default().aliases),
         agent_name: std::env::var("MUSTER_AGENT_NAME").unwrap_or_else(|_| "小七".into()),
+        lang: std::env::var("MUSTER_STT_LANG").unwrap_or_else(|_| "zh".into()),
     });
 
     println!("会议 Agent 常驻服务已启动");
@@ -183,6 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             let title = m["title"].as_str().unwrap_or("").to_string();
+            let channel = m["channel_id"].as_str().unwrap_or("").to_string();
             tracing::info!(meeting = %id, %title, "被请去开会");
             let c = cfg.clone();
             let stop = Arc::new(tokio::sync::Notify::new());
@@ -190,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             joined.insert(
                 id,
                 Served {
-                    handle: tokio::spawn(async move { serve_meeting(c, id2, stop2).await }),
+                    handle: tokio::spawn(async move { serve_meeting(c, id2, channel, title, stop2).await }),
                     stop,
                     stop_requested: None,
                 },
@@ -332,8 +357,14 @@ async fn wanted_meetings(http: &reqwest::Client, cfg: &Cfg) -> Result<Vec<serde_
 }
 
 /// 在一场会里干活,直到房间断开或被叫停(散会 / 被请离)。
-async fn serve_meeting(cfg: Arc<Cfg>, meeting: String, stop: Arc<tokio::sync::Notify>) {
-    if let Err(e) = serve_inner(cfg, &meeting, stop).await {
+async fn serve_meeting(
+    cfg: Arc<Cfg>,
+    meeting: String,
+    channel: String,
+    title: String,
+    stop: Arc<tokio::sync::Notify>,
+) {
+    if let Err(e) = serve_inner(cfg, &meeting, &channel, &title, stop).await {
         tracing::warn!(meeting = %meeting, error = %e, "这场会没能服务");
     }
 }
@@ -341,6 +372,8 @@ async fn serve_meeting(cfg: Arc<Cfg>, meeting: String, stop: Arc<tokio::sync::No
 async fn serve_inner(
     cfg: Arc<Cfg>,
     meeting: &str,
+    channel: &str,
+    title: &str,
     stop: Arc<tokio::sync::Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
@@ -371,9 +404,9 @@ async fn serve_inner(
         scfg.model = m.clone();
     }
     let stt: Arc<dyn SpeechProvider> = Arc::new(SpeechCompatProvider::new("whisper", scfg)?);
-    let sink = Arc::new(HttpSink::new(&cfg.server, &tok, meeting));
-    let mut pipeline =
-        Pipeline::new(Arc::new(SpeechRouter::new(vec![stt])), sink.clone()).with_language("zh");
+    let sink = Arc::new(HttpSink::new(&cfg.server, &tok, meeting).with_lang(&cfg.lang));
+    let mut pipeline = Pipeline::new(Arc::new(SpeechRouter::new(vec![stt])), sink.clone())
+        .with_language(cfg.lang.clone());
     if let Some(p) = &cfg.stt_prompt {
         pipeline = pipeline.with_prompt(p.clone());
     }
@@ -388,7 +421,7 @@ async fn serve_inner(
     // 本地那份 TOML 只在服务端没有目录时兜底,而且会告警:决定 restricted
     // 内容能不能出门的 `locality`,不该由跑模型的这台机器自己声明。
     let toml_from_server = fetch_catalog(&http, &cfg, &tok).await;
-    let (answerer, extractor) = match (&toml_from_server, &cfg.provider_config) {
+    let (answerer, extractor, translator, summarizer) = match (&toml_from_server, &cfg.provider_config) {
         (Some(_), _) | (None, Some(_)) => {
             let reg = match &toml_from_server {
                 Some(json) => ProviderRegistry::from_config(serde_json::from_value(json.clone())?)?,
@@ -405,10 +438,12 @@ async fn serve_inner(
                     level,
                     meeting,
                 ))),
-                Some(Arc::new(Extractor::new(router, level, meeting))),
+                Some(Arc::new(Extractor::new(router.clone(), level, meeting))),
+                Some(Arc::new(Translator::new(router.clone(), level, meeting))),
+                Some(Arc::new(Summarizer::new(router, level, meeting))),
             )
         }
-        (None, None) => (None, None),
+        (None, None) => (None, None, None, None),
     };
 
     // 中途入会补上下文——晚到、重连、崩溃重启都是常态
@@ -436,9 +471,11 @@ async fn serve_inner(
     let (ctx2, sink2, name2) = (ctx.clone(), sink.clone(), cfg.agent_name.clone());
     let name = cfg.agent_name.clone();
     let ex_live = extractor.clone();
+    let langs = Arc::new(LangCache::new());
+    let src_lang = cfg.lang.clone();
 
     let in_room = room::run(&lk_url, &lk_token, ChunkConfig::default(), EnergyGate::default(), move |u| {
-        let (p, pol, ctx, ans, sink, name, ex) = (
+        let (p, pol, ctx, ans, sink, name, ex, tr, langs, src) = (
             pipeline.clone(),
             policy.clone(),
             ctx.clone(),
@@ -446,11 +483,39 @@ async fn serve_inner(
             sink.clone(),
             name.clone(),
             ex_live.clone(),
+            translator.clone(),
+            langs.clone(),
+            src_lang.clone(),
         );
         async move {
             let speaker = u.speaker.clone();
-            let Some(text) = p.handle(u, &pol).await else { return };
+            let Some(transcribed) = p.handle(u, &pol).await else { return };
+            let text = transcribed.text;
             ctx.lock().await.push(&speaker, &text);
+
+            // 字幕翻译:在场的人要哪些语言就翻哪些,各语言并行,不挡作答
+            if let Some(tr) = tr {
+                let targets = langs.current(&sink).await;
+                if !targets.is_empty() {
+                    let (sink, speaker, text, line_id) = (sink.clone(), speaker.clone(), text.clone(), transcribed.line_id);
+                    tokio::spawn(async move {
+                        let jobs = targets.into_iter().map(|to| {
+                            let (tr, sink, speaker, text, src) = (tr.clone(), sink.clone(), speaker.clone(), text.clone(), src.clone());
+                            async move {
+                                match tr.translate(&text, &src, &to).await {
+                                    Translation::Text(t) => {
+                                        sink.say_translation(&speaker, &t, &to, line_id).await;
+                                    }
+                                    Translation::Unavailable(why) => {
+                                        tracing::warn!(lang = %to, error = %why, "这句没能翻译");
+                                    }
+                                }
+                            }
+                        });
+                        futures::future::join_all(jobs).await;
+                    });
+                }
+            }
 
             let Some(ans) = ans else { return };
 
@@ -511,9 +576,9 @@ async fn serve_inner(
         }
     }
 
-    // 散会提炼:提案,确认归人
+    // 散会提炼:提案,确认归人。散会后纪要不再收,说明走频道消息。
+    let transcript = ctx2.lock().await.transcript();
     if let Some(ex) = extractor {
-        let transcript = ctx2.lock().await.transcript();
         match ex.extract(&transcript).await {
             ExtractOutcome::Items(items) if !items.is_empty() => {
                 for it in &items {
@@ -523,7 +588,28 @@ async fn serve_inner(
             }
             ExtractOutcome::Items(_) => tracing::info!(meeting = %meeting, "没有明确的行动项"),
             ExtractOutcome::Unavailable(why) => {
-                sink2.say(&name2, &format!("[散会提炼未能完成:{why}]")).await;
+                sink2.post_channel_message(channel, &format!("会议《{title}》的行动项提炼没能完成:{why}")).await;
+            }
+        }
+    }
+
+    // 散会回顾:落到服务端(链上只有哈希),再发一条频道消息让没开会的人也看得到
+    if let Some(sm) = summarizer {
+        if transcript.trim().is_empty() {
+            tracing::info!(meeting = %meeting, "这场会没有转写,不写回顾");
+        } else {
+            let t0 = std::time::Instant::now();
+            tracing::info!(meeting = %meeting, lines = transcript.lines().count(), "开始写回顾");
+            match sm.summarize(title, &transcript).await {
+                SummaryOutcome::Text { text, model } => {
+                    if sink2.post_summary("recap", &text, Some(&model)).await {
+                        tracing::info!(meeting = %meeting, %model, elapsed_s = t0.elapsed().as_secs(), "回顾已落库");
+                        sink2.post_channel_message(channel, &format!("📝 会议回顾《{title}》(由 {name2} 整理,依据会议转写)\n\n{text}")).await;
+                    }
+                }
+                SummaryOutcome::Unavailable(why) => {
+                    sink2.post_channel_message(channel, &format!("会议《{title}》的回顾没能生成:{why}")).await;
+                }
             }
         }
     }

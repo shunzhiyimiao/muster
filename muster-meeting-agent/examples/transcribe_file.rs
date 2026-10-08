@@ -22,9 +22,10 @@ struct Printer;
 
 #[async_trait::async_trait]
 impl TranscriptSink for Printer {
-    async fn on_text(&self, u: &Utterance, text: &str, egress: u64) {
+    async fn on_text(&self, u: &Utterance, text: &str, egress: u64) -> Option<i64> {
         println!("✓ [{}] {text}", u.speaker);
         println!("  外发 {egress} 字节({})", if egress == 0 { "本地落点" } else { "⚠ 出了本机" });
+        None
     }
     async fn on_refused(&self, u: &Utterance, reason: &str) {
         println!("⛔ [{}] 未能转写:{reason}", u.speaker);

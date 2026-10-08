@@ -84,7 +84,7 @@ where
     // 搬运任务的句柄。**散会时必须停掉**:否则它们继续往没人读的队列里塞,
     // 一边刷"转写跟不上采集,已丢帧"一边空转——真机上散会提炼那 20 秒里
     // 刷了 2000 多条警告,看着像出了大事,其实是没收摊。
-    let mut pumps: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut pumps = PumpGuard::default();
 
     loop {
         tokio::select! {
@@ -114,7 +114,7 @@ where
                         let who = participant.identity().to_string();
                         if let RemoteTrack::Audio(audio) = track {
                             tracing::info!(speaker = %who, "订阅到音轨");
-                            pumps.push(spawn_pump(audio, who, tx.clone()));
+                            pumps.0.push(spawn_pump(audio, who, tx.clone()));
                         }
                     }
                     RoomEvent::ParticipantDisconnected(p) => {
@@ -138,9 +138,7 @@ where
     }
 
     // 先停搬运任务,再收残留:顺序反了的话,收残留期间还在往队列里塞。
-    for h in pumps {
-        h.abort();
-    }
+    pumps.abort_all();
 
     // 会议结束:所有人的残留都要吐出来,一句都不能丢
     let speakers: Vec<String> = acc.speakers();
@@ -156,6 +154,26 @@ where
         let _ = t.await;
     }
     Ok(())
+}
+
+/// 搬运任务的句柄。`run` 的 future 可能被调用方 drop(散会叫停就是 select 掉它),
+/// 那时函数末尾的收尾代码不会跑——靠 Drop 把搬运任务一起带走,否则它们会对着一个
+/// 没人收的队列一直报"转写跟不上采集",直到房间自己断。
+#[derive(Default)]
+struct PumpGuard(Vec<tokio::task::JoinHandle<()>>);
+
+impl PumpGuard {
+    fn abort_all(&mut self) {
+        for h in self.0.drain(..) {
+            h.abort();
+        }
+    }
+}
+
+impl Drop for PumpGuard {
+    fn drop(&mut self) {
+        self.abort_all();
+    }
 }
 
 /// 一条音轨一个任务:只负责把帧丢进 channel,不做任何判断。

@@ -24,8 +24,17 @@
 //!    详见 `docs/服务端架构.md` 的边界五。本 crate 只负责把音频切好、
 //!    交给 [`muster_route::SpeechRouter`],密级与演习封锁由那一层保证。
 //!
+//! 5. **字幕翻译与会议回顾也在这里做**(2026-10-08,对标 Teams)。它们都是模型调用,
+//!    会议内容要出门,密级必须进路由决策——与被 @ 作答同一条路。翻译目标由在场的人
+//!    各自选的字幕语言决定(服务端 `/captions`),没人要的语言不翻;回顾在散会时生成,
+//!    落到服务端的 `/summary` 并发一条频道消息。服务端只收文本,不碰模型。
+//!
 //! ## 诚实边界
 //!
+//! - 本进程**没有自己的审计链**:翻译 / 回顾 / 作答用了哪个模型、出没出网,只在日志里;
+//!   服务端链上有它们结果的哈希。接 muster-audit 是下一步。
+//! - 翻译是逐句、整句说完才翻(whisper 不流式),字幕有一两秒延迟;目标语言变更最多
+//!   10 秒后生效(Agent 缓存了语言集合)。
 //! - 切句当前是**能量阈值 + 静音间隔**,不是 VAD:嘈杂环境会误判成一直在说话,
 //!   靠 `max_utterance_ms` 硬切兜底。A3 换 Silero。
 //! - 不做打断处理、不做回声消除——那些是 Agent 要"开口说话"(B4)时才需要的。
@@ -43,6 +52,8 @@ pub mod gate;
 pub mod mention;
 pub mod pipeline;
 pub mod sink;
+pub mod summary;
+pub mod translate;
 pub mod wav;
 
 #[cfg(feature = "livekit")]
@@ -53,8 +64,10 @@ pub use answer::{Answer, Answerer, Context};
 pub use chunk::{Accumulator, ChunkConfig, Utterance};
 pub use mention::MentionRules;
 pub use gate::{EnergyGate, SpeechGate};
-pub use pipeline::{Pipeline, TranscriptSink};
+pub use pipeline::{Pipeline, Transcribed, TranscriptSink};
 pub use sink::HttpSink;
+pub use summary::{Summarizer, SummaryOutcome};
+pub use translate::{lang_name_zh, Translation, Translator};
 pub use wav::pcm16_to_wav;
 
 /// 会议 Agent 处理音频的采样格式。**固定 16k 单声道**:whisper 要这个,

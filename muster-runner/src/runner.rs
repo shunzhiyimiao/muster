@@ -602,7 +602,7 @@ pub async fn run_task_at(
         vec![ChatMessage::system(system_text), ChatMessage::user(spec.prompt.clone())];
     let mut total_prompt: u64 = 0;
     let mut total_completion: u64 = 0;
-    let mut final_text: String;
+    let final_text: String;
     // 撞上限时用来交代"最后在做什么":最后一回合的文字与它想调的工具
     let mut last_text = String::new();
     let mut last_tools: Vec<String> = Vec::new();

@@ -20,12 +20,21 @@ use muster_route::{OrgPolicy, RouteRequest, SpeechRouter};
 use crate::chunk::Utterance;
 use crate::wav::pcm16_to_wav;
 
+/// 一句转写的结果:文本,以及它在服务端纪要里的行号(回传成功时有)。
+/// 翻译行靠行号指回原文——字幕才知道"这句英文是哪句中文的译文"。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcribed {
+    pub text: String,
+    pub line_id: Option<i64>,
+}
+
 /// 转写结果的去处。生产实现是"POST 给 collab-server",测试实现是记到内存里。
 #[async_trait::async_trait]
 pub trait TranscriptSink: Send + Sync {
     /// 转写成功。`egress_bytes` 是这次外发的字节数——**本地落点为 0,
     /// 云端为真实请求体大小**(音频比文本大几个数量级,不能漏记)。
-    async fn on_text(&self, u: &Utterance, text: &str, egress_bytes: u64);
+    /// 返回这行在落点里的行号(没有行号概念的落点返回 `None`)。
+    async fn on_text(&self, u: &Utterance, text: &str, egress_bytes: u64) -> Option<i64>;
 
     /// 落点被拒 / 转写失败。**必须留痕**:纪要里的空白要能区分
     /// "没人说话"和"我们没能转写"。
@@ -61,10 +70,10 @@ impl Pipeline {
 
     /// 处理一句。`policy` 必须是**对话路由此刻用的同一份**(见 SpeechRouter 文档)。
     ///
-    /// 返回转写出的文本(被拒 / 空转写为 `None`),供调用方判断要不要作答——
-    /// 让它自己再转一次是浪费,而且**两次转写结果可能不同**,
+    /// 返回转写出的文本与行号(被拒 / 空转写为 `None`),供调用方判断要不要作答、
+    /// 翻译行指回哪一行——让它自己再转一次是浪费,而且**两次转写结果可能不同**,
     /// 那样"纪要里记的"和"Agent 据以回答的"就对不上了。
-    pub async fn handle(&self, u: Utterance, policy: &OrgPolicy) -> Option<String> {
+    pub async fn handle(&self, u: Utterance, policy: &OrgPolicy) -> Option<Transcribed> {
         // 会议密级已经体现在调用方给的 policy / sources 上;这里不自己编密级。
         let req = RouteRequest { sources: &[], requested_provider: None, default_provider: None };
         let res = match self.router.resolve(policy, &req) {
@@ -97,8 +106,8 @@ impl Pipeline {
                     return None;
                 }
                 let egress = if is_local { 0 } else { t.request_bytes };
-                self.sink.on_text(&u, text, egress).await;
-                Some(text.to_string())
+                let line_id = self.sink.on_text(&u, text, egress).await;
+                Some(Transcribed { text: text.to_string(), line_id })
             }
             // 转写失败同样留痕,不吞——"没能转写"是证据缺口,不是静默
             Err(e) => {
@@ -167,8 +176,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl TranscriptSink for Recorder {
-        async fn on_text(&self, u: &Utterance, text: &str, egress: u64) {
+        async fn on_text(&self, u: &Utterance, text: &str, egress: u64) -> Option<i64> {
             self.texts.lock().unwrap().push((u.speaker.clone(), text.into(), egress));
+            Some(self.texts.lock().unwrap().len() as i64)
         }
         async fn on_refused(&self, u: &Utterance, reason: &str) {
             self.refusals.lock().unwrap().push((u.speaker.clone(), reason.into()));
@@ -191,7 +201,8 @@ mod tests {
             Arc::new(SpeechRouter::new(vec![stt("whisper", Locality::Local, Ok("会议开始"))])),
             rec.clone(),
         );
-        p.handle(utt(), &OrgPolicy::new(Sensitivity::Internal).unwrap()).await;
+        let out = p.handle(utt(), &OrgPolicy::new(Sensitivity::Internal).unwrap()).await;
+        assert_eq!(out, Some(Transcribed { text: "会议开始".into(), line_id: Some(1) }), "行号来自落点");
 
         let t = rec.texts.lock().unwrap();
         assert_eq!(t.len(), 1);

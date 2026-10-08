@@ -172,8 +172,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 人问的那句本身也是会议记录的一部分,答了却没记下问题,
             // 事后看纪要就成了 Agent 自说自话。
             let (speaker, started) = (u.speaker.clone(), u.started_ms);
-            let text = p.handle(u, &pol).await;
-            let Some(text) = text else { return };
+            let Some(tr) = p.handle(u, &pol).await else { return };
+            let text = tr.text;
             ctx.lock().await.push(&speaker, &text);
 
             let Some(ans) = ans else { return };
