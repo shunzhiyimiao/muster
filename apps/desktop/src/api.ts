@@ -458,10 +458,15 @@ export const api = {
 
   remoteActionItems: (meetingId: string) =>
     invoke<ActionItem[]>("remote_action_items", { meetingId }),
+  /** 会议纪要历史:进会先补上下文,之后靠 SSE 增量 */
+  remoteTranscript: (meetingId: string) =>
+    invoke<{ speaker_id: string; text: string; ts_ms: number }[]>("remote_transcript", { meetingId }),
   /** 批准 / 驳回。**判定在服务端**:它要 CreateTask 权限,且不许 Agent 裁决自己提的。 */
   remoteDecideAction: (id: string, confirm: boolean) =>
     invoke<ActionItem>("remote_decide_action", { id, confirm }),
   remoteMeetingEnd: (meetingId: string) => invoke<void>("remote_meeting_end", { meetingId }),
+  /** 离会:服务端记 meeting.leave。失败也照样离开——离开不能被服务端卡住 */
+  remoteMeetingLeave: (meetingId: string) => invoke<void>("remote_meeting_leave", { meetingId }),
   /** 请 Agent 来 / 请它离开;认领由服务器上的 agent-daemon 完成 */
   remoteMeetingAgent: (meetingId: string, want: boolean) =>
     invoke<void>("remote_meeting_agent", { meetingId, want }),

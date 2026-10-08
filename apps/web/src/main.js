@@ -339,6 +339,12 @@ function openStream() {
         addLine(ev.speaker_id, ev.text, ev.ts_ms);
       } else if (ev.type === "action_item" && ev.meeting_id === state.meeting?.id) {
         upsertTask(ev);
+      } else if (ev.type === "meeting") {
+        // 会议开始 / 结束 / 请了 Agent:列表重拉;自己在的那场被结束了要说出来
+        refreshMeetings().catch(() => {});
+        if (ev.event === "ended" && ev.meeting_id === state.meeting?.id) {
+          toast("这场会已被结束,纪要与待批任务保留");
+        }
       }
     } catch {
       /* 单条坏了不该拖垮整条流 */

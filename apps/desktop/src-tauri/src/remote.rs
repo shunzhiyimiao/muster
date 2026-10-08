@@ -209,6 +209,13 @@ impl Remote {
         Ok(())
     }
 
+    /// 离会(不结束会议)。服务端把参会记录补上 left_ms 并落 meeting.leave。
+    pub async fn leave_meeting(&self, meeting_id: &str) -> Result<(), String> {
+        let _: serde_json::Value =
+            self.post_json(&format!("/meetings/{meeting_id}/leave"), &serde_json::json!({})).await?;
+        Ok(())
+    }
+
     /// Provider 目录。**服务端下发,节点不自己声明 locality。**
     ///
     /// 返回的 JSON 形状就是 `muster_provider::RegistryConfig`,可以直接喂给
@@ -218,6 +225,12 @@ impl Remote {
     /// 里面**没有密钥**,只有环境变量的名字。值仍只在本机环境里。
     pub async fn provider_catalog(&self) -> Result<serde_json::Value, String> {
         self.get("/providers/catalog").await
+    }
+
+    /// 会议纪要(进会补上下文用):中途进会、重连、崩溃重启都是常态,
+    /// 只靠 SSE 的话之前说过的话就看不见了。
+    pub async fn transcript(&self, meeting_id: &str) -> Result<Vec<TranscriptLine>, String> {
+        self.get(&format!("/meetings/{meeting_id}/transcript")).await
     }
 
     /// 会议的行动项。**它们是提案**——Agent 提出、人确认,
@@ -277,6 +290,14 @@ impl Remote {
 /// **只存服务器地址与账号,不存口令。** 令牌 12 小时过期,过期就要求重新登录
 /// ——把口令留在盘上换取"永不掉线"是笔坏买卖。
 /// 一条会议行动项(与服务端 `ActionItemOut` 对齐)。
+/// 一行纪要(与服务端 meeting::TranscriptLine 同形)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptLine {
+    pub speaker_id: String,
+    pub text: String,
+    pub ts_ms: i64,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ActionItem {
     pub id: String,

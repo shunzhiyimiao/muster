@@ -10,7 +10,7 @@ import { T } from "./theme";
 import { AlertBanner, BellMenu } from "./views/Alerts";
 import { workflowAlerts, WorkflowAlert } from "./views/alertModel";
 import {
-  api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
+  api, ActionItem, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
   CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, RosterOut, SkillsOut, WorkflowsOut,
   Sensitivity, TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
@@ -72,6 +72,13 @@ export default function App() {
   /* C3:当前所在的会议(null = 不在会里);转写由 SSE 推来 */
   const [meeting, setMeeting] = useState<RemoteMeeting | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  /* 行动项由服务端 SSE 推来(提出 / 裁决);MeetingRoom 进会时再拉一次全量,两者按 id 合并 */
+  const [actionFeed, setActionFeed] = useState<ActionItem[]>([]);
+  /* 进行中的会议(所有能看到的频道):侧栏徽标与大厅都用它,不再写死「进行中」 */
+  const [liveMeetings, setLiveMeetings] = useState<RemoteMeeting[]>([]);
+  const [meetingsVersion, setMeetingsVersion] = useState(0);
+  /* 服务端推来「已结束」的会议 id:正在会里的人要立刻知道,不能等下一次拉列表 */
+  const [endedIds, setEndedIds] = useState<Set<string>>(() => new Set());
   /* 连上服务器后仍要能看演示形态——否则想给人演示时反而找不到它 */
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
@@ -182,8 +189,20 @@ export default function App() {
           if (ev.type === "message") {
             chat.pushRemote(ev.channel_id, ev.role, ev.body, ev.ts_ms);
           } else if (ev.type === "transcript") {
-            // 会议纪要行:Agent 转写落库后广播过来
-            setTranscript((t) => [...t, { speaker: ev.speaker_id, text: ev.text, ts: ev.ts_ms }]);
+            // 会议纪要行:Agent 转写落库后广播过来。进会时补过历史,同一行可能已经在了——按三元组去重
+            setTranscript((t) =>
+              t.some((l) => l.ts === ev.ts_ms && l.speaker === ev.speaker_id && l.text === ev.text)
+                ? t
+                : [...t, { speaker: ev.speaker_id, text: ev.text, ts: ev.ts_ms }],
+            );
+          } else if (ev.type === "action_item") {
+            // 行动项被提出 / 被裁决:按 id 合并,不再轮询
+            const a = ev as ActionItem & { type: string };
+            setActionFeed((v) => (v.some((x) => x.id === a.id) ? v.map((x) => (x.id === a.id ? a : x)) : [...v, a]));
+          } else if (ev.type === "meeting") {
+            // 会议开始 / 结束 / 请了 Agent / 密级抬升:大厅与侧栏徽标重拉;结束的记下来给会议室页
+            setMeetingsVersion((n) => n + 1);
+            if (ev.event === "ended") setEndedIds((s) => new Set(s).add(ev.meeting_id as string));
           }
         } catch {
           /* 单条解析失败不该拖垮整条流 */
@@ -324,6 +343,23 @@ export default function App() {
     setView("pchat");
     setNotice("");
   };
+  // 进行中的会议 = 每个远端频道各问一次服务端。频道不多,够用;等服务端有 /meetings/live 再换
+  useEffect(() => {
+    if (!remote?.connected || remoteChans.length === 0) {
+      setLiveMeetings([]);
+      return;
+    }
+    let stop = false;
+    Promise.all(remoteChans.map((c) => api.remoteMeetings(c.id).catch(() => [] as RemoteMeeting[])))
+      .then((lists) => {
+        if (!stop) setLiveMeetings(lists.flat().filter((m) => !m.ended_ms));
+      });
+    return () => {
+      stop = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remote?.connected, remoteChans.map((c) => c.id).join(","), meetingsVersion]);
+
   const goWorkflows = () => {
     setModule("personal");
     setView("workflows");
@@ -582,9 +618,12 @@ export default function App() {
           {module === "team" && (
             <>
               <SideItem icon={<Video size={16} />} label="会议室" active={view === "meeting"} onClick={() => { setView("meeting"); setNotice(""); }}
-                extra={<span className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: view === "meeting" ? "#fff" : T.green }}>
-                  <span className="wv inline-block w-1 h-2.5 rounded-full" style={{ background: "currentColor" }} />进行中
-                </span>} />
+                extra={liveMeetings.length > 0 ? (
+                  <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold" style={{ color: view === "meeting" ? "#fff" : T.green }}
+                    title={liveMeetings.map((m) => m.title).join("、")}>
+                    <span className="wv inline-block w-1 h-2.5 rounded-full" style={{ background: "currentColor" }} />{liveMeetings.length} 场进行中
+                  </span>
+                ) : undefined} />
               <ConnBar remote={remote} onClick={() => setLoginOpen(true)} />
               <SideSec>团队</SideSec>
               {teams.map((t) => {
@@ -705,13 +744,29 @@ export default function App() {
                 <MeetingRoom
                   meeting={meeting}
                   transcript={transcript}
-                  onLeave={() => setMeeting(null)}
+                  actions={actionFeed.filter((a) => a.meeting_id === meeting.id)}
+                  ended={endedIds.has(meeting.id)}
+                  onLeave={() => {
+                    setMeeting(null);
+                    setMeetingsVersion((n) => n + 1);
+                  }}
                 />
               ) : remote?.connected ? (
                 <MeetingLobby
                   channelId={channelId}
+                  version={meetingsVersion}
+                  onChanged={() => setMeetingsVersion((n) => n + 1)}
                   onEnter={(m) => {
+                    // 先补历史纪要再入会:中途进会的人也要看到之前说了什么
                     setTranscript([]);
+                    setActionFeed((v) => v.filter((a) => a.meeting_id !== m.id));
+                    api.remoteTranscript(m.id)
+                      .then((rows) => setTranscript((t) => {
+                        const hist = rows.map((r) => ({ speaker: r.speaker_id, text: r.text, ts: r.ts_ms }));
+                        const fresh = t.filter((l) => !hist.some((h) => h.ts === l.ts && h.speaker === l.speaker && h.text === l.text));
+                        return [...hist, ...fresh];
+                      }))
+                      .catch(() => {});
                     setMeeting(m);
                   }}
                 />
@@ -1137,21 +1192,36 @@ function LoginDialog({
    单机模式下没有"别人"可开会,那时显示的仍是概念稿(并标着"演示叙事")。 */
 function MeetingLobby({
   channelId,
+  version,
+  onChanged,
   onEnter,
 }: {
   channelId: string;
+  /** 服务端推来会议变化时递增,大厅据此重拉 */
+  version: number;
+  onChanged: () => void;
   onEnter: (m: RemoteMeeting) => void;
 }) {
   const [list, setList] = useState<RemoteMeeting[]>([]);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [ending, setEnding] = useState<string | null>(null);
 
   const load = () => {
     api.remoteMeetings(channelId).then(setList).catch((e) => setErr(String(e)));
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [channelId]);
+  useEffect(load, [channelId, version]);
+
+  const endMeeting = (m: RemoteMeeting) => {
+    setEnding(m.id);
+    setErr(null);
+    api.remoteMeetingEnd(m.id)
+      .then(() => { load(); onChanged(); })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setEnding(null));
+  };
 
   const start = () => {
     const t = title.trim();
@@ -1164,6 +1234,7 @@ function MeetingLobby({
       .remoteMeetingStart(channelId, t)
       .then((m) => {
         setTitle("");
+        onChanged();
         onEnter(m);
       })
       .catch((e) => setErr(String(e)))
@@ -1207,13 +1278,21 @@ function MeetingLobby({
           <div className="py-5 text-[11.5px]" style={{ color: T.sub }}>当前没有进行中的会议。</div>
         ) : (
           live.map((m) => (
-            <button key={m.id} onClick={() => onEnter(m)} className="w-full flex items-center gap-2.5 py-2.5 text-left"
-              style={{ borderTop: `1px solid ${T.line}` }}>
-              <Video size={14} style={{ color: T.indigo }} />
-              <span className="text-[13px] font-semibold">{m.title}</span>
-              <Tag tone={(m.level === "restricted" ? "red" : m.level === "internal" ? "amb" : undefined) as never}>{m.level}</Tag>
-              <span className="ml-auto text-[10.5px]" style={{ color: T.faint }}>{fmtTime(m.started_ms)} 开始</span>
-            </button>
+            <div key={m.id} className="w-full flex items-center gap-2.5 py-2.5" style={{ borderTop: `1px solid ${T.line}` }}>
+              <button onClick={() => onEnter(m)} className="flex items-center gap-2.5 text-left flex-1 min-w-0">
+                <Video size={14} style={{ color: T.indigo }} />
+                <span className="text-[13px] font-semibold truncate">{m.title}</span>
+                <Tag tone={(m.level === "restricted" ? "red" : m.level === "internal" ? "amb" : undefined) as never}>{m.level}</Tag>
+                {m.wants_agent && <Tag tone="ind">Agent</Tag>}
+                <span className="ml-auto text-[10.5px] shrink-0" style={{ color: T.faint }}>{fmtTime(m.started_ms)} 开始</span>
+              </button>
+              <button onClick={() => endMeeting(m)} disabled={ending === m.id}
+                title="结束这场会:房间关闭,纪要与行动项保留"
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-lg shrink-0"
+                style={{ background: T.soft, color: T.sub, opacity: ending === m.id ? 0.5 : 1 }}>
+                {ending === m.id ? "…" : "结束"}
+              </button>
+            </div>
           ))
         )}
       </Card>

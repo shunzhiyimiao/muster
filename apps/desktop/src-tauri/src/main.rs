@@ -4484,6 +4484,23 @@ async fn remote_meeting_end(state: State<'_, AppState>, meeting_id: String) -> R
     r.end_meeting(&meeting_id).await
 }
 
+/// 离会(自己退出,不结束会议)。
+#[tauri::command]
+async fn remote_meeting_leave(state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.leave_meeting(&meeting_id).await
+}
+
+#[tauri::command]
+async fn remote_transcript(
+    state: State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Vec<remote::TranscriptLine>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.transcript(&meeting_id).await
+}
+
+/// 会议的行动项(进会时拉一次,之后靠 SSE 推送)。
 #[tauri::command]
 async fn remote_action_items(
     state: State<'_, AppState>,
@@ -4690,6 +4707,8 @@ fn main() {
             delete_conversation,
             thread_history,
             remote_action_items,
+            remote_transcript,
+            remote_meeting_leave,
             remote_decide_action,
             remote_meeting_end,
             remote_meeting_agent,
