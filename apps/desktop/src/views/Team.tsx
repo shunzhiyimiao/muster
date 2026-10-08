@@ -1,14 +1,14 @@
-/* 团队模块:频道(真实聊天+概念叙事卡)/ 编制 / 会议室 / 能力库 */
+/* 团队模块:频道(真实聊天,概念叙事卡默认隐藏)/ 编制 / 会议室(单机实话卡;真实会议见 App.tsx 的 MeetingLobby / MeetingRoom)/ 能力库 */
 import { useEffect, useState } from "react";
 import {
-  BadgeCheck, Bot, Cast, Check, Eye, GitBranch, Lock, Mic, MicOff, Monitor,
-  Phone, Play, Plus, Radio, Search, Share2, Sparkles, Video,
+  BadgeCheck, Bot, Cast, Check, Eye, GitBranch, Lock,
+  Play, Plus, Radio, Search, Share2,
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
 import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, api, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
-import { CAPS, CAPTIONS, ROSTER, RosterEntry, TICON } from "../data";
+import { CAPS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
 import { ApprovalsPanel } from "./Approvals";
 
@@ -492,160 +492,22 @@ function PersonCard({ p }: { p: RosterEntry }) {
   );
 }
 
-/* ==================== 会议室(v1.x 概念) ==================== */
+/* ==================== 会议室(单机模式) ==================== */
 
-export function MeetingView({ planned = false }: { planned?: boolean }) {
-  const [sec, setSec] = useState(24 * 60 + 31);
-  const [ci, setCi] = useState(0);
-  const [asked, setAsked] = useState(false);
-  const [mic, setMic] = useState(true);
-  useEffect(() => {
-    const a = setInterval(() => setSec((s) => s + 1), 1000);
-    const b = setInterval(() => setCi((i) => (i + 1) % CAPTIONS.length), 3000);
-    return () => {
-      clearInterval(a);
-      clearInterval(b);
-    };
-  }, []);
-  const mm = String(Math.floor(sec / 60)).padStart(2, "0"), ss = String(sec % 60).padStart(2, "0");
-  // 单机模式下没有"别人"可开会:默认说实话,不放概念稿;想看形态就打开"规划中的功能"
-  if (!planned) {
-    return (
-      <div className="px-7 pb-8 pt-2">
-        <Card className="p-6">
-          <div className="text-[15px] font-bold">会议室需要连接服务端</div>
-          <div className="text-[12px] mt-2 leading-relaxed" style={{ color: T.sub }}>
-            真实会议走 LiveKit:连接服务端后这里会显示可加入的会议与入会令牌,转写只走本地 provider。
-            单机模式下没有可以开会的对象,所以这里什么都不放——导轨底部的眼睛图标可以打开规划中的概念稿看形态。
-          </div>
-        </Card>
-      </div>
-    );
-  }
-  const cap: [string, string] =
-    asked && ci === 0 ? ["Agent-007", "结论复述:幂等键由网关层统一生成;回滚脚本由我会后产出,今天内给草稿。"] : CAPTIONS[ci];
-
+/// 没连服务端时的会议室:说实话,不放概念稿。真实会议(LiveKit)在连上服务端后由 MeetingLobby / MeetingRoom 接管。
+export function MeetingOffline() {
   return (
-    <>
-    <div className="px-7 pt-3">
-      {/* 展示形态。**标注不能省**——但语气是"这是演示",不是"这是假的":
-          它确实在展示产品的完整形态,只是数据写死。
-          分寸在于:看的人一眼就知道它不在真转写,而不必怀疑自己是不是搞错了。 */}
-      <div className="px-4 py-3 rounded-2xl flex items-start gap-2.5"
-        style={{ background: T.indigoSoft }}>
-        <Video size={15} className="mt-0.5 shrink-0" style={{ color: T.indigo }} />
-        <div className="text-[11.5px] leading-relaxed" style={{ color: T.indigoDeep }}>
-          <b>演示形态</b>:这一页展示会议功能长成的样子——实时字幕、Agent 参与、
-          纪要与行动项转任务。<b>数据是写死的,不会真的转写</b>。
-          <br />
-          <span style={{ color: T.sub }}>
-            真实会议在侧栏连上团队服务器后使用:开麦说话由会议 Agent 走本地
-            whisper 转写,音频不出内网。
-          </span>
-        </div>
-      </div>
-    </div>
-    <div className="px-7 pb-6 pt-1 flex gap-4" style={{ height: "calc(100% - 78px)" }}>
-      <div className="flex-1 min-w-0 flex flex-col gap-3.5">
-        <div className="flex items-center gap-2.5">
-          <span className="text-base font-bold">平台组周会</span>
-          <span className="text-[12.5px] font-bold px-2.5 py-1 rounded-full" style={{ background: T.greenSoft, color: T.green }}>{mm}:{ss}</span>
-          <Tag tone="red">● 录制中 · 本地存储</Tag>
-          <Tag>会议系统 v1.x 概念</Tag>
-          <span className="ml-auto flex items-center gap-1.5 text-[11.5px]" style={{ color: T.sub }}>实时转写 <RouteTag local /></span>
-        </div>
-        <div className="grid grid-cols-2 gap-3.5 flex-1 min-h-0">
-          <Seat n="Alice" tone={T.indigo} speaking />
-          <Seat n="Bob" tone={T.teal} />
-          <Seat n="Carol" tone={T.amber} muted />
-          <div className="relative rounded-2xl flex flex-col items-center justify-center gap-2.5" style={{ background: T.indigoSoft, border: `2px solid ${T.indigo}` }}>
-            <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", color: T.indigo }}><Bot size={26} /></div>
-            <div className="flex items-end gap-1" style={{ height: 18 }}>
-              {[0, 1, 2, 3, 4].map((i) => (
-                <span key={i} className="wv rounded-full" style={{ width: 4, height: 16, background: T.indigo, animationDelay: `${i * 0.12}s` }} />
-              ))}
-            </div>
-            <div className="absolute left-3 bottom-2.5 flex items-center gap-1.5">
-              <span className="text-[13px] font-bold">Agent-007</span>
-              <Tag tone="ind" style={{ background: "#fff" }}>编制 A-007</Tag>
-            </div>
-            <span className="absolute right-3 top-3"><RouteTag local /></span>
-          </div>
-        </div>
-        <Card className="flex items-center gap-3 px-4 py-3">
-          <Tag>字幕</Tag>
-          <span className="text-[13px] truncate">
-            <b style={{ color: cap[0] === "Agent-007" ? T.indigo : T.ink }}>{cap[0]}:</b>
-            <span style={{ color: "#454A5C" }}> {cap[1]}</span>
-          </span>
-          <button onClick={() => setAsked(true)} disabled={asked}
-            className="ml-auto shrink-0 text-[11.5px] font-semibold px-3.5 py-2 rounded-full"
-            style={{ background: asked ? T.soft : T.indigo, color: asked ? T.faint : "#fff" }}>
-            {asked ? "已复述" : "语音:@007 复述结论"}
-          </button>
-        </Card>
-        <div className="flex items-center justify-center gap-2.5">
-          <Ctl on={mic} onClick={() => setMic((m) => !m)}>{mic ? <Mic size={16} /> : <MicOff size={16} />}</Ctl>
-          <Ctl on><Video size={16} /></Ctl>
-          <Ctl on><Monitor size={16} /></Ctl>
-          <button disabled title="会议系统为 v1.x 概念,尚未实现" className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2.5 rounded-full" style={{ background: T.indigoSoft, color: T.indigo , opacity: 0.45, cursor: "not-allowed"}}>
-            <Bot size={14} /> 007 参会中
-          </button>
-          <button disabled title="会议系统为 v1.x 概念,尚未实现" className="flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2.5 rounded-full" style={{ background: T.red, color: "#fff" , opacity: 0.45, cursor: "not-allowed"}}>
-            <Phone size={14} /> 结束会议
-          </button>
-        </div>
-      </div>
-      <Card className="w-[300px] shrink-0 flex flex-col overflow-hidden">
-        <div className="px-4 py-3.5 flex items-center gap-1.5" style={{ borderBottom: `1px solid ${T.line}` }}>
-          <Sparkles size={14} style={{ color: T.indigo }} /><b className="text-[13.5px]">实时纪要</b>
-          <span className="text-[11px]" style={{ color: T.sub }}>· Agent-021</span>
-        </div>
-        <div className="flex-1 overflow-y-auto px-4 py-1">
-          <Note k="议题">支付重试的幂等性方案与发布回滚流程</Note>
-          <Note k="决定">幂等键收敛到网关层统一生成,业务侧只透传</Note>
-          <Note k="决定">回滚脚本纳入 Release Checklist 强制项</Note>
-          <Note k="行动" who="Agent-007" ai>会后执行 Release Checklist,产出回滚脚本草稿</Note>
-          {asked && <Note k="行动" who="Agent-007" ai fresh>复述结论已确认,今日内交付草稿</Note>}
-          <Note k="行动" who="Bob">网关幂等键设计文档,周四评审</Note>
-        </div>
-        <div className="px-4 py-3 text-[10.5px]" style={{ color: T.sub, borderTop: `1px solid ${T.line}` }}>
-          会后自动发布到 #platform · 行动项进任务看板
+    <div className="px-7 pb-8 pt-2">
+      <Card className="p-6">
+        <div className="text-[15px] font-bold">会议室需要连接服务端</div>
+        <div className="text-[12px] mt-2 leading-relaxed" style={{ color: T.sub }}>
+          真实会议走 LiveKit:连接服务端后这里会显示可加入的会议与入会令牌,语音室与视频室共用同一套密级、转写 Agent 与审计。
+          单机模式下没有可以开会的对象,所以这里什么都不放。规划见 docs/会议线规划-2026-10-08.md。
         </div>
       </Card>
     </div>
-    </>
   );
 }
-const Seat = ({ n, tone, speaking, muted }: { n: string; tone: string; speaking?: boolean; muted?: boolean }) => (
-  <div className="relative rounded-2xl flex items-center justify-center" style={{ background: T.panel, border: `2px solid ${speaking ? T.indigo : "transparent"}` }}>
-    <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-[22px] font-bold" style={{ background: `${tone}18`, color: tone }}>{n[0]}</div>
-    <div className="absolute left-3 bottom-2.5 text-[13px] font-bold">
-      {n}
-      {speaking && <span style={{ color: T.indigo }}> · 发言中</span>}
-    </div>
-    {muted && <span className="absolute right-3 top-3" style={{ color: T.faint }}><MicOff size={13} /></span>}
-  </div>
-);
-const Ctl = ({ children, on, onClick }: { children: React.ReactNode; on?: boolean; onClick?: () => void }) => (
-  <button onClick={onClick} className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: on ? T.soft : T.redSoft, color: on ? T.ink : T.red }}>
-    {children}
-  </button>
-);
-const Note = ({ k, who, ai, fresh, children }: { k: string; who?: string; ai?: boolean; fresh?: boolean; children: React.ReactNode }) => (
-  <div className={`py-2.5 text-xs ${fresh ? "fade" : ""}`} style={{ borderTop: `1px solid ${T.line}` }}>
-    <div className="flex items-center">
-      <Tag tone={k === "行动" ? "ind" : undefined}>{k}</Tag>
-      {who && <span className="ml-auto text-[10.5px] font-semibold" style={{ color: ai ? T.indigo : T.sub }}>{who}</span>}
-    </div>
-    <div className="mt-1.5 leading-relaxed" style={{ color: "#454A5C" }}>{children}</div>
-    {ai && (
-      <div className="flex items-center gap-1 text-[10px] font-semibold mt-1.5" style={{ color: T.green }}>
-        <Check size={10} /> 已转任务 RUN-2231 · 本地执行
-      </div>
-    )}
-  </div>
-);
 
 /* ==================== 能力库(P4 概念) ==================== */
 

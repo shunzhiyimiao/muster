@@ -18,7 +18,7 @@ import { useChat, ChatPane, Msg } from "./chat";
 import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
 import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
-import { ChannelView, RosterView, MeetingView, CapsView } from "./views/Team";
+import { ChannelView, RosterView, MeetingOffline, CapsView } from "./views/Team";
 import { MeetingRoom, type TranscriptLine } from "./views/Meeting";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
@@ -73,7 +73,6 @@ export default function App() {
   const [meeting, setMeeting] = useState<RemoteMeeting | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   /* 连上服务器后仍要能看演示形态——否则想给人演示时反而找不到它 */
-  const [showDemo, setShowDemo] = useState(false);
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
@@ -708,28 +707,16 @@ export default function App() {
                   transcript={transcript}
                   onLeave={() => setMeeting(null)}
                 />
-              ) : remote?.connected && !showDemo ? (
+              ) : remote?.connected ? (
                 <MeetingLobby
                   channelId={channelId}
                   onEnter={(m) => {
                     setTranscript([]);
                     setMeeting(m);
                   }}
-                  onDemo={() => setShowDemo(true)}
                 />
               ) : (
-                <>
-                  {remote?.connected && (
-                    <div className="px-7 pt-3">
-                      <button onClick={() => setShowDemo(false)}
-                        className="text-[11.5px] font-semibold px-3 py-1.5 rounded-xl"
-                        style={{ background: T.soft, color: T.sub }}>
-                        ← 回到真实会议
-                      </button>
-                    </div>
-                  )}
-                  <MeetingView planned={planned} />
-                </>
+                <MeetingOffline />
               ))}
             {view === "caps" && (
               <CapsView planned={planned} trace={trace} setTrace={setTrace} introduced={introduced}
@@ -1151,11 +1138,9 @@ function LoginDialog({
 function MeetingLobby({
   channelId,
   onEnter,
-  onDemo,
 }: {
   channelId: string;
   onEnter: (m: RemoteMeeting) => void;
-  onDemo: () => void;
 }) {
   const [list, setList] = useState<RemoteMeeting[]>([]);
   const [title, setTitle] = useState("");
@@ -1211,10 +1196,6 @@ function MeetingLobby({
         {err && (
           <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.redSoft, color: T.red }}>{err}</div>
         )}
-        <button onClick={onDemo} className="mt-3 text-[11px] font-semibold"
-          style={{ color: T.indigo }}>
-          看演示形态 →
-        </button>
       </Card>
 
       <Card className="px-5 pt-4 pb-2">
