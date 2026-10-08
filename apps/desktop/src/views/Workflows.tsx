@@ -5,6 +5,7 @@ import { AlertTriangle, Calendar, Clock, FolderOpen, Globe, Lock, Play, RefreshC
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
 import { WorkflowsOut, WorkflowRunOut, api } from "../api";
+import { reasonZh, workflowHealth } from "./alertModel";
 
 const EXAMPLE = `---
 name: daily-finance-brief
@@ -28,6 +29,7 @@ function outcomeTag(r: WorkflowRunOut) {
   if (r.outcome === null) return <Tag tone="amb">未收尾</Tag>;
   if (r.outcome === "success") return <Tag tone="grn">成功</Tag>;
   if (r.outcome === "no_output") return <Tag tone="amb">没有产物</Tag>;
+  if (r.outcome === "failed:quota") return <Tag tone="red">配额用尽</Tag>;
   return <Tag tone="red">{r.outcome}</Tag>;
 }
 
@@ -149,6 +151,22 @@ export function WorkflowsView({ data, onRefresh }: { data: WorkflowsOut | null; 
               </div>
 
               <div className="mt-3 text-[10px] font-semibold tracking-widest" style={{ color: T.faint }}>最近运行</div>
+              {(() => {
+                const h = workflowHealth(w);
+                if (!h.last) return null;
+                if (h.consecutive > 0) {
+                  return (
+                    <div className="mt-1.5 rounded-xl px-3 py-2 text-[11px] flex items-center gap-1.5 flex-wrap"
+                      style={{ background: T.redSoft, color: "#8F2B2E", border: "1px solid #F5C9CA" }}>
+                      <AlertTriangle size={12} className="shrink-0" />
+                      已连续失败 <b>{h.capped ? `${h.consecutive}+` : h.consecutive}</b> 次,最近一次 {fmt(h.last.ts_ms)}:{reasonZh(h.last.outcome)}
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-1.5 text-[11px]" style={{ color: T.green }}>✓ 最近一次成功 · {fmt(h.last.ts_ms)}</div>
+                );
+              })()}
               {w.runs.length === 0 ? (
                 <div className="text-[11px] mt-1" style={{ color: T.faint }}>还没跑过。</div>
               ) : (

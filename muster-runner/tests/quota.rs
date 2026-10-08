@@ -39,9 +39,10 @@ async fn quota_exhausted_fails_fast_without_retry() {
         .expect_err("配额用尽必须是失败");
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "不该退避等待");
     match &err {
-        RunnerError::Model(m) => assert!(m.contains("未重试") && m.contains("insufficient balance"), "{m}"),
+        RunnerError::Quota(m) => assert!(m.contains("insufficient balance"), "{m}"),
         other => panic!("错误类型不对:{other}"),
     }
+    assert!(err.to_string().contains("未重试"), "{err}");
     assert!(events.iter().any(|e| matches!(e, RunnerEvent::Notice { text } if text.contains("配额用尽") && text.contains("充值"))), "{events:?}");
     assert!(events.iter().any(|e| matches!(e, RunnerEvent::Finished { outcome, .. } if outcome == "failed:quota")));
     let store = audit.lock().unwrap();

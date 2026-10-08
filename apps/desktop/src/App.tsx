@@ -7,6 +7,8 @@ import {
   Pencil, Plus, Repeat, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X,
 } from "lucide-react";
 import { T } from "./theme";
+import { AlertBanner, BellMenu } from "./views/Alerts";
+import { workflowAlerts, WorkflowAlert } from "./views/alertModel";
 import {
   api, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
   CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, RosterOut, SkillsOut, WorkflowsOut,
@@ -77,6 +79,8 @@ export default function App() {
   const [forgeable, setForgeable] = useState<ForgeableRun[]>([]);
   const [skills, setSkills] = useState<SkillsOut | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowsOut | null>(null);
+  // 需要人出手的事:工作流连续失败(从 workflows 的最近运行算出)+ 待裁决的合入申请
+  const alerts = useMemo(() => workflowAlerts(workflows), [workflows]);
   const [roster, setRoster] = useState<RosterOut | null>(null);
   const [agentBadge, setAgentBadge] = useState<string | null>(null);
   const [me, setMe] = useState<WhoAmI | null>(null);
@@ -292,6 +296,12 @@ export default function App() {
     setView("pchat");
     setNotice("");
   };
+  const goWorkflows = () => {
+    setModule("personal");
+    setView("workflows");
+    setNotice("");
+    refreshAll();
+  };
 
   /* E6 演习:真实开关(路由层 set_egress_locked + drill.start/end + SQL 报告) */
   const toggleDrill = () => {
@@ -493,7 +503,9 @@ export default function App() {
               </div>
               <SideItem icon={<Clock size={16} />} label="任务" onClick={() => soft("任务")} />
               <SideItem icon={<Repeat size={16} />} label="工作流" active={view === "workflows"} onClick={() => { setView("workflows"); setNotice(""); refreshAll(); }}
-                extra={workflows && workflows.workflows.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "workflows" ? "#DCDCFE" : T.faint }}>{workflows.workflows.length}</span> : undefined} />
+                extra={alerts.length > 0
+                  ? <span className="ml-auto text-[9.5px] font-bold px-1.5 rounded-full" title={`${alerts.length} 个工作流连续失败`} style={{ background: T.red, color: "#fff" }}>{alerts.length}</span>
+                  : workflows && workflows.workflows.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "workflows" ? "#DCDCFE" : T.faint }}>{workflows.workflows.length}</span> : undefined} />
               <SideSec>积累</SideSec>
               <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />
               <SideItem icon={<Sparkles size={16} />} label="技能" active={view === "skills"} onClick={() => { setView("skills"); setNotice(""); refreshAll(); }}
@@ -588,7 +600,8 @@ export default function App() {
 
         {/* ===== 主区 ===== */}
         <main className="flex-1 min-w-0 overflow-y-auto flex flex-col">
-          <TopBar module={module} view={view} channelName={activeChannel?.name ?? channelId} teamName={activeChannel?.team ?? ""} streamed={streamed} drillOn={drillOn} me={me} />
+          <TopBar module={module} view={view} channelName={activeChannel?.name ?? channelId} teamName={activeChannel?.team ?? ""} streamed={streamed} drillOn={drillOn} me={me}
+            alerts={alerts} pending={approvals.length} onGoWorkflows={goWorkflows} onGoApprovals={goPersonalChat} />
           {notice && (
             <div className="mx-7 mt-2 px-3.5 py-2 rounded-xl text-xs flex items-center gap-2 fade" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
               <Sparkles size={13} /> {notice}
@@ -597,17 +610,27 @@ export default function App() {
           )}
           <div className="flex-1 min-h-0">
             {view === "home" && (
-              <ConsoleHome home={home} pending={approvals}
-                onGoApprovals={() => { setModule("team"); setView("channel"); }} />
+              <>
+                <div className="px-7 pt-2">
+                  <AlertBanner alerts={alerts} pending={approvals.length} onGoWorkflows={goWorkflows} onGoApprovals={goPersonalChat} />
+                </div>
+                <ConsoleHome home={home} pending={approvals}
+                  onGoApprovals={() => { setModule("team"); setView("channel"); }} />
+              </>
             )}
             {view === "audit" && <AuditCenter rows={audit} chain={chain} onRefresh={refreshAll} channels={channels} />}
             {view === "phome" && (
-              <PersonalHome me={me} personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
+              <>
+                <div className="px-7 pt-2">
+                  <AlertBanner alerts={alerts} pending={approvals.length} onGoWorkflows={goWorkflows} onGoApprovals={goPersonalChat} />
+                </div>
+                <PersonalHome me={me} personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
                 allMsgs={chat.msgs} channels={channels}
                 onStream={() => setPicker(true)} onStop={() => setStreamed(false)}
                 goAgent={() => setView("agent")} goChat={goPersonalChat}
                 goChannel={() => goChannel("platform", "platform")} openConvo={() => setConvo("open")}
                 onOpenChannel={(c) => (c.personal ? goPersonalChat() : goChannel(c.team_id, c.id))} />
+              </>
             )}
             {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat}
               roster={roster} badge={agentBadge} onPick={(b) => { setAgentBadge(b); api.agentStats(b).then(setAgent).catch(() => {}); }} />}
@@ -857,6 +880,10 @@ function TopBar({
   streamed,
   drillOn,
   me,
+  alerts,
+  pending,
+  onGoWorkflows,
+  onGoApprovals,
 }: {
   module: string;
   view: string;
@@ -864,6 +891,11 @@ function TopBar({
   teamName: string;
   streamed: boolean;
   drillOn: boolean;
+  /** 需要人出手的事:连续失败的工作流、待裁决的合入申请数 */
+  alerts: WorkflowAlert[];
+  pending: number;
+  onGoWorkflows: () => void;
+  onGoApprovals: () => void;
   me: WhoAmI | null;
 }) {
   const titles: Record<string, [string, string]> = {
@@ -878,6 +910,8 @@ function TopBar({
     caps: ["能力库", "组织的 Capsule 资产池(P4 概念)"],
   };
   const [t, s] = titles[view] ?? ["Muster", ""];
+  const [bell, setBell] = useState(false);
+  const bellCount = alerts.length + (pending > 0 ? 1 : 0);
   return (
     <div className="flex items-center px-7 pt-5 pb-1.5 shrink-0">
       <div>
@@ -911,8 +945,20 @@ function TopBar({
         )}
         <button disabled title="全局搜索尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
           style={{ border: `1px solid ${T.line}`, color: "#5A5E70", opacity: 0.4, cursor: "not-allowed" }}><Search size={15} /></button>
-        <button disabled title="通知中心尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
-          style={{ border: `1px solid ${T.line}`, color: "#5A5E70", opacity: 0.4, cursor: "not-allowed" }}><Bell size={15} /></button>
+        <div className="relative">
+          <button onClick={() => setBell((b) => !b)} title="需要你出手的事" aria-haspopup="menu" aria-expanded={bell}
+            className="w-9 h-9 rounded-full flex items-center justify-center relative"
+            style={{ border: `1px solid ${bell ? T.indigo : T.line}`, color: bellCount > 0 ? T.ink : "#5A5E70", background: bell ? T.indigoSoft : "transparent" }}>
+            <Bell size={15} />
+            {bellCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-[9.5px] font-bold flex items-center justify-center"
+                style={{ background: alerts.length > 0 ? T.red : T.amber, color: "#fff" }}>
+                {bellCount}
+              </span>
+            )}
+          </button>
+          {bell && <BellMenu alerts={alerts} pending={pending} onClose={() => setBell(false)} onGoWorkflows={onGoWorkflows} onGoApprovals={onGoApprovals} />}
+        </div>
         <div className="flex items-center gap-2 ml-1" title={me ? `身份来自 MUSTER_ROLE/MUSTER_USER;接 OIDC 后改由 iss+sub 解析` : ""}>
           <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>
             {(me?.display_name ?? "?").slice(0, 1).toUpperCase()}

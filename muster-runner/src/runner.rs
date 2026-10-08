@@ -197,6 +197,9 @@ pub enum RunnerError {
     Audit(String),
     #[error("模型调用失败:{0}")]
     Model(String),
+    /// 配额 / 余额用尽:与 Model 分开,调用方才能把它显示成"去充值"而不是"再试一次"。
+    #[error("模型账户配额用尽或已暂停,未重试:{0}")]
+    Quota(String),
 }
 
 // ---------------------------------------------------------------- ReplayRefs 取真值
@@ -740,7 +743,7 @@ pub async fn run_task_at(
                         prompt_tokens: total_prompt,
                         completion_tokens: total_completion,
                     });
-                    return Err(RunnerError::Model(format!("账户配额用尽或已暂停,未重试:{why}")));
+                    return Err(RunnerError::Quota(why));
                 }
                 Some(msg) if rate_limited.is_some() && attempt < RATE_LIMIT_ATTEMPTS => {
                     // Retry-After 只当下限:配额多半按分钟算,它却常常说 1 秒

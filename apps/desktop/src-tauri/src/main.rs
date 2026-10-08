@@ -3473,6 +3473,8 @@ async fn run_workflow_inner(
         Ok(Err(e)) => {
             let class = match &e {
                 RunnerError::Model(_) => "failed:stream",
+                // 配额用尽单独记:连续失败的提示要能说出"是没钱了",而不是"模型调用失败"
+                RunnerError::Quota(_) => "failed:quota",
                 RunnerError::Refused(_) => "refused",
                 _ => "failed",
             };
