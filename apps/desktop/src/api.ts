@@ -61,6 +61,12 @@ export interface FailPayload {
   channel_id: string;
   message: string;
 }
+/** 心跳:模型长时间没有可见输出时的当前状态,只显示不入转录 */
+export interface ProgressPayload {
+  run_id: string;
+  text: string;
+  who: string | null;
+}
 export interface AuditRow {
   event_id: string;
   ts_ms: number;

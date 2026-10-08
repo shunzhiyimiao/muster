@@ -1267,6 +1267,29 @@ struct DeltaPayload {
     text: String,
 }
 
+/// 心跳(task-progress):只替换任务卡上的"当前状态"一行,不进转录。
+#[derive(Serialize, Clone)]
+struct ProgressPayload {
+    run_id: String,
+    text: String,
+    /// 委派出去的子 run 的心跳带上是谁;主 run 为 None
+    who: Option<String>,
+}
+
+/// 心跳的人话:阶段 + 已等多久 + 已收到多少。
+fn progress_text(stage: &str, elapsed_ms: u64, received_bytes: u64) -> String {
+    let secs = elapsed_ms / 1000;
+    let mut s = format!("模型正在{stage},已 {secs} 秒");
+    if received_bytes > 0 {
+        if received_bytes >= 1024 {
+            s.push_str(&format!(",已收到 {:.1} KB", received_bytes as f64 / 1024.0));
+        } else {
+            s.push_str(&format!(",已收到 {received_bytes} 字节"));
+        }
+    }
+    s
+}
+
 #[derive(Serialize, Clone)]
 struct DiffPayload {
     run_id: String,
@@ -1882,8 +1905,24 @@ fn forward_runner_event(
             tr.lock().unwrap().push_str(&line);
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
+        // 心跳不进转录(转录是给人复盘的,不该塞满"还在等"),只推给界面当场显示
+        RunnerEvent::Progress { elapsed_ms, received_bytes, stage, .. } => {
+            a.emit(
+                "task-progress",
+                ProgressPayload { run_id: rid.clone(), text: progress_text(&stage, elapsed_ms, received_bytes), who: None },
+            )
+            .ok();
+        }
         // 委派出去的子 run:每一行都标上是谁做的,别让它混进主 Agent 的动作里
         RunnerEvent::Delegated { name, inner, .. } => {
+            if let RunnerEvent::Progress { elapsed_ms, received_bytes, stage, .. } = *inner {
+                a.emit(
+                    "task-progress",
+                    ProgressPayload { run_id: rid.clone(), text: progress_text(&stage, elapsed_ms, received_bytes), who: Some(name) },
+                )
+                .ok();
+                return;
+            }
             let line = match *inner {
                 RunnerEvent::ToolCall { name: tool, arguments, .. } => format!("   {name} › 🔧 {tool} {arguments}\n"),
                 RunnerEvent::ToolResult { summary, .. } => format!("   {name} ›    ↳ {summary}\n"),

@@ -1,11 +1,24 @@
 /* 我的工作台 › 任务 › 工作流:WORKFLOW.md 定义的定时计划,到点由桌面壳拉起 Agent 跑一次。
    这一页回答:有哪些工作流、下次什么时候跑、上次跑成什么样、产物在哪、为什么有的没加载。 */
-import { useState } from "react";
-import { AlertTriangle, Calendar, Clock, FolderOpen, Globe, Lock, Play, RefreshCw, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, AlertTriangle, Calendar, Clock, FolderOpen, Globe, Lock, Play, RefreshCw, Sparkles } from "lucide-react";
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
 import { WorkflowsOut, WorkflowRunOut, api } from "../api";
 import { reasonZh, workflowHealth } from "./alertModel";
+import type { Msg } from "../chat";
+
+/** 已运行多久:1 分 05 秒这种写法,秒级跳动让人知道它还活着 */
+const elapsedText = (fromMs: number, now: number) => {
+  const s = Math.max(0, Math.floor((now - fromMs) / 1000));
+  return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, "0")} 秒`;
+};
+
+/** 任务卡正文的最后几行(去掉工具结果的长行),给工作流页当"最近动作" */
+function tailLines(text: string, n: number): string[] {
+  const lines = text.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
+  return lines.slice(-n).map((l) => (l.length > 160 ? l.slice(0, 160) + "…" : l));
+}
 
 const EXAMPLE = `---
 name: daily-finance-brief
@@ -33,10 +46,19 @@ function outcomeTag(r: WorkflowRunOut) {
   return <Tag tone="red">{r.outcome}</Tag>;
 }
 
-export function WorkflowsView({ data, onRefresh }: { data: WorkflowsOut | null; onRefresh: () => void }) {
+export function WorkflowsView({ data, onRefresh, live = {} }: { data: WorkflowsOut | null; onRefresh: () => void; live?: Record<string, Msg> }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const flows = data?.workflows ?? [];
+  // 运行中的工作流要显示"已运行多久",每秒刷新一次;没有在跑的就不转
+  const anyRunning = flows.some((w) => w.running);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [anyRunning]);
+  const liveOf = (name: string) => Object.values(live).find((m) => m.runId?.startsWith(`WF-${name}-`));
   const problems = data?.problems ?? [];
   const roots = data?.roots ?? [];
 
@@ -46,7 +68,7 @@ export function WorkflowsView({ data, onRefresh }: { data: WorkflowsOut | null; 
     api
       .workflowRunNow(name)
       .then((rid) => {
-        setMsg(`已启动 ${rid}:过程在它所发往的频道里实时可见,跑完这里会出现产物。`);
+        setMsg(`已启动 ${rid}:进度就显示在下面这张卡里,跑完自动刷新出产物;完整过程也在它所发往的频道里。`);
         onRefresh();
       })
       .catch((e) => setMsg(`启动失败:${e}`))
@@ -135,6 +157,35 @@ export function WorkflowsView({ data, onRefresh }: { data: WorkflowsOut | null; 
               </div>
               <div className="mt-2.5 text-[15px]"><b>{w.name}</b></div>
               <div className="text-[11.5px] mt-1 leading-relaxed" style={{ color: T.sub }}>{w.description}</div>
+
+              {w.running && (() => {
+                const run = w.runs.find((r) => r.outcome === null);
+                const lm = liveOf(w.name);
+                const since = run?.ts_ms ?? lm?.ts ?? null;
+                const tail = lm ? tailLines(lm.text, 6) : [];
+                return (
+                  <div className="mt-3 rounded-xl px-3.5 py-2.5 fade" style={{ background: T.greenSoft, border: "1px solid #BFE8CF" }}>
+                    <div className="flex items-center gap-2 text-[11.5px] flex-wrap" style={{ color: "#166534" }}>
+                      <Activity size={12} className="lv" />
+                      <b>运行中</b>
+                      {since && <span>· 已 {elapsedText(since, now)}</span>}
+                      {run && <code className="text-[10px]" style={{ color: "#4B7A5A" }}>{run.run_id}</code>}
+                      <span className="ml-auto text-[10px]" style={{ color: "#4B7A5A" }}>完整过程在「{w.channel ?? "personal"}」频道的任务卡里</span>
+                    </div>
+                    {lm?.progress && (
+                      <div className="mt-1.5 text-[10.5px] italic" style={{ color: "#166534" }}>⏳ {lm.progress}</div>
+                    )}
+                    {tail.length > 0 ? (
+                      <pre className="mt-1.5 text-[10.5px] leading-relaxed whitespace-pre-wrap break-all rounded-lg px-2.5 py-2"
+                        style={{ background: "#fff", color: "#454A5C", maxHeight: 150, overflowY: "auto" }}>{tail.join("\n")}</pre>
+                    ) : !lm ? (
+                      <div className="mt-1.5 text-[10.5px]" style={{ color: "#4B7A5A" }}>
+                        实时输出在这次运行开始后打开的界面里才有;要看完整过程去它所发往的频道。
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 mt-3 text-[11px]" style={{ color: T.sub }}>
                 <div>下次:<b style={{ color: T.ink }}>{w.next_due_ms ? fmt(w.next_due_ms) : "手动"}</b></div>

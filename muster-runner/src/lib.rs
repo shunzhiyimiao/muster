@@ -90,7 +90,7 @@ pub use capsule::{
     adopt, draft_spec, forge, forge_and_store, run_capsule, verify, AdoptOutcome, CapsuleError,
     CapsuleSpec, CapsuleStore, ForgeOutcome, VerifyOutcome,
 };
-pub use runner::{
+pub use runner::{HEARTBEAT_EVERY, 
     run_task, run_task_at, RunSummary, RunnerConfig, RunnerError, RunnerEvent, TaskSpec, WorkspaceOverride,
     RATE_LIMIT_ATTEMPTS, RATE_LIMIT_BASE_WAIT, RATE_LIMIT_MAX_WAIT,
 };

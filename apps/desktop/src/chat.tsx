@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Bot, Check, ChevronDown, Play, Send } from "lucide-react";
-import { api, AgentOut, Channel, Sensitivity, DiffPayload, DonePayload, FailPayload, StartPayload, StoredMsg } from "./api";
+import { api, AgentOut, Channel, Sensitivity, DiffPayload, DonePayload, FailPayload, ProgressPayload, StartPayload, StoredMsg } from "./api";
 import { LvTag, Tag } from "./ui";
 import { T } from "./theme";
 
@@ -15,6 +15,8 @@ export interface Msg {
   ts?: number;
   /** 说话的工牌(agent 消息) */
   badge?: string | null;
+  /** 心跳:模型长时间没有可见输出时的当前状态;有新增量就清掉,不入转录 */
+  progress?: string;
 }
 
 export interface ChatState {
@@ -73,10 +75,13 @@ export function useChat(onActivity: () => void): ChatState {
       }),
       listen<DiffPayload>("task-diff", (e) => setLastDiff(e.payload)),
       listen<{ run_id: string; text: string }>("task-delta", (e) => {
-        patch(e.payload.run_id, (m) => ({ ...m, text: m.text + e.payload.text }));
+        patch(e.payload.run_id, (m) => ({ ...m, text: m.text + e.payload.text, progress: undefined }));
+      }),
+      listen<ProgressPayload>("task-progress", (e) => {
+        patch(e.payload.run_id, (m) => ({ ...m, progress: (e.payload.who ? `${e.payload.who} › ` : "") + e.payload.text }));
       }),
       listen<DonePayload>("task-done", (e) => {
-        patch(e.payload.run_id, (m) => ({ ...m, status: "done" }));
+        patch(e.payload.run_id, (m) => ({ ...m, status: "done", progress: undefined }));
         const idx = runIndex.current[e.payload.run_id];
         if (idx) setBusy((b) => ({ ...b, [idx.channelId]: false }));
         setLastDone(e.payload);
@@ -96,7 +101,7 @@ export function useChat(onActivity: () => void): ChatState {
         setLastDone(null);
       }),
       listen<FailPayload>("task-failed", (e) => {
-        patch(e.payload.run_id, (m) => ({ ...m, status: "failed", text: m.text + `\n\n⚠️ ${e.payload.message}` }));
+        patch(e.payload.run_id, (m) => ({ ...m, status: "failed", text: m.text + `\n\n⚠️ ${e.payload.message}`, progress: undefined }));
         setBusy((b) => ({ ...b, [e.payload.channel_id]: false }));
         setLastFail(e.payload);
         activity.current();
@@ -507,6 +512,11 @@ export function ChatPane({
                 >
                   {m.text || (m.status === "streaming" ? "…" : "")}
                   {m.status === "streaming" && m.text && <span className="caret" />}
+                  {m.status === "streaming" && m.progress && (
+                    <div className="mt-1.5 text-[10.5px] italic flex items-center gap-1" style={{ color: T.sub }}>
+                      <span className="lv">⏳</span> {m.progress}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -46,6 +46,9 @@ const WRAP_UP_NOTICE: &str = "(系统提示)你还剩 2 回合(含本回合)就�
 const LAST_TURN_NOTICE: &str = "(系统提示)这是最后一回合,本回合不提供工具。请直接用文字写出结论:\
 做了什么、改了哪些文件、没做完的部分与原因、建议的下一步。";
 
+/// 心跳间隔:流上这么久没动静(或一直只在收工具参数),就发一次 [`RunnerEvent::Progress`]。
+pub const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// 同一回合因限流最多尝试几次(含第一次)。
 pub const RATE_LIMIT_ATTEMPTS: usize = 4;
 /// 限流退避的基准:第 n 次等 基准 × n(与 Retry-After 取较大者),封顶 [`RATE_LIMIT_MAX_WAIT`]。
@@ -153,6 +156,9 @@ pub enum RunnerEvent {
     ToolResult { turn: usize, name: String, summary: String },
     /// 过程性通告(如整回合重试)。
     Notice { text: String },
+    /// 心跳:模型一段时间没有可见输出(等首个 token,或在生成工具调用参数——参数生成完之前
+    /// 界面上一个字都看不见)。**不进转录**,只给界面当场显示;转录是给人复盘的,不该塞满"还在等"。
+    Progress { turn: usize, elapsed_ms: u64, received_bytes: u64, stage: String },
     Finished {
         outcome: String,
         latency_ms: u64,
@@ -563,7 +569,7 @@ pub async fn run_task_at(
         vec![ChatMessage::system(system_text), ChatMessage::user(spec.prompt.clone())];
     let mut total_prompt: u64 = 0;
     let mut total_completion: u64 = 0;
-    let mut final_text = String::new();
+    let mut final_text: String;
     // 撞上限时用来交代"最后在做什么":最后一回合的文字与它想调的工具
     let mut last_text = String::new();
     let mut last_tools: Vec<String> = Vec::new();
@@ -651,7 +657,7 @@ pub async fn run_task_at(
             })
             .to_string();
 
-            let call_started = Instant::now();
+            let call_started = tokio::time::Instant::now();
             let mut retryable_err: Option<String> = None;
             // 限流:Some(等待时长)。与普通错误分开对待,见模块文档。
             let mut rate_limited: Option<std::time::Duration> = None;
@@ -664,13 +670,51 @@ pub async fn run_task_at(
 
             match resolution.provider.chat_stream(req).await {
                 Ok(mut stream) => {
-                    while let Some(ev) = stream.next().await {
+                    // 心跳簿记:收了多少工具参数字节、上次报过心跳是什么时候
+                    let mut tool_bytes = 0u64;
+                    let mut last_beat = Instant::now();
+                    let beat = |on_event: &mut dyn FnMut(RunnerEvent), text_len: usize, tool_bytes: u64| {
+                        let stage = if tool_bytes > 0 {
+                            "生成工具调用参数"
+                        } else if text_len == 0 {
+                            "等待模型响应"
+                        } else {
+                            "生成中"
+                        };
+                        on_event(RunnerEvent::Progress {
+                            turn,
+                            elapsed_ms: call_started.elapsed().as_millis() as u64,
+                            received_bytes: text_len as u64 + tool_bytes,
+                            stage: stage.into(),
+                        });
+                    };
+                    loop {
+                        // 等事件,但最多等一个心跳周期:一直没事件就是模型还在想,报一声
+                        let next = match tokio::time::timeout(HEARTBEAT_EVERY, stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                beat(&mut on_event, text.len(), tool_bytes);
+                                last_beat = Instant::now();
+                                continue;
+                            }
+                        };
+                        let Some(ev) = next else { break };
                         match ev {
                             Ok(StreamEvent::TextDelta(t)) => {
                                 text.push_str(&t);
                                 on_event(RunnerEvent::TextDelta { text: t });
                             }
-                            Ok(ev @ StreamEvent::ToolCallDelta { .. }) => acc.push_event(&ev),
+                            Ok(ev @ StreamEvent::ToolCallDelta { .. }) => {
+                                if let StreamEvent::ToolCallDelta { arguments_delta, .. } = &ev {
+                                    tool_bytes += arguments_delta.len() as u64;
+                                }
+                                acc.push_event(&ev);
+                                // 参数在收,界面却看不见:按周期报个进度
+                                if last_beat.elapsed() >= HEARTBEAT_EVERY {
+                                    beat(&mut on_event, text.len(), tool_bytes);
+                                    last_beat = Instant::now();
+                                }
+                            }
                             Ok(StreamEvent::Usage(u)) => {
                                 prompt_tokens = u.prompt_tokens as u64;
                                 completion_tokens = u.completion_tokens as u64;

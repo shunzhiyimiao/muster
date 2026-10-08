@@ -14,7 +14,7 @@ import {
   CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, RosterOut, SkillsOut, WorkflowsOut,
   Sensitivity, TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
-import { useChat, ChatPane } from "./chat";
+import { useChat, ChatPane, Msg } from "./chat";
 import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./ui";
 import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
@@ -109,6 +109,14 @@ export default function App() {
     }).catch(() => {});
   };
   const chat = useChat(refreshAll);
+  // 正在流式进行的工作流运行(按 run_id):工作流页据此显示实时进度
+  const liveWorkflowRuns = useMemo(() => {
+    const out: Record<string, Msg> = {};
+    for (const list of Object.values(chat.msgs)) {
+      for (const m of list) if (m.status === "streaming" && m.runId?.startsWith("WF-")) out[m.runId] = m;
+    }
+    return out;
+  }, [chat.msgs]);
 
   useEffect(() => {
     api
@@ -635,7 +643,7 @@ export default function App() {
             {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat}
               roster={roster} badge={agentBadge} onPick={(b) => { setAgentBadge(b); api.agentStats(b).then(setAgent).catch(() => {}); }} />}
             {view === "skills" && <SkillsView data={skills} onRefresh={refreshAll} />}
-            {view === "workflows" && <WorkflowsView data={workflows} onRefresh={refreshAll} />}
+            {view === "workflows" && <WorkflowsView data={workflows} onRefresh={refreshAll} live={liveWorkflowRuns} />}
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">

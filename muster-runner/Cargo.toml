@@ -22,6 +22,6 @@ tokio = { version = "1.38", features = ["time"] }
 
 [dev-dependencies]
 muster-identity = { path = "../muster-identity" }
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tempfile = "3"
 sha2 = "0.10"

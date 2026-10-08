@@ -233,7 +233,10 @@ impl DelegateTool {
                 RunnerEvent::Finished { outcome, turns, .. } => {
                     sink(wrap(RunnerEvent::Notice { text: format!("完成子任务({outcome},{turns} 回合)") }))
                 }
-                RunnerEvent::ToolCall { .. } | RunnerEvent::ToolResult { .. } | RunnerEvent::Notice { .. } => sink(wrap(ev)),
+                RunnerEvent::ToolCall { .. }
+                | RunnerEvent::ToolResult { .. }
+                | RunnerEvent::Notice { .. }
+                | RunnerEvent::Progress { .. } => sink(wrap(ev)),
                 _ => {}
             }
         })
