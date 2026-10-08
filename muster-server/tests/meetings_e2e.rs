@@ -103,10 +103,23 @@ async fn boot() -> Option<Server> {
 }
 
 struct Seed {
+    team: String,
     chan: String,
     alice: String,
     bob: String,
     outsider: String,
+}
+
+impl Seed {
+    /// 收尾:把这次测试造的团队(级联到频道、会议、参会、纪要、行动项)和账号删掉。
+    /// 开发库是大家共用的,`GET /channels` 又不按成员过滤——测试垃圾会直接出现在
+    /// 桌面壳的频道列表里。断言失败时不会走到这里,留下的数据按 `t<32 位十六进制>` 可认。
+    async fn teardown(self, db: &Db) {
+        sqlx::query("DELETE FROM team WHERE id = $1").bind(&self.team).execute(&db.pool).await.unwrap();
+        for a in [&self.alice, &self.bob, &self.outsider] {
+            sqlx::query("DELETE FROM account WHERE id = $1").bind(a).execute(&db.pool).await.unwrap();
+        }
+    }
 }
 
 /// 一个团队、一个频道、三个账号:alice / bob 是组织成员(能发言),outsider 没有任何角色。
@@ -152,7 +165,7 @@ async fn seed(db: &Db, level: &str) -> Seed {
         .await
         .unwrap();
     }
-    Seed { chan, alice, bob, outsider }
+    Seed { team, chan, alice, bob, outsider }
 }
 
 fn token(id: &str) -> String {
@@ -202,6 +215,33 @@ async fn expect_event(
     })
     .await
     .unwrap_or_else(|_| panic!("10 秒内没等到 {ty} 事件"))
+}
+
+/// 等一组事件**不限顺序**都到齐(每个条件各匹配一条);10 秒不齐就失败。
+/// 一次操作会推多条事件(抬升密级 = 一行系统纪要 + 一条 meeting 事件),
+/// 顺序是服务端实现细节,测试不该钉死它——钉死了就会把别的事件白白吃掉。
+async fn expect_all(
+    rx: &mut mpsc::UnboundedReceiver<Value>,
+    conds: &[(&str, &dyn Fn(&Value) -> bool)],
+) -> Vec<Value> {
+    let mut got: Vec<Option<Value>> = vec![None; conds.len()];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while got.iter().any(Option::is_none) {
+            let v = rx.recv().await.expect("推送流断了");
+            if let Some(i) = conds.iter().enumerate().find_map(|(i, (ty, pred))| {
+                (got[i].is_none() && v["type"] == *ty && pred(&v)).then_some(i)
+            }) {
+                got[i] = Some(v);
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let missing: Vec<&str> =
+            conds.iter().zip(&got).filter(|(_, g)| g.is_none()).map(|((ty, _), _)| *ty).collect();
+        panic!("10 秒内没等齐事件,还缺:{missing:?}")
+    });
+    got.into_iter().map(Option::unwrap).collect()
 }
 
 fn ids_of(list: &Value) -> Vec<String> {
@@ -351,6 +391,8 @@ async fn lifecycle_is_chained_without_plaintext() {
     let end = evs.last().unwrap();
     assert_eq!(end.payload["transcript_lines"], 3);
     assert!(end.payload["duration_ms"].as_u64().is_some());
+
+    seed.teardown(&s.db).await;
 }
 
 /// 会议状态变化要**推**给在线的人:大厅、侧栏徽标、会议室页和 agent-daemon 都靠这条流。
@@ -387,14 +429,18 @@ async fn meeting_pushes_reach_sse_subscribers() {
         .post(&format!("/meetings/{mid}/level"), &ta, json!({ "level": "internal", "cause": "共享了内部排期" }))
         .await;
     assert_eq!(st, 200, "{j}");
-    let ev = expect_event(&mut rx, "meeting", |v| v["meeting_id"] == mid.as_str() && v["event"] == "level").await;
-    assert_eq!(ev["level"], "internal");
-    let sys = expect_event(&mut rx, "transcript", |v| v["meeting_id"] == mid.as_str() && v["speaker_id"] == "系统").await;
-    assert!(sys["text"].as_str().unwrap().contains("internal"), "纪要里要有一行系统说明密级抬升了");
+    // 抬升密级推两条:一行系统纪要 + 一条 meeting 事件,不钉顺序
+    let is_level = |v: &Value| v["meeting_id"] == mid.as_str() && v["event"] == "level";
+    let is_sys = |v: &Value| v["meeting_id"] == mid.as_str() && v["speaker_id"] == "系统";
+    let both = expect_all(&mut rx, &[("meeting", &is_level), ("transcript", &is_sys)]).await;
+    assert_eq!(both[0]["level"], "internal");
+    assert!(both[1]["text"].as_str().unwrap().contains("internal"), "纪要里要有一行系统说明密级抬升了");
 
     s.post(&format!("/meetings/{mid}/end"), &ta, json!({})).await;
     let ev = expect_event(&mut rx, "meeting", |v| v["meeting_id"] == mid.as_str() && v["event"] == "ended").await;
     assert_eq!(ev["title"], "推送测试");
+
+    seed.teardown(&s.db).await;
 }
 
 /// 没有角色的人什么都做不了;没带令牌的连门都进不来。拒绝不留审计事件。
@@ -430,6 +476,8 @@ async fn outsiders_are_refused_before_anything_happens() {
     assert_eq!(types, ["meeting.start"], "被拒的操作不在链上留痕,链上只有 alice 建的那场会");
     let (_, hist) = s.get(&format!("/meetings/{mid}/transcript"), &ta).await;
     assert_eq!(hist.as_array().map(|a| a.len()), Some(0), "外人的话不该落库");
+
+    seed.teardown(&s.db).await;
 }
 
 /// 密级只升不降,升到 restricted 后入会票上**禁录**;抬升理由不进链。
@@ -476,4 +524,6 @@ async fn level_only_rises_and_restricted_forbids_recording() {
     assert!(!raise.payload.to_string().contains("合同"), "抬升理由是正文,不进链");
     assert_eq!(evs[2].label, Some(Sensitivity::Restricted), "抬升后的入会按新密级记");
     assert_eq!(evs[2].payload["can_record"], false);
+
+    seed.teardown(&s.db).await;
 }
