@@ -10,6 +10,7 @@ import { Msg } from "../chat";
 import { MEMO } from "../data";
 
 export function PersonalHome({
+  planned: _planned = false,
   personalMsgs,
   agent,
   home,
@@ -25,6 +26,8 @@ export function PersonalHome({
   onOpenChannel,
   me,
 }: {
+  /** 显示规划中的功能;首页目前没有概念内容,保留给以后 */
+  planned?: boolean;
   personalMsgs: Msg[];
   agent: AgentStats | null;
   home: HomeStats | null;
@@ -237,6 +240,7 @@ function PSnip({ who, bot, text }: { who: string; bot?: boolean; text: string })
 /* ==================== Agent 档案页 ==================== */
 
 export function AgentProfile({
+  planned = false,
   agent,
   streamed,
   onStream,
@@ -245,6 +249,8 @@ export function AgentProfile({
   badge = null,
   onPick,
 }: {
+  /** 显示规划中的内容(档案编辑按钮、记忆与积累概念卡);默认隐藏 */
+  planned?: boolean;
   agent: AgentStats | null;
   streamed: boolean;
   onStream: () => void;
@@ -331,9 +337,11 @@ export function AgentProfile({
           <div className="flex items-center gap-2.5">
             <span className="text-2xl font-extrabold">{me?.name ?? "小七"}</span>
             <Tag tone="ind">编制 {agent?.badge ?? "—"} · {me?.role ?? "代码评审员"}</Tag>
-            <button disabled title="Agent 档案编辑尚未实现" className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg" style={{ background: T.soft, color: T.sub , opacity: 0.45, cursor: "not-allowed"}}>
-              <Pencil size={11} /> 编辑
-            </button>
+            {planned && (
+              <button disabled title="Agent 档案编辑尚未实现" className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg" style={{ background: T.soft, color: T.sub , opacity: 0.45, cursor: "not-allowed"}}>
+                <Pencil size={11} /> 编辑
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-3 mt-2 text-[11.5px]" style={{ color: T.sub }}>
             <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full" style={{ background: T.green }} />在线</span>
@@ -412,7 +420,8 @@ export function AgentProfile({
         </div>
       </Card>
 
-      {/* 记忆与积累(概念示意) */}
+      {/* 记忆与积累(概念示意):规划中,默认隐藏 */}
+      {planned && (
       <Card className="p-5">
         <div className="flex items-center gap-2">
           <Brain size={15} style={{ color: T.indigo }} />
@@ -453,6 +462,7 @@ export function AgentProfile({
           </div>
         </div>
       </Card>
+      )}
     </div>
   );
 }

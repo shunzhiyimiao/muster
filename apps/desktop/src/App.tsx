@@ -2,7 +2,7 @@
    概念稿:docs/Muster-概念稿-v4.html;真实后端接线处均标注。 */
 import { useEffect, useMemo, useState } from "react";
 import {
-  Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Clock, Hash, Home,
+  Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Eye, EyeOff, Hash, Home,
   LayoutDashboard, Library, LineChart, Link2, Lock, MessageSquare, Network, Puzzle, Search,
   Pencil, Plus, Repeat, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X,
 } from "lucide-react";
@@ -202,6 +202,27 @@ export default function App() {
   const soft = (label: string) =>
     setNotice(`「${label}」为完整形态占位模块,当前聚焦 控制台 / 个人工作台 / 团队协作`);
 
+  // 规划中的功能默认隐藏:界面上的东西要么是真的,要么明说自己不是——而"明说"也该是
+  // 用户主动打开才看到的。2026-10-08 吻合度评审第 8 步:冻结占位,不再扩面。
+  const [planned, setPlanned] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("muster.showPlanned") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const togglePlanned = () => {
+    setPlanned((p) => {
+      try {
+        localStorage.setItem("muster.showPlanned", p ? "0" : "1");
+      } catch {
+        // 存不了就只在本次会话生效
+      }
+      return !p;
+    });
+    setNotice("");
+  };
+
   const goRail = (r: (typeof RAIL)[number]) => {
     if (!r.ok) {
       soft(r.label);
@@ -380,7 +401,7 @@ export default function App() {
         {/* ===== 一级:图标轨 ===== */}
         <div className="w-14 shrink-0 flex flex-col items-center py-4 gap-1.5" style={{ background: T.rail, borderRight: `1px solid ${T.line}` }}>
           <div className="w-9 h-9 rounded-xl flex items-center justify-center font-extrabold text-sm mb-2" style={{ background: T.indigo, color: "#fff" }}>M</div>
-          {RAIL.map((r) => {
+          {RAIL.filter((r) => r.ok || planned).map((r) => {
             const Ic = r.icon;
             const on = module === r.id;
             return (
@@ -394,7 +415,14 @@ export default function App() {
               </button>
             );
           })}
-          <div className="mt-auto w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>A</div>
+          <button onClick={togglePlanned}
+            title={planned ? "正在显示规划中的功能(占位模块与概念示例),点击隐藏" : "显示规划中的功能。默认隐藏:界面上只放真的"}
+            aria-pressed={planned}
+            className="mt-auto w-9 h-9 rounded-xl flex items-center justify-center"
+            style={{ color: planned ? T.indigo : "#B9BCCB", background: planned ? T.indigoSoft : "transparent" }}>
+            {planned ? <Eye size={16} /> : <EyeOff size={16} />}
+          </button>
+          <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: T.indigoSoft, color: T.indigo }}>A</div>
         </div>
 
         {/* ===== 二级:随模块切换 ===== */}
@@ -409,7 +437,7 @@ export default function App() {
               <SideSec>总览</SideSec>
               <SideItem icon={<Home size={16} />} label="中控台" active={view === "home"} onClick={() => { setView("home"); setNotice(""); refreshAll(); }} />
               <SideItem icon={<Shield size={16} />} label="审计中心" active={view === "audit"} onClick={() => { setView("audit"); setNotice(""); refreshAll(); }} />
-              <SideItem icon={<LineChart size={16} />} label="数据分析" onClick={() => soft("数据分析")} />
+              {planned && <SideItem icon={<LineChart size={16} />} label="数据分析" onClick={() => soft("数据分析")} />}
               {/* E6 主权演习:真实开关 */}
               <div className="mt-auto rounded-2xl p-4 text-white" style={{ background: drillOn ? "#2B0E10" : T.black, boxShadow: drillOn ? `0 0 0 1.5px ${T.red} inset` : "none" }}>
                 <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-2.5" style={{ background: "rgba(255,255,255,.14)" }}>
@@ -509,18 +537,23 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <SideItem icon={<Clock size={16} />} label="任务" onClick={() => soft("任务")} />
+              <SideSec>任务</SideSec>
               <SideItem icon={<Repeat size={16} />} label="工作流" active={view === "workflows"} onClick={() => { setView("workflows"); setNotice(""); refreshAll(); }}
                 extra={alerts.length > 0
                   ? <span className="ml-auto text-[9.5px] font-bold px-1.5 rounded-full" title={`${alerts.length} 个工作流连续失败`} style={{ background: T.red, color: "#fff" }}>{alerts.length}</span>
                   : workflows && workflows.workflows.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "workflows" ? "#DCDCFE" : T.faint }}>{workflows.workflows.length}</span> : undefined} />
               <SideSec>积累</SideSec>
-              <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />
+              {planned && <SideItem icon={<Brain size={16} />} label="记忆" onClick={() => soft("记忆")} />}
               <SideItem icon={<Sparkles size={16} />} label="技能" active={view === "skills"} onClick={() => { setView("skills"); setNotice(""); refreshAll(); }}
                 extra={skills && skills.skills.length > 0 ? <span className="ml-auto text-[10px]" style={{ color: view === "skills" ? "#DCDCFE" : T.faint }}>{skills.skills.length}</span> : undefined} />
-              <SideItem icon={<BookOpen size={16} />} label="知识库" onClick={() => soft("知识库")} />
-              <SideItem icon={<Link2 size={16} />} label="连接器" onClick={() => soft("连接器")} />
-              <SideItem icon={<Lock size={16} />} label="权限" onClick={() => soft("权限")} />
+              {planned && (
+                <>
+                  <SideItem icon={<BookOpen size={16} />} label="知识库" onClick={() => soft("知识库")} />
+                  <SideItem icon={<Link2 size={16} />} label="连接器" onClick={() => soft("连接器")} />
+                  <SideItem icon={<Lock size={16} />} label="权限" onClick={() => soft("权限")} />
+                </>
+              )}
+              {planned && (
               <div className="mt-auto rounded-2xl p-3.5" style={{ background: streamed ? T.indigo : "#fff", border: `1px solid ${streamed ? T.indigo : T.line}`, color: streamed ? "#fff" : T.ink }}>
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold">
                   <Cast size={13} />
@@ -543,6 +576,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+              )}
             </>
           )}
 
@@ -609,7 +643,7 @@ export default function App() {
         {/* ===== 主区 ===== */}
         <main className="flex-1 min-w-0 overflow-y-auto flex flex-col">
           <TopBar module={module} view={view} channelName={activeChannel?.name ?? channelId} teamName={activeChannel?.team ?? ""} streamed={streamed} drillOn={drillOn} me={me}
-            alerts={alerts} pending={approvals.length} onGoWorkflows={goWorkflows} onGoApprovals={goPersonalChat} />
+            alerts={alerts} pending={approvals.length} onGoWorkflows={goWorkflows} onGoApprovals={goPersonalChat} planned={planned} />
           {notice && (
             <div className="mx-7 mt-2 px-3.5 py-2 rounded-xl text-xs flex items-center gap-2 fade" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
               <Sparkles size={13} /> {notice}
@@ -632,7 +666,7 @@ export default function App() {
                 <div className="px-7 pt-2">
                   <AlertBanner alerts={alerts} pending={approvals.length} onGoWorkflows={goWorkflows} onGoApprovals={goPersonalChat} />
                 </div>
-                <PersonalHome me={me} personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
+                <PersonalHome planned={planned} me={me} personalMsgs={personalMsgs} agent={agent} home={home} streamed={streamed}
                 allMsgs={chat.msgs} channels={channels}
                 onStream={() => setPicker(true)} onStop={() => setStreamed(false)}
                 goAgent={() => setView("agent")} goChat={goPersonalChat}
@@ -640,7 +674,7 @@ export default function App() {
                 onOpenChannel={(c) => (c.personal ? goPersonalChat() : goChannel(c.team_id, c.id))} />
               </>
             )}
-            {view === "agent" && <AgentProfile agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat}
+            {view === "agent" && <AgentProfile planned={planned} agent={agent} streamed={streamed} onStream={() => setPicker(true)} goChat={goPersonalChat}
               roster={roster} badge={agentBadge} onPick={(b) => { setAgentBadge(b); api.agentStats(b).then(setAgent).catch(() => {}); }} />}
             {view === "skills" && <SkillsView data={skills} onRefresh={refreshAll} />}
             {view === "workflows" && <WorkflowsView data={workflows} onRefresh={refreshAll} live={liveWorkflowRuns} />}
@@ -658,14 +692,14 @@ export default function App() {
               </div>
             )}
             {view === "channel" && activeChannel && (
-              <ChannelView channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed} agents={roster?.agents ?? []} defaultBadge={roster?.default_badge ?? null}
+              <ChannelView planned={planned} channel={activeChannel} chat={chat} auditRows={audit} streamed={streamed} agents={roster?.agents ?? []} defaultBadge={roster?.default_badge ?? null}
                 introduced={introduced} setIntroduced={setIntroduced}
                 openConvo={() => setConvo("open")} goMeeting={() => setView("meeting")}
                 approvals={approvals} onApprovalsChanged={refreshAll} canApprove={me?.can.approve_merge ?? true}
                 onThreadsChanged={(g) => void onThreadsChanged(g)} />
             )}
             {view === "roster" && (
-              <RosterView filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
+              <RosterView planned={planned} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
             )}
             {view === "meeting" &&
               (meeting ? (
@@ -694,11 +728,11 @@ export default function App() {
                       </button>
                     </div>
                   )}
-                  <MeetingView />
+                  <MeetingView planned={planned} />
                 </>
               ))}
             {view === "caps" && (
-              <CapsView trace={trace} setTrace={setTrace} introduced={introduced}
+              <CapsView planned={planned} trace={trace} setTrace={setTrace} introduced={introduced}
                 live={capsules} forgeable={forgeable}
                 onForge={(runId, goal) => {
                   api.capsuleForge(runId, goal, "team")
@@ -892,6 +926,7 @@ function TopBar({
   pending,
   onGoWorkflows,
   onGoApprovals,
+  planned,
 }: {
   module: string;
   view: string;
@@ -904,6 +939,8 @@ function TopBar({
   pending: number;
   onGoWorkflows: () => void;
   onGoApprovals: () => void;
+  /** 是否显示规划中的功能(占位按钮) */
+  planned: boolean;
   me: WhoAmI | null;
 }) {
   const titles: Record<string, [string, string]> = {
@@ -914,8 +951,8 @@ function TopBar({
     pchat: ["对话 · 小七", "私有会话 · 真实路由与审计,内容不进团队"],
     channel: [`#${channelName}`, `${teamName} · 频道协作 · 共享对话与工作流`],
     roster: [`编制 · ${teamName || "团队"}`, "团队内的人与 Agent · 协作、授权与审计"],
-    meeting: ["会议室", "平台组周会 · Agent-007 / 021 在席(概念)"],
-    caps: ["能力库", "组织的 Capsule 资产池(P4 概念)"],
+    meeting: ["会议室", "连接服务端后为 LiveKit 实时会议 · 转写只走本地 provider"],
+    caps: ["能力库", "已锻造的 Capsule · 影子重放验真 · 跨团队引入"],
   };
   const [t, s] = titles[view] ?? ["Muster", ""];
   const [bell, setBell] = useState(false);
@@ -951,8 +988,10 @@ function TopBar({
             串流(未实现·仅界面状态)
           </span>
         )}
-        <button disabled title="全局搜索尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
-          style={{ border: `1px solid ${T.line}`, color: "#5A5E70", opacity: 0.4, cursor: "not-allowed" }}><Search size={15} /></button>
+        {planned && (
+          <button disabled title="全局搜索尚未实现" className="w-9 h-9 rounded-full flex items-center justify-center"
+            style={{ border: `1px solid ${T.line}`, color: "#5A5E70", opacity: 0.4, cursor: "not-allowed" }}><Search size={15} /></button>
+        )}
         <div className="relative">
           <button onClick={() => setBell((b) => !b)} title="需要你出手的事" aria-haspopup="menu" aria-expanded={bell}
             className="w-9 h-9 rounded-full flex items-center justify-center relative"

@@ -29,6 +29,7 @@
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
 - 根目录 AGENTS.md 是给 Agent（Muster 工牌与 Codex）读的章程摘要，运行时每次都进提示词；改铁律时与本文件两处同步
+- **界面只放真的**（2026-10-08 评审第 8 步）：占位模块与概念示例默认隐藏，导轨底部的眼睛图标可切换「显示规划中的功能」（localStorage `muster.showPlanned`）；新功能先做真的再上界面，不再新增占位
 - 总体规划在 docs/（16 周 P0–P6，任务号 P0-01…P6-08）；A2/A7/E1–E3/A9 等是其细化分解；../muster-codex 是 openai/codex 的**只读参考快照**（2026-10-08 起不再是 fork：固定在 rust-v0.161.0 / 979011409d，detached，不改一行；要看新版本就 `git fetch upstream tag <标签> --no-tags && git checkout --detach <标签>`，并把这里的标签改掉）
 - **与 Codex 的关系（2026-10-08 评审后定为路 B）**：Muster 自带运行时，不以 Codex 为执行器；只借其 SKILL.md 技能约定、Responses 线协议（经网关）与会话分叉语义，并有选择地吸收其资产（读 AGENTS.md、兼读 ~/.agents/skills、复用沙箱与网络代理）。对外一律不再称"teams 版 codex"。评审与八步行动见 docs/评审-与Codex吻合度-2026-10-08.md
 - **服务端动手前先读 docs/服务端架构.md**（六条硬边界 + 分阶段 + 未决三项）；改完回来更新它

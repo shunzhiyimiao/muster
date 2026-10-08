@@ -15,6 +15,7 @@ import { ApprovalsPanel } from "./Approvals";
 /* ==================== 频道视图 ==================== */
 
 export function ChannelView({
+  planned = false,
   channel,
   chat,
   auditRows,
@@ -30,6 +31,8 @@ export function ChannelView({
   agents = [],
   defaultBadge = null,
 }: {
+  /** 显示概念示例卡(串流 / 分享 / 置顶能力);默认隐藏 */
+  planned?: boolean;
   channel: Channel;
   chat: ChatState;
   auditRows: AuditRow[];
@@ -194,7 +197,7 @@ export function ChannelView({
           </span>
         </div>
         <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <ChatPane channel={channel} chat={chat} header={conceptCards} onThreadsChanged={onThreadsChanged} agents={chatAgents} defaultBadge={chatDefault} />
+          <ChatPane channel={channel} chat={chat} header={planned ? conceptCards : undefined} onThreadsChanged={onThreadsChanged} agents={chatAgents} defaultBadge={chatDefault} />
         </Card>
       </div>
 
@@ -301,11 +304,14 @@ const PinCap = ({ name, ver, rate, from, fresh }: { name: string; ver: string; r
 /* ==================== 编制管理(D6 概念) ==================== */
 
 export function RosterView({
+  planned = false,
   filter,
   setFilter,
   team,
   live,
 }: {
+  /** 显示演示叙事的概念编制;默认只显示审计链实证的在册编制 */
+  planned?: boolean;
   filter: string;
   setFilter: (f: string) => void;
   team: string;
@@ -332,7 +338,7 @@ export function RosterView({
           <Search size={14} /> 搜索本团队成员或 Agent…
         </div>
         <span className="text-[11px]" style={{ color: T.sub }}>
-          在册 {real.length}(审计链实证)· 概念 {inTeam.length}
+          在册 {real.length}(审计链实证){planned ? ` · 概念 ${inTeam.length}` : ""}
         </span>
         <div className="ml-auto flex items-center gap-2">
           {["全部", "人类", "Agent", "待审批"].map((f) => (
@@ -364,20 +370,24 @@ export function RosterView({
         </div>
       )}
 
-      {/* ---- 概念编制(演示叙事) ---- */}
-      <div className="flex items-center gap-2 mb-2.5">
-        <b className="text-[13px]">概念编制</b>
-        <Tag>演示叙事 · 非真实数据</Tag>
-        <span className="text-[10.5px]" style={{ color: T.faint }}>
-          多人多 Agent 的组织形态待 P2(账号与权限)落地后接真
-        </span>
-      </div>
-      {conceptFiltered.length === 0 ? (
-        <Card className="p-5 text-center text-xs" style={{ color: T.sub }}>本团队当前筛选下没有概念条目</Card>
-      ) : (
-        <div className="grid grid-cols-3 gap-4">
-          {conceptFiltered.map((p) => <PersonCard key={p.name} p={p} />)}
-        </div>
+      {/* ---- 概念编制(演示叙事):规划中,默认隐藏 ---- */}
+      {planned && (
+        <>
+          <div className="flex items-center gap-2 mb-2.5">
+            <b className="text-[13px]">概念编制</b>
+            <Tag>演示叙事 · 非真实数据</Tag>
+            <span className="text-[10.5px]" style={{ color: T.faint }}>
+              多人多 Agent 的组织形态待 P2(账号与权限)落地后接真
+            </span>
+          </div>
+          {conceptFiltered.length === 0 ? (
+            <Card className="p-5 text-center text-xs" style={{ color: T.sub }}>本团队当前筛选下没有概念条目</Card>
+          ) : (
+            <div className="grid grid-cols-3 gap-4">
+              {conceptFiltered.map((p) => <PersonCard key={p.name} p={p} />)}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -484,7 +494,7 @@ function PersonCard({ p }: { p: RosterEntry }) {
 
 /* ==================== 会议室(v1.x 概念) ==================== */
 
-export function MeetingView() {
+export function MeetingView({ planned = false }: { planned?: boolean }) {
   const [sec, setSec] = useState(24 * 60 + 31);
   const [ci, setCi] = useState(0);
   const [asked, setAsked] = useState(false);
@@ -498,6 +508,20 @@ export function MeetingView() {
     };
   }, []);
   const mm = String(Math.floor(sec / 60)).padStart(2, "0"), ss = String(sec % 60).padStart(2, "0");
+  // 单机模式下没有"别人"可开会:默认说实话,不放概念稿;想看形态就打开"规划中的功能"
+  if (!planned) {
+    return (
+      <div className="px-7 pb-8 pt-2">
+        <Card className="p-6">
+          <div className="text-[15px] font-bold">会议室需要连接服务端</div>
+          <div className="text-[12px] mt-2 leading-relaxed" style={{ color: T.sub }}>
+            真实会议走 LiveKit:连接服务端后这里会显示可加入的会议与入会令牌,转写只走本地 provider。
+            单机模式下没有可以开会的对象,所以这里什么都不放——导轨底部的眼睛图标可以打开规划中的概念稿看形态。
+          </div>
+        </Card>
+      </div>
+    );
+  }
   const cap: [string, string] =
     asked && ci === 0 ? ["Agent-007", "结论复述:幂等键由网关层统一生成;回滚脚本由我会后产出,今天内给草稿。"] : CAPTIONS[ci];
 
@@ -626,8 +650,10 @@ const Note = ({ k, who, ai, fresh, children }: { k: string; who?: string; ai?: b
 /* ==================== 能力库(P4 概念) ==================== */
 
 export function CapsView({
-  trace, setTrace, introduced, live, forgeable, onForge, onVerify, onAdopt, onRun, canRun,
+  planned = false, trace, setTrace, introduced, live, forgeable, onForge, onVerify, onAdopt, onRun, canRun,
 }: {
+  /** 显示概念能力(演示叙事);默认只显示已锻造的真实能力 */
+  planned?: boolean;
   trace: boolean;
   setTrace: (fn: (t: boolean) => boolean) => void;
   introduced: boolean;
@@ -653,6 +679,7 @@ export function CapsView({
 
       <ForgeSection live={live} forgeable={forgeable} onForge={onForge} onVerify={onVerify} onAdopt={onAdopt} onRun={onRun} canRun={canRun} />
 
+      {planned && (
       <button onClick={() => setShowConcept((v) => !v)}
         className="flex items-center gap-2 mb-2.5 mt-6 w-full text-left">
         <b className="text-[13px]">概念能力</b>
@@ -661,7 +688,8 @@ export function CapsView({
           {showConcept ? "点击收起" : "点击展开(仅供了解形态,验真率等均为示例值)"}
         </span>
       </button>
-      <div className="grid grid-cols-2 gap-4" style={{ display: showConcept ? "grid" : "none" }}>
+      )}
+      <div className="grid grid-cols-2 gap-4" style={{ display: planned && showConcept ? "grid" : "none" }}>
         {CAPS.map((c) => (
           <Card key={c.name} className="p-5">
             <div className="flex items-center gap-2">
