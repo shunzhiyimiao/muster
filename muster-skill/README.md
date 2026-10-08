@@ -53,10 +53,16 @@ metadata:
 
 ### 1. 发现:`discover`
 
-```rust
-use std::path::PathBuf;
+`REPO_SKILLS_DIR` 是相对仓库根目录的常量(`.agents/skills`),`discover` 拿到什么
+路径就在什么路径下找——直接用 `PathBuf::from(REPO_SKILLS_DIR)` 是**相对当前
+工作目录**的,进程不在仓库根启动就会找不到技能。正确做法是**拼上仓库根**:
 
-let discovery = muster_skill::discover(&[PathBuf::from(muster_skill::REPO_SKILLS_DIR)]);
+```rust
+use std::path::{Path, PathBuf};
+
+// 仓库根 = crate 清单目录的上一级;集成测试 / 例子都这么写,二进制按部署约定换
+let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+let discovery = muster_skill::discover(&[repo_root.join(muster_skill::REPO_SKILLS_DIR)]);
 for skill in &discovery.skills {
     println!("{}:{}", skill.name, skill.description);
 }
@@ -129,3 +135,20 @@ if let Some(source) = skill.label_source() {
   有差异——`skill.read` 事件能看出这一点,但 v0 不自动对齐。
 - 团队共享靠仓库(`.agents/skills/` 随代码提交);服务端分发未做。
 - 技能目录里的脚本、参考文件不会被读取,Agent 只看得到 SKILL.md 本身。
+
+## 构建与测试
+
+在仓库根目录执行:
+
+```bash
+# 只编译本 crate(开发期快速检查)
+cargo build -p muster-skill
+
+# 本 crate 的全部测试(含 lib.rs 末尾的单元测试与集成测试)
+cargo test -p muster-skill
+
+# 整个工作区的测试(改动影响多个 crate 时跑这个,口径与根 README 一致)
+cargo test --workspace
+```
+
+`Cargo.toml` 里 `rust-version = "1.85"`,需要 Rust 1.85 或更高。
