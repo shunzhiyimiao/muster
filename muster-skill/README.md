@@ -58,7 +58,7 @@ metadata:
 工作目录**的,进程不在仓库根启动就会找不到技能。正确做法是**拼上仓库根**:
 
 ```rust
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // 仓库根 = crate 清单目录的上一级;集成测试 / 例子都这么写,二进制按部署约定换
 let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
