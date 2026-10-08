@@ -24,15 +24,17 @@
 //!    Agent 刚写过的地方。黑名单永远漏掉一个,所以这里只放行明确列出的那几个。
 //! 4. **超时 + 输出封顶**。卡住的进程会被杀掉并如实记为超时,不把整个 run 拖死。
 //!
-//! ## 诚实边界:网络
+//! ## 网络:出网闸 + 诚实边界
 //!
-//! **本模块不能保证被执行的命令不出网。** 能做的都做了(剥掉代理与凭据变量、
-//! `CARGO_NET_OFFLINE=1`、`GIT_TERMINAL_PROMPT=0`、否决 push/publish/install),
-//! 但 `cargo test` 跑的是工作区里的任意代码,它想 connect 就能 connect。
-//! 真正的封堵在进程之外——macOS 的 `sandbox-exec`、Linux 的 network namespace,
-//! 或总体规划里那一层「操作系统防火墙」。在补上之前,这一条按铁律四的口径记账:
-//! **测不到就不算作零**,命令执行的外发对 `model.call` 的字节统计是不可见的,
-//! 演习报告不应把它读成「零外发」。
+//! 子进程的代理变量由 Runner 注入(见 [`crate::egress`],照 Codex network-proxy 的形态):
+//! `HTTP(S)_PROXY` / `ALL_PROXY` 指向回环地址上的策略代理,主机白名单来自
+//! [`CommandPolicy::egress`],默认全拒;每次连接尝试都落 `tool.egress`。白名单非空时
+//! 不再强制 `CARGO_NET_OFFLINE=1`——允许访问 crates.io 却又禁止 cargo 联网是自相矛盾。
+//!
+//! **本模块仍不能保证被执行的命令不出网。** 认代理的工具会走闸,直接 connect 的进程
+//! 不会;`cargo test` 跑的是工作区里的任意代码。硬封堵在进程之外——macOS 的
+//! `sandbox-exec`、Linux 的 network namespace。在补上之前按铁律四的口径记账:
+//! **测到的算测到,测不到不算零**。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -144,6 +146,10 @@ pub struct CommandPolicy {
     /// 允许清单,每条是「程序 + 若干子命令」的前缀,空格分词。
     pub allow: Vec<String>,
     pub timeout: Duration,
+    /// 命令可访问的主机白名单(经出网闸判定);默认为空 = 全部拒绝。
+    pub egress: crate::egress::EgressPolicy,
+    /// Runner 注入的额外环境(出网闸的代理变量);在白名单透传与强制注入之后生效。
+    pub extra_env: Vec<(String, String)>,
 }
 
 impl Default for CommandPolicy {
@@ -151,6 +157,8 @@ impl Default for CommandPolicy {
         Self {
             allow: DEFAULT_ALLOW.iter().map(|s| s.to_string()).collect(),
             timeout: Duration::from_secs(180),
+            egress: crate::egress::EgressPolicy::deny_all(),
+            extra_env: Vec::new(),
         }
     }
 }
@@ -356,9 +364,14 @@ pub fn run(line: &str, cwd: &Path, policy: &CommandPolicy) -> CommandOutcome {
         .current_dir(cwd)
         .env_clear()
         .envs(clean_env())
+        .envs(policy.extra_env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // 白名单里有主机(经出网闸访问)时,不再强迫 cargo 离线——否则允许了也用不上
+    if !policy.egress.allow.is_empty() {
+        cmd.env_remove("CARGO_NET_OFFLINE");
+    }
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -580,6 +593,7 @@ mod tests {
         let p = CommandPolicy {
             allow: vec![SLEEP_LONG.into()],
             timeout: Duration::from_millis(300),
+            ..Default::default()
         };
         let o = run(SLEEP_LONG, d.path(), &p);
         assert!(o.text.contains("超时"), "{}", o.text);

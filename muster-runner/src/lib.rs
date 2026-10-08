@@ -57,6 +57,11 @@
 //!     哈希进 `run.start` 的 tool_env——有没有说明、说明是哪一版,是不同的运行。技能是按需读的
 //!     "怎么做",AGENTS.md 是永远在的"在这里要守什么";一个按 Codex 规范写好说明的仓库,
 //!     换 Muster 的 Agent 来做事看到的是同一份。
+//! 12. **命令执行过出网闸**(见 [`egress`],照 Codex network-proxy 的形态,不链接它的代码):
+//!     每个可写 run 在回环地址起一个策略代理,子进程的 HTTP(S)_PROXY / ALL_PROXY 指过去;
+//!     主机白名单来自工牌的 `egress`,默认为空 = 全拒;每一次连接尝试都落 `tool.egress`
+//!     (tool = run_command),字节按隧道两个方向实测,拒绝的还在任务卡上说一声。
+//!     白名单与代理端口进 tool_env 哈希。它约束的是认代理的工具;硬封堵见诚实边界。
 //!
 //! ## 诚实边界(v0)
 //!
@@ -72,17 +77,18 @@
 //! - 审批的角色与作用域校验已落地([`approval::decide_as`] + muster-identity
 //!   的 `can()`):裁决人不再固定为部署者,越权者在 git 操作与落库**之前**被挡下。
 //!   仍未做的是身份的**来源**——Principal 目前由本机配置装配,OIDC/目录同步属 P2 服务端。
-//! - 命令执行([`command`])的网络封堵**做不到零外发**:能剥的环境变量都剥了、
-//!   能否决的出网命令都否决了,但 `cargo test` 跑的是工作区里的任意代码。
-//!   真正的封堵在进程之外(sandbox-exec / netns / 防火墙)。按铁律四的口径:
-//!   **测不到就不算作零**——演习报告的「外发字节」只覆盖 model.call,
-//!   不要把它读成「本次运行零外发」。
+//! - 命令执行([`command`])的网络封堵**仍做不到零外发**:出网闸([`egress`])已把认代理的
+//!   工具(curl / cargo / npm / pip / git over https)的每次连接拦下来判、记账,但直接 connect
+//!   的进程、不认代理的工具仍能绕开。硬封堵是第二刀:macOS sandbox-exec / Linux netns 把出网
+//!   只放给代理端口。在那之前按铁律四的口径:**测到的算测到,测不到不算零**——演习报告的
+//!   「外发字节」现在覆盖 model.call 与经闸的命令流量,仍不能读成「本次运行零外发」。
 //! - 字节记账是载荷近似(与桌面壳同口径);wire 级计量属 A2 后续。
 //! - 影子重放(`capsule::verify`)暂不携带技能:重放以空技能集运行。源运行若读过技能
 //!   (链上有 `skill.read`),比对差异可能由此而来;v0 只让它可见,不自动对齐。
 
 pub mod approval;
 pub mod capsule;
+pub mod egress;
 pub mod project_docs;
 pub mod command;
 pub mod runner;
@@ -104,3 +110,4 @@ pub use command::CommandPolicy;
 pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};
 pub use worktree::{branch_diff, FileChange, RunDiff, Worktree, WorktreeError};
 pub use project_docs::{load_project_docs, ProjectDocs, PROJECT_DOC_MAX_BYTES};
+pub use egress::{EgressPolicy, EgressProxy, EgressRecord};

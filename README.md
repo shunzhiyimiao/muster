@@ -60,5 +60,6 @@ Muster 自身采用 **AGPL-3.0-or-later**(2026-09-23 定,全文见根目录 `LIC
 Muster 自带运行时(muster-runner),**不以 Codex 为执行器**;从 Codex 借用的是三样约定:
 SKILL.md 技能格式(仓库级 `.agents/skills/` 与 Codex 同一份文件)、Responses 线协议(经 muster-gateway
 让只讲 Responses 的 Codex 用上 chat 系模型)、会话分叉语义,并按同一规则读仓库根的 AGENTS.md
-(`AGENTS.override.md` 优先,32 KiB 预算)。个人技能也兼读 Codex 的 `~/.agents/skills`。下一步有选择地吸收它的资产:复用其沙箱与网络代理。同级目录 `../muster-codex` 是零代码改动的参考 fork,去留待定。
+(`AGENTS.override.md` 优先,32 KiB 预算)。个人技能也兼读 Codex 的 `~/.agents/skills`;命令执行的出网闸照它 network-proxy 的形态实现(回环代理 + 白名单 + 逐连接记账,不链接其代码)。
+下一步:进程级沙箱(sandbox-exec / netns)把出网只放给代理端口。同级目录 `../muster-codex` 是零代码改动的参考 fork,去留待定。
 这一定位在 2026-10-08 的吻合度评审后确定(路 B),见 `docs/评审-与Codex吻合度-2026-10-08.md`。

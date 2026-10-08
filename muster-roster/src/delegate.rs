@@ -200,7 +200,12 @@ impl DelegateTool {
             badge: to.badge.clone(),
             persona: Some(to.persona_prompt()),
             skills,
-            command_policy: to.commands.as_ref().map(|c| muster_runner::CommandPolicy::with_allow(c.clone())),
+            command_policy: {
+                // 子工牌的命令白名单与出网白名单都是它自己的,不继承父 run 的
+                let mut p = to.commands.as_ref().map(|c| muster_runner::CommandPolicy::with_allow(c.clone())).unwrap_or_default();
+                p.egress = muster_runner::EgressPolicy::allow(to.egress.clone());
+                Some(p)
+            },
             capabilities_hash: Some(to.capabilities_hash.clone()),
             workspace_override: Some(WorkspaceOverride { path: path.clone(), writable }),
             max_turns: ctx.max_turns,

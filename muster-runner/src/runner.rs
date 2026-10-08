@@ -376,11 +376,27 @@ pub async fn run_task_at(
     }
     .map_err(|e| RunnerError::Workspace(e.to_string()))?
     .with_skills(cfg.skills.clone());
-    // 工牌自带的命令白名单:只读模式下 run_command 本就不公示,设了也无害
-    let tools = match &cfg.command_policy {
-        Some(p) => tools.with_command_policy(p.clone()),
-        None => tools,
+    // 工牌自带的命令白名单 + 出网闸(见模块文档第 12 条):可写工作区才有 run_command,
+    // 也才需要代理;子进程的代理变量指向它,主机白名单来自工牌,默认全拒,每次连接尝试都记账
+    let mut command_policy = cfg.command_policy.clone().unwrap_or_default();
+    let egress_proxy = if tools.is_writable() {
+        match crate::egress::EgressProxy::start(command_policy.egress.clone()) {
+            Ok(p) => {
+                command_policy.extra_env = p.env();
+                on_event(RunnerEvent::Notice {
+                    text: format!("🛡 命令出网闸已开:允许 {};其余连接一律拒绝并记入审计", command_policy.egress.describe()),
+                });
+                Some(p)
+            }
+            Err(e) => {
+                on_event(RunnerEvent::Notice { text: format!("出网闸启动失败({e}),本次命令执行的外发按未计量处理") });
+                None
+            }
+        }
+    } else {
+        None
     };
+    let tools = tools.with_command_policy(command_policy.clone());
     let started = Instant::now();
 
     // ---- 路由(一次)。拒绝也是证据:落 route.refuse(E4),写失败按审计失败处理。
@@ -499,6 +515,8 @@ pub async fn run_task_at(
                         "mode": if tools.is_writable() { "worktree_rw" } else { "read_only" },
                         "branch": worktree.as_ref().map(|w| w.branch.clone()),
                         "project_docs": project_docs.as_ref().map(|d| d.hash.0.clone()),
+                        "egress_allow": command_policy.egress.allow,
+                        "egress_gate": egress_proxy.is_some(),
                     })
                     .to_string()
                     .as_bytes(),
@@ -914,6 +932,30 @@ pub async fn run_task_at(
             // 命令执行自带审计事件(退出码/耗时/被拒),在 diff 里看不出来,必须单独落链。
             if let Some(body) = outcome.audit {
                 append(audit, body)?;
+            }
+            // 出网闸的账:这条命令期间每一次连接尝试一条 tool.egress(tool = run_command);
+            // 被拒的还要在任务卡上说一声——人得知道 Agent 的命令想连哪里
+            if let Some(p) = &egress_proxy {
+                for r in p.take_records() {
+                    if let Some(why) = &r.refused {
+                        on_event(RunnerEvent::Notice {
+                            text: format!("⛔ 命令试图连接 {}:{},已被出网闸拦下({})", r.host, r.port, crate::egress::refusal_zh(why)),
+                        });
+                    }
+                    append(
+                        audit,
+                        EventBody::ToolEgress {
+                            tool: "run_command".into(),
+                            host: r.host.clone(),
+                            url_hash: ContentHash::sha256(format!("{}:{}", r.host, r.port).as_bytes()),
+                            bytes_out: EgressBytes::Measured(r.bytes_out),
+                            bytes_in: r.bytes_in,
+                            status: r.status,
+                            latency_ms: r.latency_ms,
+                            refused: r.refused.clone(),
+                        },
+                    )?;
+                }
             }
             let result = outcome.text;
             let summary: String = {

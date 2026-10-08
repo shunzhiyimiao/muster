@@ -21,6 +21,7 @@
 //! skills: [report-html]    # 默认提供的技能;不写 = 工作区里全部技能
 //! tools: worktree          # read-only | worktree(隔离可写 + run_command)
 //! commands: [cargo test]   # run_command 允许清单;不写用默认清单
+//! egress: [crates.io]      # run_command 经出网闸可访问的主机(精确或子域);不写 = 全部拒绝
 //! model: kimi              # 首选 provider;落点仍由密级决定
 //! sensitivity_max: internal # 工牌能接触的最高密级;不写 = 不设上限
 //! default: true            # 频道没指名时用它;整个名册只能有一个
@@ -117,6 +118,8 @@ pub struct AgentSpec {
     pub tools: ToolMode,
     /// `run_command` 允许清单;`None` = 用 Runner 的默认清单。
     pub commands: Option<Vec<String>>,
+    /// `run_command` 经出网闸可访问的主机;空 = 全部拒绝(默认)。进能力哈希。
+    pub egress: Vec<String>,
     /// 首选 provider id;落点仍由密级路由决定。
     pub model: Option<String>,
     /// 工牌能接触的最高密级;`None` = 不设上限。
@@ -204,6 +207,7 @@ impl AgentSpec {
             let c = list(&entries, "commands");
             if c.is_empty() { None } else { Some(c) }
         };
+        let egress: Vec<String> = list(&entries, "egress").into_iter().map(|h| h.trim().to_ascii_lowercase()).filter(|h| !h.is_empty()).collect();
         let model = scalar(&entries, "model").filter(|s| !s.is_empty());
         let sensitivity_max = match scalar(&entries, "sensitivity_max") {
             None => None,
@@ -214,7 +218,7 @@ impl AgentSpec {
         if persona.is_empty() {
             return Err(RosterError::Format("正文为空:frontmatter 之后要写岗位说明书".into()));
         }
-        let capabilities_hash = capabilities_hash(&tools, &commands, &sensitivity_max, &skills, &model);
+        let capabilities_hash = capabilities_hash(&tools, &commands, &egress, &sensitivity_max, &skills, &model);
         Ok(AgentSpec {
             badge,
             name,
@@ -224,6 +228,7 @@ impl AgentSpec {
             skills,
             tools,
             commands,
+            egress,
             model,
             sensitivity_max,
             is_default,
@@ -259,6 +264,7 @@ impl AgentSpec {
 fn capabilities_hash(
     tools: &ToolMode,
     commands: &Option<Vec<String>>,
+    egress: &[String],
     sensitivity_max: &Option<Sensitivity>,
     skills: &[String],
     model: &Option<String>,
@@ -266,6 +272,7 @@ fn capabilities_hash(
     let v = serde_json::json!({
         "tools": tools.as_str(),
         "commands": commands,
+        "egress": egress,
         "sensitivity_max": sensitivity_max.map(|l| format!("{l:?}").to_lowercase()),
         "skills": skills,
         "model": model,

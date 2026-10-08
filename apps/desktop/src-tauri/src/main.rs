@@ -2816,7 +2816,12 @@ fn runner_cfg_for(agent: &muster_roster::AgentSpec, skills: Vec<muster_skill::Sk
         badge: agent.badge.clone(),
         persona: Some(agent.persona_prompt()),
         skills,
-        command_policy: agent.commands.as_ref().map(|c| CommandPolicy::with_allow(c.clone())),
+        command_policy: {
+            // 命令白名单 + 出网白名单都来自岗位卡;egress 不写 = 全部拒绝
+            let mut p = agent.commands.as_ref().map(|c| CommandPolicy::with_allow(c.clone())).unwrap_or_default();
+            p.egress = muster_runner::EgressPolicy::allow(agent.egress.clone());
+            Some(p)
+        },
         capabilities_hash: Some(agent.capabilities_hash.clone()),
         // 看代码 + 委派 + 复核,比一次纯改动多几轮;真机 8 轮不够用
         max_turns: 24,

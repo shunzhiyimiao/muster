@@ -17,8 +17,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 thiserror = "1"
-# 限流退避要睡一会儿;Runner 本身跑在调用方的 tokio 运行时上
-tokio = { version = "1.38", features = ["time"] }
+# 限流退避要睡一会儿;Runner 本身跑在调用方的 tokio 运行时上。
+# 出网闸(egress)自带线程与 current_thread 运行时,需要 rt / net / io-util / sync / macros
+tokio = { version = "1.38", features = ["time", "rt", "net", "io-util", "sync", "macros"] }
 
 [dev-dependencies]
 muster-identity = { path = "../muster-identity" }
