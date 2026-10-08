@@ -42,16 +42,24 @@ export function SkillsView({ data, onRefresh }: { data: SkillsOut | null; onRefr
       <Card className="p-4 mb-4">
         <div className="text-[10px] font-semibold tracking-widest mb-2" style={{ color: T.faint }}>发现目录(先到先得)</div>
         <div className="space-y-1.5">
-          {roots.map((r, i) => (
-            <div key={r} className="flex items-center gap-2 text-[11.5px]">
-              <FolderOpen size={12} style={{ color: T.sub }} />
-              <Tag tone={i === 0 ? "ind" : undefined}>{i === 0 ? "仓库级" : "个人级"}</Tag>
-              <code className="text-[11px]" style={{ color: T.sub }}>{r}/&lt;name&gt;/SKILL.md</code>
-              <span className="text-[10.5px]" style={{ color: T.faint }}>
-                {i === 0 ? "随代码提交,团队共用;与 codex 的 .agents/skills 同一份" : "只有这台机器的你能用"}
-              </span>
-            </div>
-          ))}
+          {roots.map((r, i) => {
+            // 顺序由后端定(即优先级):仓库级两处在前,个人级两处在后
+            const note = [
+              "随代码提交,团队共用;与 Codex 的 .agents/skills 同一份",
+              "Codex 的另一个项目级目录,同一仓库里的 Codex 用户放这里的也认",
+              "只有这台机器的你能用",
+              "Codex 用户的个人技能目录,两边共用,不必复制",
+            ][i] ?? "";
+            const repoLevel = i < 2;
+            return (
+              <div key={r} className="flex items-center gap-2 text-[11.5px]">
+                <FolderOpen size={12} style={{ color: T.sub }} />
+                <Tag tone={repoLevel ? "ind" : undefined}>{repoLevel ? "仓库级" : "个人级"}</Tag>
+                <code className="text-[11px]" style={{ color: T.sub }}>{r}/&lt;name&gt;/SKILL.md</code>
+                <span className="text-[10.5px]" style={{ color: T.faint }}>{note}</span>
+              </div>
+            );
+          })}
         </div>
       </Card>
 

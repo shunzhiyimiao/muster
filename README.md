@@ -34,7 +34,7 @@ cargo run -p muster-eval -- --list
 | `muster-route` | E1/E2/E3 | 敏感度标签 + 路由决策纯函数(五不变量穷举验证)+ 会话棘轮 |
 | `muster-audit` | A9 | 审计事件层:append-only + 哈希链;"8 幕 → SQL"对照见其 README |
 | `muster-runner` | B1 | 任务执行器:路由 → 流式工具循环 → Capsule-ready 审计链 |
-| `muster-skill` | — | 技能:SKILL.md 过程性知识包(与 codex 同一约定);目录进提示词、正文经 `read_skill` 按需读取、审计只记哈希 |
+| `muster-skill` | — | 技能:SKILL.md 过程性知识包(与 Codex 同一约定,仓库级 `.agents/skills`/`.codex/skills`、个人级 `~/.muster/skills`/`~/.agents/skills` 都读);目录进提示词、正文经 `read_skill` 按需读取、审计只记哈希 |
 | `muster-workflow` | — | 自定义工作流:WORKFLOW.md 定义 + cron 定时 + 自有仓库自动合入 + 白名单抓取(tool.egress 计量)+ 报告产物(html / pdf) |
 | `muster-roster` | — | Agent 编制:AGENT.md 岗位卡(工牌、岗位、别名、技能、工具档位、命令白名单、密级上限);能力哈希进审批与 badge.update;@别名 指派;delegate 把子任务委派给另一张工牌;频道可引入多张工牌 |
 | `muster-gateway` | — | 模型网关:对外讲 Responses,对内讲 chat |
@@ -60,5 +60,5 @@ Muster 自身采用 **AGPL-3.0-or-later**(2026-09-23 定,全文见根目录 `LIC
 Muster 自带运行时(muster-runner),**不以 Codex 为执行器**;从 Codex 借用的是三样约定:
 SKILL.md 技能格式(仓库级 `.agents/skills/` 与 Codex 同一份文件)、Responses 线协议(经 muster-gateway
 让只讲 Responses 的 Codex 用上 chat 系模型)、会话分叉语义,并按同一规则读仓库根的 AGENTS.md
-(`AGENTS.override.md` 优先,32 KiB 预算)。下一步有选择地吸收它的资产:兼读 `~/.agents/skills`、复用其沙箱与网络代理。同级目录 `../muster-codex` 是零代码改动的参考 fork,去留待定。
+(`AGENTS.override.md` 优先,32 KiB 预算)。个人技能也兼读 Codex 的 `~/.agents/skills`。下一步有选择地吸收它的资产:复用其沙箱与网络代理。同级目录 `../muster-codex` 是零代码改动的参考 fork,去留待定。
 这一定位在 2026-10-08 的吻合度评审后确定(路 B),见 `docs/评审-与Codex吻合度-2026-10-08.md`。

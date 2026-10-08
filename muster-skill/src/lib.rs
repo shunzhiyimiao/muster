@@ -17,8 +17,9 @@
 //!
 //! `<根目录>/<name>/SKILL.md`,YAML frontmatter 里 `name` 与 `description` 必填,
 //! 可选 `metadata.sensitivity`(open / internal / restricted)。与 openai/codex
-//! (即 ../muster-codex)的 `codex-skills` 同一约定:仓库级技能放 [`REPO_SKILLS_DIR`],
-//! **桌面壳与受控 fork 读的是同一份文件**,不必维护两套。
+//! (即 ../muster-codex)的 `codex-skills` 同一约定:仓库级技能放 [`REPO_SKILLS_DIR`]
+//! (也认 Codex 的 [`CODEX_REPO_SKILLS_DIR`]),个人级除 `~/.muster/skills` 外也读 Codex 用户的
+//! [`CODEX_USER_SKILLS_DIR`]——**Muster 与 Codex 读的是同一份文件**,不必维护两套。
 //!
 //! 只解析 frontmatter 里用到的几个键(`name` / `description` / `metadata.*` 的单行
 //! 取值),不引入 YAML 解析器:多行值、流式集合等一律拒绝并说明原因,而不是猜。
@@ -60,6 +61,11 @@ use muster_route::{LabelOrigin, LabelSource, Sensitivity};
 pub const SKILL_FILE: &str = "SKILL.md";
 /// 仓库级技能目录(相对工作区),与 codex 的 `.agents/skills` 同一约定。
 pub const REPO_SKILLS_DIR: &str = ".agents/skills";
+/// Codex 的另一个项目级技能目录(`<项目根>/.codex/skills`):同一仓库里的 Codex 用户把技能放这里也认。
+pub const CODEX_REPO_SKILLS_DIR: &str = ".codex/skills";
+/// Codex 用户的个人技能目录(相对家目录):`~/.agents/skills`。与 Muster 自己的 `~/.muster/skills` 并列,
+/// 两边都读,个人技能不必复制一份。
+pub const CODEX_USER_SKILLS_DIR: &str = ".agents/skills";
 /// `name` 长度上限(Agent Skills 约定)。
 pub const NAME_MAX: usize = 64;
 /// `description` 字符数上限:它会原样进提示词目录,写长了就是在挤任务本身。

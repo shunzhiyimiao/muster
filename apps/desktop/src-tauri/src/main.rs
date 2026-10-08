@@ -3002,13 +3002,27 @@ fn roster_list(state: State<'_, AppState>) -> Result<RosterOut, String> {
 
 // ---------------------------------------------------------------- 技能(SKILL.md)
 
-/// 技能的发现根,顺序即优先级:仓库级(`<工作区>/.agents/skills`,与 codex 同一约定,
-/// 随代码提交、团队共用)在前,个人级(`~/.muster/skills`)在后;同名先到先得。
+/// 技能的发现根,顺序即优先级,同名先到先得:
+/// 1. `<工作区>/.agents/skills`(与 Codex 同一约定,随代码提交、团队共用)
+/// 2. `<工作区>/.codex/skills`(Codex 的另一个项目级目录,同一仓库里的 Codex 用户放这里的也认)
+/// 3. `~/.muster/skills`(Muster 的个人级)
+/// 4. `~/.agents/skills`(Codex 用户的个人级;两边共用,不必复制)
+///
+/// 仓库级在前是因为它随代码提交、经过评审;个人级只有这台机器的人看得见。
 fn skill_roots(workspace: &str, home: &str) -> Vec<std::path::PathBuf> {
+    let ws = std::path::Path::new(workspace);
+    let home = std::path::Path::new(home);
     vec![
-        std::path::Path::new(workspace).join(muster_skill::REPO_SKILLS_DIR),
-        std::path::Path::new(home).join(".muster").join("skills"),
+        ws.join(muster_skill::REPO_SKILLS_DIR),
+        ws.join(muster_skill::CODEX_REPO_SKILLS_DIR),
+        home.join(".muster").join("skills"),
+        home.join(muster_skill::CODEX_USER_SKILLS_DIR),
     ]
+}
+
+/// 前两个根在工作区里 ⇒ 仓库级;其余 ⇒ 个人级。
+fn skill_origin(root: &std::path::Path, roots: &[std::path::PathBuf]) -> &'static str {
+    if roots.iter().take(2).any(|r| r == root) { "workspace" } else { "personal" }
 }
 
 /// 任务模式的工作区与家目录(与 run_workspace_task 同一口径)。
@@ -3056,7 +3070,7 @@ fn skills_list() -> Result<SkillsOut, String> {
             .map(|s| SkillOut {
                 name: s.name.clone(),
                 description: s.description.clone(),
-                origin: if s.root == roots[0] { "workspace".into() } else { "personal".into() },
+                origin: skill_origin(&s.root, &roots).into(),
                 path: s.path.display().to_string(),
                 content_hash: s.content_hash.0.clone(),
                 sensitivity: s.sensitivity.map(|l| format!("{l:?}").to_lowercase()),
@@ -4690,6 +4704,23 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("muster-desktop 启动失败");
+}
+
+#[cfg(test)]
+mod skill_root_tests {
+    use super::*;
+
+    /// 与 Codex 的目录约定对齐:仓库级两处、个人级两处,顺序即优先级。
+    #[test]
+    fn skill_roots_follow_codex_layout_in_order() {
+        let roots = skill_roots("/w", "/home/u");
+        let shown: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
+        assert_eq!(shown, vec!["/w/.agents/skills", "/w/.codex/skills", "/home/u/.muster/skills", "/home/u/.agents/skills"]);
+        assert_eq!(skill_origin(&roots[0], &roots), "workspace");
+        assert_eq!(skill_origin(&roots[1], &roots), "workspace");
+        assert_eq!(skill_origin(&roots[2], &roots), "personal");
+        assert_eq!(skill_origin(&roots[3], &roots), "personal");
+    }
 }
 
 #[cfg(test)]

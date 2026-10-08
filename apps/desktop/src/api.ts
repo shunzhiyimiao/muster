@@ -321,7 +321,7 @@ export interface StoredMsg {
 export interface SkillOut {
   name: string;
   description: string;
-  /** workspace = 仓库级(.agents/skills,随代码提交);personal = 个人级(~/.muster/skills) */
+  /** workspace = 仓库级(.agents/skills 或 .codex/skills,随代码提交);personal = 个人级(~/.muster/skills 或 ~/.agents/skills) */
   origin: "workspace" | "personal";
   path: string;
   /** SKILL.md 全文的 sha256——审计 skill.offer / skill.read 里记的就是它 */
