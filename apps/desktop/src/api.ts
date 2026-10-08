@@ -209,6 +209,41 @@ export interface RemoteMeeting {
   ended_ms: number | null;
   /** 是否请了 Agent。**只是意愿**——它到没到看参会者列表 */
   wants_agent: boolean;
+  /** 是否正在录制(晚进来的人也要看见) */
+  recording_active?: boolean;
+}
+/** 一行纪要。翻译行带 lang 与 origin_id(指回原文行) */
+export interface TranscriptRow {
+  id: number;
+  speaker_id: string;
+  text: string;
+  ts_ms: number;
+  lang: string;
+  origin_id: number | null;
+}
+/** 会议回顾 / 小结,Agent 生成 */
+export interface MeetingSummary {
+  id: number;
+  meeting_id: string;
+  kind: "recap" | "interim" | string;
+  text: string;
+  author_id: string;
+  model: string | null;
+  created_ms: number;
+}
+/** 一次录制;status: starting / active / stopping / ready / failed */
+export interface Recording {
+  id: string;
+  meeting_id: string;
+  started_by: string;
+  started_ms: number;
+  ended_ms: number | null;
+  status: string;
+  audio_only: boolean;
+  size_bytes: number | null;
+  duration_ms: number | null;
+  content_hash: string | null;
+  error: string | null;
 }
 /** 会议行动项:**提案,不是任务**。见 muster-server/src/action.rs。 */
 export interface ActionItem {
@@ -459,8 +494,15 @@ export const api = {
   remoteActionItems: (meetingId: string) =>
     invoke<ActionItem[]>("remote_action_items", { meetingId }),
   /** 会议纪要历史:进会先补上下文,之后靠 SSE 增量 */
-  remoteTranscript: (meetingId: string) =>
-    invoke<{ speaker_id: string; text: string; ts_ms: number }[]>("remote_transcript", { meetingId }),
+  remoteTranscript: (meetingId: string) => invoke<TranscriptRow[]>("remote_transcript", { meetingId }),
+  /** 字幕语言偏好:只影响自己;"source" = 看原文 */
+  remoteCaptionLang: (meetingId: string, lang: string) => invoke<void>("remote_caption_lang", { meetingId, lang }),
+  remoteSummaries: (meetingId: string) => invoke<MeetingSummary[]>("remote_summaries", { meetingId }),
+  remoteRecordings: (meetingId: string) => invoke<Recording[]>("remote_recordings", { meetingId }),
+  remoteRecordingStart: (meetingId: string, audioOnly: boolean) =>
+    invoke<Recording>("remote_recording_start", { meetingId, audioOnly }),
+  remoteRecordingStop: (meetingId: string) => invoke<Recording>("remote_recording_stop", { meetingId }),
+  remoteRecordingUrl: (recordingId: string) => invoke<string>("remote_recording_url", { recordingId }),
   /** 批准 / 驳回。**判定在服务端**:它要 CreateTask 权限,且不许 Agent 裁决自己提的。 */
   remoteDecideAction: (id: string, confirm: boolean) =>
     invoke<ActionItem>("remote_decide_action", { id, confirm }),

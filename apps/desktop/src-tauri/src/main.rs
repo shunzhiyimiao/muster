@@ -4491,6 +4491,49 @@ async fn remote_meeting_leave(state: State<'_, AppState>, meeting_id: String) ->
     r.leave_meeting(&meeting_id).await
 }
 
+/// 字幕语言偏好(只影响自己;Agent 据此决定翻译目标)。
+#[tauri::command]
+async fn remote_caption_lang(state: State<'_, AppState>, meeting_id: String, lang: String) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.set_caption_lang(&meeting_id, &lang).await
+}
+
+#[tauri::command]
+async fn remote_summaries(state: State<'_, AppState>, meeting_id: String) -> Result<Vec<remote::RemoteSummary>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.summaries(&meeting_id).await
+}
+
+#[tauri::command]
+async fn remote_recordings(state: State<'_, AppState>, meeting_id: String) -> Result<Vec<remote::RemoteRecording>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.recordings(&meeting_id).await
+}
+
+/// 开始录制。能不能录由服务端判(密级 + 权限),这里只转发。
+#[tauri::command]
+async fn remote_recording_start(
+    state: State<'_, AppState>,
+    meeting_id: String,
+    audio_only: bool,
+) -> Result<remote::RemoteRecording, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.recording_start(&meeting_id, audio_only).await
+}
+
+#[tauri::command]
+async fn remote_recording_stop(state: State<'_, AppState>, meeting_id: String) -> Result<remote::RemoteRecording, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.recording_stop(&meeting_id).await
+}
+
+/// 回放地址(带令牌)。
+#[tauri::command]
+fn remote_recording_url(state: State<'_, AppState>, recording_id: String) -> Result<String, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    Ok(r.recording_url(&recording_id))
+}
+
 #[tauri::command]
 async fn remote_transcript(
     state: State<'_, AppState>,
@@ -4709,6 +4752,12 @@ fn main() {
             remote_action_items,
             remote_transcript,
             remote_meeting_leave,
+            remote_caption_lang,
+            remote_summaries,
+            remote_recordings,
+            remote_recording_start,
+            remote_recording_stop,
+            remote_recording_url,
             remote_decide_action,
             remote_meeting_end,
             remote_meeting_agent,

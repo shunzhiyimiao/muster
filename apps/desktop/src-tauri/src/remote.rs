@@ -216,6 +216,39 @@ impl Remote {
         Ok(())
     }
 
+    /// 给自己选字幕语言(`source` = 看原文)。Agent 据此决定翻成哪些语言。
+    pub async fn set_caption_lang(&self, meeting_id: &str, lang: &str) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .post_json(&format!("/meetings/{meeting_id}/captions"), &serde_json::json!({ "lang": lang }))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn summaries(&self, meeting_id: &str) -> Result<Vec<RemoteSummary>, String> {
+        self.get(&format!("/meetings/{meeting_id}/summary")).await
+    }
+
+    pub async fn recordings(&self, meeting_id: &str) -> Result<Vec<RemoteRecording>, String> {
+        self.get(&format!("/meetings/{meeting_id}/recordings")).await
+    }
+
+    pub async fn recording_start(&self, meeting_id: &str, audio_only: bool) -> Result<RemoteRecording, String> {
+        self.post_json(
+            &format!("/meetings/{meeting_id}/recording/start"),
+            &serde_json::json!({ "audio_only": audio_only }),
+        )
+        .await
+    }
+
+    pub async fn recording_stop(&self, meeting_id: &str) -> Result<RemoteRecording, String> {
+        self.post_json(&format!("/meetings/{meeting_id}/recording/stop"), &serde_json::json!({})).await
+    }
+
+    /// 回放地址。`<video>` 带不了 Authorization 头,令牌走查询参数(与 /events 同一取舍)。
+    pub fn recording_url(&self, recording_id: &str) -> String {
+        format!("{}/recordings/{}/file?token={}", self.base.trim_end_matches('/'), recording_id, self.token)
+    }
+
     /// Provider 目录。**服务端下发,节点不自己声明 locality。**
     ///
     /// 返回的 JSON 形状就是 `muster_provider::RegistryConfig`,可以直接喂给
@@ -296,6 +329,41 @@ pub struct TranscriptLine {
     pub speaker_id: String,
     pub text: String,
     pub ts_ms: i64,
+    /// 行号;翻译行靠 origin_id 指回原文行
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub lang: String,
+    #[serde(default)]
+    pub origin_id: Option<i64>,
+}
+
+/// 会议回顾 / 小结(Agent 生成,服务端只存文本)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteSummary {
+    pub id: i64,
+    pub meeting_id: String,
+    pub kind: String,
+    pub text: String,
+    pub author_id: String,
+    pub model: Option<String>,
+    pub created_ms: i64,
+}
+
+/// 一次录制的元数据;文件本身经 `recording_url` 按权限回放。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteRecording {
+    pub id: String,
+    pub meeting_id: String,
+    pub started_by: String,
+    pub started_ms: i64,
+    pub ended_ms: Option<i64>,
+    pub status: String,
+    pub audio_only: bool,
+    pub size_bytes: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub content_hash: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

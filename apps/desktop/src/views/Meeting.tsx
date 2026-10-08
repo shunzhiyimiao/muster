@@ -15,6 +15,11 @@
  * 阶段 1(语音室做扎实,见 docs/会议线规划-2026-10-08.md):
  * 进会补历史纪要、行动项走 SSE 不再轮询、设备可选、权限预检、
  * 会议被结束时界面知道;共享屏幕只做**能力探测 + 最小接线**,焦点布局是阶段 2。
+ *
+ * 阶段 2(对标 Teams):字幕是纪要行叠在画面上,没有第二条转写链路;字幕语言各人自选,
+ * 翻译由会议 Agent 做(模型调用在能跑 muster_route 的进程里),翻译行以 origin_id 指回原文;
+ * 录制由服务端调自托管的 LiveKit Egress,能不能录服务端判(restricted 禁录),
+ * **正在录制必须人人看见**;回顾由 Agent 散会时生成,在会议详情页看。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -28,16 +33,81 @@ import {
   type RemoteTrack,
 } from "livekit-client";
 import {
-  Bot, Check, Mic, MicOff, Monitor, MonitorOff, PhoneOff, Radio, Settings2, Users, Video, VideoOff, X,
+  ArrowLeft, Bot, Captions, Check, CircleDot, FileText, Film, Mic, MicOff, Monitor, MonitorOff, PhoneOff,
+  Radio, Settings2, Square, Users, Video, VideoOff, X,
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
-import { api, ActionItem, RemoteMeeting, fmtTime } from "../api";
+import { api, ActionItem, MeetingSummary, Recording, RemoteMeeting, TranscriptRow, fmtBytes, fmtTime } from "../api";
 
 export interface TranscriptLine {
   speaker: string;
   text: string;
   ts: number;
+  /** 服务端行号(0 = 系统行,没有行号) */
+  id: number;
+  lang: string;
+  /** 翻译行指回的原文行号;原文行为 null */
+  originId: number | null;
+}
+
+/** 服务端的纪要行 → 界面行 */
+export function toLine(r: TranscriptRow): TranscriptLine {
+  return { speaker: r.speaker_id, text: r.text, ts: r.ts_ms, id: r.id, lang: r.lang, originId: r.origin_id };
+}
+
+/** 原文语言:与 Agent 的转写语言一致(服务端 SOURCE_LANG) */
+export const SOURCE_LANG = "zh";
+/** 字幕可选语言。代码要能过服务端校验(两三个小写字母) */
+export const CAPTION_LANGS: { code: string; name: string }[] = [
+  { code: "source", name: "跟原文(中文)" },
+  { code: "en", name: "English" },
+  { code: "ja", name: "日本語" },
+  { code: "ko", name: "한국어" },
+  { code: "de", name: "Deutsch" },
+  { code: "fr", name: "Français" },
+  { code: "es", name: "Español" },
+  { code: "pt", name: "Português" },
+  { code: "ru", name: "Русский" },
+  { code: "vi", name: "Tiếng Việt" },
+];
+
+/** 录制状态(服务端推送);started / stopping / ready / failed */
+export interface RecordingState {
+  state: string;
+  by: string;
+}
+
+function readPref(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writePref(key: string, v: string) {
+  try {
+    localStorage.setItem(key, v);
+  } catch {
+    /* 隐私模式等 */
+  }
+}
+
+/** 字幕要显示的行:跟原文 → 原文行;选了语言 → 该语言的翻译行,没翻到的句子退回原文 */
+export function captionLines(all: TranscriptLine[], lang: string): TranscriptLine[] {
+  if (lang === "source" || lang === SOURCE_LANG) return all.filter((l) => l.originId === null);
+  const translated = new Map<number, TranscriptLine>();
+  for (const l of all) if (l.lang === lang && l.originId !== null) translated.set(l.originId, l);
+  return all.filter((l) => l.originId === null).map((src) => translated.get(src.id) ?? src);
+}
+
+/** 纪要面板:原文行,各自挂着我这个语言的译文 */
+export function groupTranslations(all: TranscriptLine[], lang: string): { line: TranscriptLine; translation?: string }[] {
+  const translated = new Map<number, string>();
+  if (lang !== "source" && lang !== SOURCE_LANG) {
+    for (const l of all) if (l.lang === lang && l.originId !== null) translated.set(l.originId, l.text);
+  }
+  return all.filter((l) => l.originId === null).map((line) => ({ line, translation: translated.get(line.id) }));
 }
 
 /** 本机媒体状态——全部读自 SDK,见文件头 */
@@ -84,6 +154,7 @@ export function MeetingRoom({
   transcript,
   actions,
   ended,
+  recording,
   onLeave,
 }: {
   meeting: RemoteMeeting;
@@ -93,12 +164,19 @@ export function MeetingRoom({
   actions: ActionItem[];
   /** 服务端推来「这场会已结束」(别人点了结束) */
   ended: boolean;
+  /** 录制状态(服务端推送);没推来过就看 meeting.recording_active */
+  recording?: RecordingState | null;
   onLeave: () => void;
 }) {
   const [room] = useState(() => new Room({ adaptiveStream: true, dynacast: true }));
   const [state, setState] = useState<ConnectionState>(ConnectionState.Disconnected);
   const [err, setErr] = useState<string | null>(null);
   const [canPublish, setCanPublish] = useState(false);
+  const [canRecord, setCanRecord] = useState(false);
+  const [recBusy, setRecBusy] = useState(false);
+  const [captionsOn, setCaptionsOn] = useState(() => readPref("muster.captions", "1") === "1");
+  const [capLang, setCapLang] = useState(() => readPref("muster.captionLang", "source"));
+  const [now, setNow] = useState(() => Date.now());
   const [local, setLocal] = useState<LocalMedia>({ mic: false, cam: false, screen: false });
   const [roster, setRoster] = useState<Seat[]>([]);
   const [screens, setScreens] = useState<string[]>([]);
@@ -245,10 +323,14 @@ export function MeetingRoom({
       .then(async (info) => {
         if (cancelled) return;
         setCanPublish(info.can_publish);
+        setCanRecord(info.can_record);
         await room.connect(info.url, info.token);
         if (cancelled) return;
         refresh();
         void loadDevices();
+        // 进会就把自己的字幕语言告诉服务端:Agent 据此决定翻成哪些语言
+        const lang = readPref("muster.captionLang", "source");
+        if (lang !== "source") api.remoteCaptionLang(meeting.id, lang).catch(() => {});
       })
       .catch((e) => setErr(String(e)));
 
@@ -280,6 +362,44 @@ export function MeetingRoom({
   useEffect(() => {
     linesEnd.current?.scrollIntoView({ block: "end" });
   }, [transcript.length]);
+
+  // 字幕按时间淡出,需要一个走着的钟
+  useEffect(() => {
+    if (!captionsOn) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [captionsOn]);
+
+  const chooseCaptionLang = (lang: string) => {
+    setCapLang(lang);
+    writePref("muster.captionLang", lang);
+    api.remoteCaptionLang(meeting.id, lang).catch((e) => setErr(String(e)));
+  };
+  const toggleCaptions = () => {
+    const next = !captionsOn;
+    setCaptionsOn(next);
+    writePref("muster.captions", next ? "1" : "0");
+  };
+
+  const recState = recording?.state ?? (meeting.recording_active ? "started" : "idle");
+  const recOn = recState === "started" || recState === "stopping";
+  const toggleRecording = async () => {
+    setErr(null);
+    setRecBusy(true);
+    try {
+      if (recOn) {
+        await api.remoteRecordingStop(meeting.id);
+      } else {
+        // 此刻没人有画面就只录声音(语音室省掉合成画面的开销);中途开了摄像头也不会补录画面
+        const anyVideo = roster.some((p) => p.hasVideo) || screens.length > 0;
+        await api.remoteRecordingStart(meeting.id, !anyVideo);
+      }
+    } catch (e) {
+      setErr(`录制:${String(e)}`);
+    } finally {
+      setRecBusy(false);
+    }
+  };
 
   /** 全量 ⊕ 推送,按 id 合并;推送来的是更新的状态,盖掉拉到的那份 */
   const tasks = useMemo(() => {
@@ -400,6 +520,11 @@ export function MeetingRoom({
   const publishOk = connected && canPublish && !ended;
   const nameOf = (id: string) => roster.find((p) => p.id === id)?.name ?? id;
   const unnamed = (list: MediaDeviceInfo[]) => list.length > 0 && list.every((d) => !d.label);
+  // 字幕:最近 10 秒内的两行,按我选的语言
+  const captions = captionsOn
+    ? captionLines(transcript, capLang).filter((l) => now - l.ts < 10_000).slice(-2)
+    : [];
+  const grouped = groupTranslations(transcript, capLang);
 
   return (
     <div className="px-7 pb-8 pt-2" style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 16 }}>
@@ -412,6 +537,23 @@ export function MeetingRoom({
             {meeting.level === "restricted" && (
               <span className="text-[10.5px]" style={{ color: T.red }}>
                 高密级会议:禁止录制,转写只走本地模型
+              </span>
+            )}
+            {recOn && (
+              <span className="flex items-center gap-1 text-[10.5px] font-bold px-2 py-0.5 rounded-md"
+                style={{ background: T.redSoft, color: T.red }}
+                title={recording?.by ? `由 ${recording.by} 开始` : "正在录制"}>
+                <CircleDot size={11} className="rec-dot" /> {recState === "stopping" ? "录制保存中…" : "正在录制"}
+              </span>
+            )}
+            {recState === "ready" && (
+              <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-md" style={{ background: T.greenSoft, color: T.green }}>
+                录像已保存
+              </span>
+            )}
+            {recState === "failed" && (
+              <span className="text-[10.5px] font-semibold px-2 py-0.5 rounded-md" style={{ background: T.redSoft, color: T.red }}>
+                录制失败
               </span>
             )}
             <span className="ml-auto flex items-center gap-1.5 text-[11px]" style={{ color: T.sub }}>
@@ -462,7 +604,8 @@ export function MeetingRoom({
 
           {/* 席位。发言时描边变绿,数据来自 LiveKit 的 ActiveSpeakersChanged。
               放画面的那个 div **没有 React 子节点**——LiveKit 往里 appendChild,
-              React 管别处,两边不会互相拆台。 */}
+              React 管别处,两边不会互相拆台。字幕叠在这一区的底部。 */}
+          <div className="relative">
           <div className="mt-3.5 grid grid-cols-2 gap-3">
             {roster.map((p) => (
               <div
@@ -506,6 +649,19 @@ export function MeetingRoom({
                 </div>
               </div>
             ))}
+          </div>
+          {captionsOn && captions.length > 0 && (
+            <div className="absolute left-2 right-2 bottom-2 rounded-xl px-3.5 py-2 flex flex-col gap-1 pointer-events-none"
+              style={{ background: "rgba(17,18,28,.78)", color: "#fff", backdropFilter: "blur(4px)" }}>
+              {captions.map((l) => (
+                <div key={`${l.id}-${l.ts}`} className="text-[13px] leading-snug">
+                  <b style={{ color: "#B9B9FF" }}>{l.speaker}</b>
+                  <span className="mx-1.5" style={{ color: "#8f91a8" }}>·</span>
+                  {l.text}
+                </div>
+              ))}
+            </div>
+          )}
           </div>
           {connected && !roster.some((p) => p.hasVideo) && screens.length === 0 && (
             <div className="text-[10.5px] mt-2" style={{ color: T.faint }}>
@@ -556,6 +712,42 @@ export function MeetingRoom({
             >
               {local.screen ? <MonitorOff size={13} /> : <Monitor size={13} />} {local.screen ? "停止共享" : "共享屏幕"}
             </button>
+            <button
+              onClick={toggleCaptions}
+              aria-pressed={captionsOn}
+              title={agentHere ? "字幕 = 会议 Agent 的实时转写叠在画面上" : "字幕来自会议 Agent 的转写——它不在会中时不会有字幕"}
+              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl"
+              style={{ background: captionsOn ? T.indigoSoft : T.soft, color: captionsOn ? T.indigoDeep : T.sub }}
+            >
+              <Captions size={13} /> 字幕
+            </button>
+            <select
+              value={capLang}
+              onChange={(e) => chooseCaptionLang(e.target.value)}
+              disabled={!connected}
+              title="字幕语言。选了别的语言,会议 Agent 会把每句话翻过来(经密级路由,高密级会只用本地模型)"
+              className="text-xs font-semibold px-2.5 py-2 rounded-xl outline-none"
+              style={{ background: T.soft, color: T.sub, opacity: connected ? 1 : 0.45 }}
+            >
+              {CAPTION_LANGS.map((l) => (
+                <option key={l.code} value={l.code}>{l.name}</option>
+              ))}
+            </select>
+            {canRecord && (
+              <button
+                onClick={toggleRecording}
+                disabled={!connected || recBusy || ended || recState === "stopping"}
+                title={recOn ? "停止录制:文件收口后在会议详情里回放" : "录制整场会(自托管 LiveKit Egress 写到服务器本地)。所有人都会看见「正在录制」"}
+                className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl"
+                style={{
+                  background: recOn ? T.red : T.soft,
+                  color: recOn ? "#fff" : T.sub,
+                  opacity: !connected || recBusy || ended ? 0.45 : 1,
+                }}
+              >
+                {recOn ? <Square size={12} /> : <CircleDot size={13} />} {recBusy ? "…" : recOn ? "停止录制" : "录制"}
+              </button>
+            )}
             <button
               onClick={() => setDevOpen((v) => !v)}
               disabled={!connected}
@@ -610,6 +802,11 @@ export function MeetingRoom({
           {!canPublish && connected && (
             <div className="text-[10.5px] mt-2" style={{ color: T.sub }}>
               你只能旁听:发言权限由服务端的权限内核判定,不是这个界面决定的。
+            </div>
+          )}
+          {!canRecord && connected && meeting.level === "restricted" && (
+            <div className="text-[10.5px] mt-2" style={{ color: T.faint }}>
+              高密级会议禁止录制——这是密级决定的,不是权限。
             </div>
           )}
         </Card>
@@ -768,8 +965,8 @@ export function MeetingRoom({
               </span>
             </div>
           ) : (
-            transcript.map((l, i) => (
-              <div key={`${l.ts}-${i}`} className="py-1.5" style={{ borderTop: i ? `1px solid ${T.line}` : undefined }}>
+            grouped.map(({ line: l, translation }, i) => (
+              <div key={`${l.id}-${l.ts}-${i}`} className="py-1.5" style={{ borderTop: i ? `1px solid ${T.line}` : undefined }}>
                 <div className="flex items-baseline gap-2">
                   <b className="text-[11.5px]" style={{ color: l.speaker === "系统" ? T.red : T.indigoDeep }}>
                     {l.speaker}
@@ -777,6 +974,9 @@ export function MeetingRoom({
                   <span className="text-[9.5px]" style={{ color: T.faint }}>{fmtTime(l.ts)}</span>
                 </div>
                 <div className="text-[12px] mt-0.5 leading-relaxed">{l.text}</div>
+                {translation && (
+                  <div className="text-[11.5px] mt-0.5 leading-relaxed" style={{ color: T.sub }}>{translation}</div>
+                )}
               </div>
             ))
           )}
@@ -842,4 +1042,217 @@ interface Seat {
   micOn: boolean;
   speaking: boolean;
   hasVideo: boolean;
+}
+
+/** 极简 Markdown:只认 `## 标题`、`- 条目`、`**粗体**`——回顾就这几样,不引库 */
+export function Recap({ text }: { text: string }) {
+  const bold = (s: string) =>
+    s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+      part.startsWith("**") && part.endsWith("**") ? <b key={i}>{part.slice(2, -2)}</b> : <span key={i}>{part}</span>,
+    );
+  return (
+    <div className="text-[12px] leading-relaxed">
+      {text.split("\n").map((raw, i) => {
+        const line = raw.trimEnd();
+        if (!line.trim()) return <div key={i} className="h-1.5" />;
+        if (line.startsWith("## ")) return <div key={i} className="font-bold text-[12.5px] mt-2.5 mb-0.5" style={{ color: T.indigoDeep }}>{line.slice(3)}</div>;
+        if (line.startsWith("# ")) return <div key={i} className="font-bold text-[13px] mt-2">{line.slice(2)}</div>;
+        if (/^[-*•]\s/.test(line)) return <div key={i} className="flex gap-1.5 pl-1"><span style={{ color: T.faint }}>•</span><span>{bold(line.replace(/^[-*•]\s/, ""))}</span></div>;
+        if (/^\d+\.\s/.test(line)) return <div key={i} className="pl-1">{bold(line)}</div>;
+        return <div key={i}>{bold(line)}</div>;
+      })}
+    </div>
+  );
+}
+
+/** 会议详情:回顾、行动项、录像、纪要。进行中的会也能看(回顾在散会后才有)。 */
+export function MeetingDetail({
+  meeting,
+  version,
+  onBack,
+  onEnter,
+}: {
+  meeting: RemoteMeeting;
+  /** 服务端推来总结 / 录制变化时递增,据此重拉 */
+  version: number;
+  onBack: () => void;
+  onEnter?: (m: RemoteMeeting) => void;
+}) {
+  const [summaries, setSummaries] = useState<MeetingSummary[]>([]);
+  const [lines, setLines] = useState<TranscriptLine[]>([]);
+  const [tasks, setTasks] = useState<ActionItem[]>([]);
+  const [recs, setRecs] = useState<Recording[]>([]);
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [err, setErr] = useState<string | null>(null);
+  const [lang] = useState(() => readPref("muster.captionLang", "source"));
+
+  useEffect(() => {
+    let stop = false;
+    setErr(null);
+    Promise.all([
+      api.remoteSummaries(meeting.id).catch((e) => { setErr(String(e)); return [] as MeetingSummary[]; }),
+      api.remoteTranscript(meeting.id).catch(() => [] as TranscriptRow[]),
+      api.remoteActionItems(meeting.id).catch(() => [] as ActionItem[]),
+      api.remoteRecordings(meeting.id).catch(() => [] as Recording[]),
+    ]).then(async ([s, t, a, r]) => {
+      if (stop) return;
+      setSummaries(s);
+      setLines(t.map(toLine));
+      setTasks(a);
+      setRecs(r);
+      const u: Record<string, string> = {};
+      for (const rec of r) if (rec.status === "ready") u[rec.id] = await api.remoteRecordingUrl(rec.id).catch(() => "");
+      if (!stop) setUrls(u);
+    });
+    return () => { stop = true; };
+  }, [meeting.id, version]);
+
+  const live = !meeting.ended_ms;
+  const recaps = summaries.filter((s) => s.kind === "recap");
+  const recap = recaps.length ? recaps[recaps.length - 1] : undefined;
+  const interims = summaries.filter((s) => s.kind !== "recap");
+  const grouped = groupTranslations(lines, lang);
+  const levelTone = meeting.level === "restricted" ? "red" : meeting.level === "internal" ? "amb" : undefined;
+  const dur = (ms: number | null) => (ms == null ? "" : `${Math.floor(ms / 60000)} 分 ${Math.floor((ms % 60000) / 1000)} 秒`);
+
+  return (
+    <div className="px-7 pb-8 pt-2 flex flex-col gap-4">
+      <Card className="p-5">
+        <div className="flex items-center gap-2.5">
+          <button onClick={onBack} className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg" style={{ background: T.soft, color: T.sub }}>
+            <ArrowLeft size={13} /> 返回
+          </button>
+          <b className="text-[15px] ml-1">{meeting.title}</b>
+          <Tag tone={levelTone as never}>{meeting.level}</Tag>
+          <span className="text-[11px]" style={{ color: T.faint }}>
+            {fmtTime(meeting.started_ms)} 开始{meeting.ended_ms ? ` · ${fmtTime(meeting.ended_ms)} 结束` : " · 进行中"}
+          </span>
+          {live && onEnter && (
+            <button onClick={() => onEnter(meeting)} className="ml-auto text-xs font-semibold px-3.5 py-2 rounded-xl" style={{ background: T.indigo, color: "#fff" }}>
+              进入会议
+            </button>
+          )}
+        </div>
+        {err && <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.redSoft, color: T.red }}>{err}</div>}
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+        <div className="flex flex-col gap-4" style={{ minWidth: 0 }}>
+          <Card className="px-5 pt-4 pb-4">
+            <div className="flex items-center gap-2">
+              <FileText size={13} style={{ color: T.indigo }} />
+              <b className="text-[13px]">会议回顾</b>
+              {recap && (
+                <span className="ml-auto text-[10px]" style={{ color: T.faint }}>
+                  {recap.author_id} 整理 · {recap.model ?? "模型未知"} · {fmtTime(recap.created_ms)}
+                </span>
+              )}
+            </div>
+            {recap ? (
+              <div className="mt-2"><Recap text={recap.text} /></div>
+            ) : (
+              <div className="py-4 text-[11.5px] leading-relaxed" style={{ color: T.sub }}>
+                {live
+                  ? "回顾在散会时由会议 Agent 依据转写生成;会议还在进行中。"
+                  : "这场会没有回顾:散会时 Agent 不在会中,或者没有任何转写可依据。"}
+              </div>
+            )}
+            {interims.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2">
+                {interims.map((s) => (
+                  <div key={s.id} className="rounded-xl px-3 py-2" style={{ border: `1px solid ${T.line}` }}>
+                    <div className="text-[10px] mb-1" style={{ color: T.faint }}>会中小结 · {fmtTime(s.created_ms)}</div>
+                    <Recap text={s.text} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card className="px-5 pt-4 pb-4">
+            <div className="flex items-center gap-2">
+              <Film size={13} style={{ color: T.indigo }} />
+              <b className="text-[13px]">录像</b>
+              <span className="ml-auto text-[10px]" style={{ color: T.faint }}>服务器本地文件 · 按权限回放</span>
+            </div>
+            {recs.length === 0 ? (
+              <div className="py-4 text-[11.5px]" style={{ color: T.sub }}>这场会没有录制。</div>
+            ) : (
+              <div className="mt-2 flex flex-col gap-3">
+                {recs.map((r) => (
+                  <div key={r.id} className="rounded-xl px-3 py-2.5" style={{ border: `1px solid ${T.line}` }}>
+                    <div className="flex items-center gap-2 text-[11px]" style={{ color: T.sub }}>
+                      <span className="font-semibold" style={{ color: r.status === "ready" ? T.green : r.status === "failed" ? T.red : T.sub }}>
+                        {r.status === "ready" ? "可回放" : r.status === "failed" ? "失败" : r.status === "stopping" ? "保存中…" : "录制中"}
+                      </span>
+                      <span>{r.audio_only ? "音频" : "音视频"}</span>
+                      <span>{fmtTime(r.started_ms)} 由 {r.started_by} 开始</span>
+                      {r.duration_ms != null && r.duration_ms > 0 && <span>{dur(r.duration_ms)}</span>}
+                      {r.size_bytes != null && r.size_bytes > 0 && <span>{fmtBytes(r.size_bytes)}</span>}
+                    </div>
+                    {r.error && <div className="text-[10.5px] mt-1" style={{ color: T.red }}>{r.error}</div>}
+                    {r.status === "ready" && urls[r.id] && (
+                      r.audio_only ? (
+                        <audio controls preload="metadata" src={urls[r.id]} className="w-full mt-2" />
+                      ) : (
+                        <video controls preload="metadata" src={urls[r.id]} className="w-full mt-2 rounded-lg" style={{ background: "#000", maxHeight: 360 }} />
+                      )
+                    )}
+                    {r.content_hash && (
+                      <div className="text-[9.5px] mt-1 font-mono truncate" style={{ color: T.faint }} title="审计链上记的就是这个哈希:事后可验录像有没有被改过">
+                        {r.content_hash}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {tasks.length > 0 && (
+            <Card className="px-5 pt-4 pb-4">
+              <div className="flex items-center gap-2">
+                <b className="text-[13px]">行动项</b>
+                <span className="ml-auto text-[10px]" style={{ color: T.faint }}>Agent 提案 · 人裁决</span>
+              </div>
+              <div className="mt-2 flex flex-col gap-2">
+                {tasks.map((t) => (
+                  <div key={t.id} className="rounded-xl px-3 py-2" style={{ border: `1px solid ${T.line}`, opacity: t.status === "rejected" ? 0.55 : 1 }}>
+                    <div className="text-[12px] leading-relaxed">{t.text}{t.owner_hint && <span style={{ color: T.sub }}> — {t.owner_hint}</span>}</div>
+                    <div className="text-[10.5px] mt-1 font-semibold" style={{ color: t.status === "confirmed" ? T.green : t.status === "rejected" ? T.faint : T.red }}>
+                      {t.status === "confirmed" ? "已批准" : t.status === "rejected" ? "已驳回" : "待批"}{t.decided_by ? ` · ${t.decided_by}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+
+        <Card className="px-5 pt-4 pb-2 flex flex-col" style={{ maxHeight: 720, minWidth: 0 }}>
+          <div className="flex items-center gap-2">
+            <Radio size={13} style={{ color: T.indigo }} />
+            <b className="text-[13px]">纪要</b>
+            <span className="ml-auto text-[10px]" style={{ color: T.faint }}>{grouped.length} 行{lang !== "source" ? ` · 附 ${CAPTION_LANGS.find((l) => l.code === lang)?.name ?? lang} 译文` : ""}</span>
+          </div>
+          <div className="mt-2 overflow-y-auto flex-1">
+            {grouped.length === 0 ? (
+              <div className="py-6 text-[11.5px]" style={{ color: T.sub }}>没有转写。</div>
+            ) : (
+              grouped.map(({ line: l, translation }, i) => (
+                <div key={`${l.id}-${i}`} className="py-1.5" style={{ borderTop: i ? `1px solid ${T.line}` : undefined }}>
+                  <div className="flex items-baseline gap-2">
+                    <b className="text-[11.5px]" style={{ color: l.speaker === "系统" ? T.red : T.indigoDeep }}>{l.speaker}</b>
+                    <span className="text-[9.5px]" style={{ color: T.faint }}>{fmtTime(l.ts)}</span>
+                  </div>
+                  <div className="text-[12px] mt-0.5 leading-relaxed">{l.text}</div>
+                  {translation && <div className="text-[11.5px] mt-0.5 leading-relaxed" style={{ color: T.sub }}>{translation}</div>}
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
 }

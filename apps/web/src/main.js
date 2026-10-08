@@ -18,6 +18,12 @@ import { Room, RoomEvent, Track, ConnectionState } from "livekit-client";
 
 const $ = (id) => document.getElementById(id);
 const state = { base: location.origin, token: null, me: null, room: null, meeting: null, es: null };
+// 字幕:开关与语言记在本机;语言告诉服务端,Agent 据此决定翻成哪些语言
+const caps = {
+  on: localStorage.getItem("muster.captions") !== "0",
+  lang: localStorage.getItem("muster.captionLang") || "source",
+  recent: [], // {id, speaker, text, at}
+};
 
 function show(view) {
   for (const v of ["login", "lobby", "meeting"]) $(v).hidden = v !== view;
@@ -103,7 +109,8 @@ async function refreshMeetings() {
     const b = document.createElement("button");
     b.className = "row";
     b.innerHTML = `<b>${m.title}</b><span class="tag ${m.level}">${m.level}</span>` +
-      (m.wants_agent ? '<span class="dim">已请 Agent</span>' : "");
+      (m.wants_agent ? '<span class="dim">已请 Agent</span>' : "") +
+      (m.recording_active ? '<span class="badge rec">● 录制中</span>' : "");
     b.onclick = () => joinMeeting(m);
     box.appendChild(b);
   }
@@ -148,6 +155,11 @@ async function joinMeeting(m) {
   $("tasks").innerHTML = "";
   $("tasksCard").hidden = true;
   $("agentBtn").textContent = m.wants_agent ? "请 Agent 离开" : "请 Agent 来记录";
+  $("recBadge").hidden = !m.recording_active;
+  caps.recent = [];
+  renderCaptions();
+  $("capLang").value = caps.lang;
+  $("capBtn").classList.toggle("active", caps.on);
   show("meeting");
 
   let info;
@@ -221,7 +233,39 @@ async function joinMeeting(m) {
   await loadTranscript(m.id);
   await loadTasks(m.id);
   openStream();
+  // 进会就把自己的字幕语言告诉服务端
+  if (caps.lang !== "source") pushCaptionLang().catch(() => {});
 }
+
+async function pushCaptionLang() {
+  if (!state.meeting) return;
+  await api(`/meetings/${state.meeting.id}/captions`, { method: "POST", body: JSON.stringify({ lang: caps.lang }) });
+}
+
+/** 字幕:最近 10 秒的两句,按我选的语言。 */
+function renderCaptions() {
+  const now = Date.now();
+  caps.recent = caps.recent.filter((c) => now - c.at < 10_000).slice(-2);
+  const box = $("captions");
+  if (!caps.on || caps.recent.length === 0) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML = caps.recent.map((c) => `<div><b>${escapeHtml(c.speaker)}</b>${escapeHtml(c.text)}</div>`).join("");
+}
+setInterval(renderCaptions, 1000);
+$("capBtn").onclick = () => {
+  caps.on = !caps.on;
+  localStorage.setItem("muster.captions", caps.on ? "1" : "0");
+  $("capBtn").classList.toggle("active", caps.on);
+  renderCaptions();
+};
+$("capLang").onchange = () => {
+  caps.lang = $("capLang").value;
+  localStorage.setItem("muster.captionLang", caps.lang);
+  pushCaptionLang().catch((e) => toast(String(e.message || e), true));
+};
 
 /* ---------------------------------------------------------------- 席位
  *
@@ -311,19 +355,44 @@ function syncStage() {
 async function loadTranscript(mid) {
   try {
     const rows = await api(`/meetings/${mid}/transcript`);
-    for (const r of rows) addLine(r.speaker_id, r.text, r.ts_ms);
+    for (const r of rows) addLine(r.speaker_id, r.text, r.ts_ms, r.lang, r.origin_id, r.id, true);
   } catch {
     /* 拉不到就从现在开始记 */
   }
 }
 
-function addLine(speaker, text, ts) {
+/** 一行纪要。翻译行(origin_id 非空)只在它是我选的语言时显示:挂在原文下面、进字幕。 */
+function addLine(speaker, text, ts, lang = "zh", originId = null, id = 0, history = false) {
+  if (originId !== null && originId !== undefined) {
+    if (lang !== caps.lang) return;
+    const src = $("lines").querySelector(`.line[data-id="${originId}"]`);
+    if (src && !src.querySelector(".tr")) {
+      const tr = document.createElement("div");
+      tr.className = "tr";
+      tr.textContent = text;
+      src.appendChild(tr);
+    }
+    if (!history) {
+      caps.recent.push({ id: originId, speaker, text, at: Date.now() });
+      // 译文到了就替换掉同一句的原文字幕
+      caps.recent = caps.recent.filter((c, i, a) => !(c.id === originId && i !== a.length - 1));
+      renderCaptions();
+    }
+    return;
+  }
+  if (id && $("lines").querySelector(`.line[data-id="${id}"]`)) return; // 历史与推送重叠
   const d = document.createElement("div");
   d.className = "line";
+  if (id) d.dataset.id = String(id);
   const t = new Date(ts).toTimeString().slice(0, 8);
-  d.innerHTML = `<b class="${speaker === "系统" ? "sys" : ""}">${speaker}</b> <span class="dim">${t}</span><div>${escapeHtml(text)}</div>`;
+  d.innerHTML = `<b class="${speaker === "系统" ? "sys" : ""}">${escapeHtml(speaker)}</b> <span class="dim">${t}</span><div>${escapeHtml(text)}</div>`;
   $("lines").appendChild(d);
   $("lines").scrollTop = $("lines").scrollHeight;
+  // 跟原文的字幕;选了别的语言时原文先上,译文到了再换
+  if (!history) {
+    caps.recent.push({ id, speaker, text, at: Date.now() });
+    renderCaptions();
+  }
 }
 const escapeHtml = (s) =>
   s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -336,7 +405,14 @@ function openStream() {
     try {
       const ev = JSON.parse(e.data);
       if (ev.type === "transcript" && ev.meeting_id === state.meeting?.id) {
-        addLine(ev.speaker_id, ev.text, ev.ts_ms);
+        addLine(ev.speaker_id, ev.text, ev.ts_ms, ev.lang || "zh", ev.origin_id ?? null, ev.id || 0);
+      } else if (ev.type === "recording" && ev.meeting_id === state.meeting?.id) {
+        // 录制开始 / 保存中 / 已保存 / 失败:人人可见
+        const on = ev.state === "started" || ev.state === "stopping";
+        $("recBadge").hidden = !on;
+        $("recBadge").textContent = ev.state === "stopping" ? "● 录制保存中…" : "● 正在录制";
+        if (ev.state === "ready") toast("录像已保存");
+        if (ev.state === "failed") toast("录制失败", true);
       } else if (ev.type === "action_item" && ev.meeting_id === state.meeting?.id) {
         upsertTask(ev);
       } else if (ev.type === "meeting") {

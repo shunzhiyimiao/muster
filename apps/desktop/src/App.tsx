@@ -19,7 +19,7 @@ import { Bub, Card, CB, CollapseSec, RouteTag, SideItem, SideSec, Tag } from "./
 import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingOffline, CapsView } from "./views/Team";
-import { MeetingRoom, type TranscriptLine } from "./views/Meeting";
+import { MeetingDetail, MeetingRoom, toLine, type RecordingState, type TranscriptLine } from "./views/Meeting";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
 import { SkillsView } from "./views/Skills";
@@ -79,6 +79,10 @@ export default function App() {
   const [meetingsVersion, setMeetingsVersion] = useState(0);
   /* 服务端推来「已结束」的会议 id:正在会里的人要立刻知道,不能等下一次拉列表 */
   const [endedIds, setEndedIds] = useState<Set<string>>(() => new Set());
+  /* 录制状态(服务端推送,按会议 id);人人可见 */
+  const [recStates, setRecStates] = useState<Record<string, RecordingState>>({});
+  /* 会议详情页(回顾 / 录像 / 纪要);null = 大厅或会议室 */
+  const [meetingDetail, setMeetingDetail] = useState<RemoteMeeting | null>(null);
   /* 连上服务器后仍要能看演示形态——否则想给人演示时反而找不到它 */
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
@@ -189,12 +193,21 @@ export default function App() {
           if (ev.type === "message") {
             chat.pushRemote(ev.channel_id, ev.role, ev.body, ev.ts_ms);
           } else if (ev.type === "transcript") {
-            // 会议纪要行:Agent 转写落库后广播过来。进会时补过历史,同一行可能已经在了——按三元组去重
+            // 会议纪要行(含翻译行):Agent 落库后广播过来。进会时补过历史,同一行可能已经在了——
+            // 有行号按行号去重,系统行(行号 0)按三元组
+            const line: TranscriptLine = {
+              speaker: ev.speaker_id, text: ev.text, ts: ev.ts_ms,
+              id: Number(ev.id ?? 0), lang: String(ev.lang ?? "zh"), originId: ev.origin_id ?? null,
+            };
             setTranscript((t) =>
-              t.some((l) => l.ts === ev.ts_ms && l.speaker === ev.speaker_id && l.text === ev.text)
+              t.some((l) => (line.id > 0 ? l.id === line.id : l.ts === line.ts && l.speaker === line.speaker && l.text === line.text))
                 ? t
-                : [...t, { speaker: ev.speaker_id, text: ev.text, ts: ev.ts_ms }],
+                : [...t, line],
             );
+          } else if (ev.type === "recording") {
+            // 录制开始 / 保存中 / 已保存 / 失败:所有在场的人都要看见
+            setRecStates((r) => ({ ...r, [ev.meeting_id as string]: { state: String(ev.state), by: String(ev.by ?? "") } }));
+            if (ev.state === "ready" || ev.state === "failed") setMeetingsVersion((n) => n + 1);
           } else if (ev.type === "action_item") {
             // 行动项被提出 / 被裁决:按 id 合并,不再轮询
             const a = ev as ActionItem & { type: string };
@@ -740,12 +753,26 @@ export default function App() {
               <RosterView planned={planned} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
             )}
             {view === "meeting" &&
-              (meeting ? (
+              (meetingDetail ? (
+                <MeetingDetail
+                  meeting={meetingDetail}
+                  version={meetingsVersion}
+                  onBack={() => setMeetingDetail(null)}
+                  onEnter={(m) => {
+                    setMeetingDetail(null);
+                    setTranscript([]);
+                    setActionFeed((v) => v.filter((a) => a.meeting_id !== m.id));
+                    api.remoteTranscript(m.id).then((rows) => setTranscript(rows.map(toLine))).catch(() => {});
+                    setMeeting(m);
+                  }}
+                />
+              ) : meeting ? (
                 <MeetingRoom
                   meeting={meeting}
                   transcript={transcript}
                   actions={actionFeed.filter((a) => a.meeting_id === meeting.id)}
                   ended={endedIds.has(meeting.id)}
+                  recording={recStates[meeting.id] ?? null}
                   onLeave={() => {
                     setMeeting(null);
                     setMeetingsVersion((n) => n + 1);
@@ -756,14 +783,15 @@ export default function App() {
                   channelId={channelId}
                   version={meetingsVersion}
                   onChanged={() => setMeetingsVersion((n) => n + 1)}
+                  onOpenDetail={(m) => setMeetingDetail(m)}
                   onEnter={(m) => {
                     // 先补历史纪要再入会:中途进会的人也要看到之前说了什么
                     setTranscript([]);
                     setActionFeed((v) => v.filter((a) => a.meeting_id !== m.id));
                     api.remoteTranscript(m.id)
                       .then((rows) => setTranscript((t) => {
-                        const hist = rows.map((r) => ({ speaker: r.speaker_id, text: r.text, ts: r.ts_ms }));
-                        const fresh = t.filter((l) => !hist.some((h) => h.ts === l.ts && h.speaker === l.speaker && h.text === l.text));
+                        const hist = rows.map(toLine);
+                        const fresh = t.filter((l) => !hist.some((h) => (l.id > 0 ? h.id === l.id : h.ts === l.ts && h.speaker === l.speaker && h.text === l.text)));
                         return [...hist, ...fresh];
                       }))
                       .catch(() => {});
@@ -1194,12 +1222,14 @@ function MeetingLobby({
   channelId,
   version,
   onChanged,
+  onOpenDetail,
   onEnter,
 }: {
   channelId: string;
   /** 服务端推来会议变化时递增,大厅据此重拉 */
   version: number;
   onChanged: () => void;
+  onOpenDetail: (m: RemoteMeeting) => void;
   onEnter: (m: RemoteMeeting) => void;
 }) {
   const [list, setList] = useState<RemoteMeeting[]>([]);
@@ -1242,6 +1272,7 @@ function MeetingLobby({
   };
 
   const live = list.filter((m) => !m.ended_ms);
+  const past = list.filter((m) => !!m.ended_ms);
   return (
     <div className="px-7 pb-8 pt-2 flex flex-col gap-4">
       <Card className="p-5">
@@ -1284,7 +1315,12 @@ function MeetingLobby({
                 <span className="text-[13px] font-semibold truncate">{m.title}</span>
                 <Tag tone={(m.level === "restricted" ? "red" : m.level === "internal" ? "amb" : undefined) as never}>{m.level}</Tag>
                 {m.wants_agent && <Tag tone="ind">Agent</Tag>}
+                {m.recording_active && <Tag tone="red">● 录制中</Tag>}
                 <span className="ml-auto text-[10.5px] shrink-0" style={{ color: T.faint }}>{fmtTime(m.started_ms)} 开始</span>
+              </button>
+              <button onClick={() => onOpenDetail(m)} title="回顾、纪要、录像"
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-lg shrink-0" style={{ background: T.soft, color: T.sub }}>
+                详情
               </button>
               <button onClick={() => endMeeting(m)} disabled={ending === m.id}
                 title="结束这场会:房间关闭,纪要与行动项保留"
@@ -1293,6 +1329,28 @@ function MeetingLobby({
                 {ending === m.id ? "…" : "结束"}
               </button>
             </div>
+          ))
+        )}
+      </Card>
+
+      <Card className="px-5 pt-4 pb-2">
+        <div className="flex items-center">
+          <b className="text-[13px]">历史会议</b>
+          <span className="ml-auto text-[10.5px]" style={{ color: T.faint }}>回顾 · 纪要 · 录像</span>
+        </div>
+        {past.length === 0 ? (
+          <div className="py-5 text-[11.5px]" style={{ color: T.sub }}>还没有结束的会议。</div>
+        ) : (
+          past.map((m) => (
+            <button key={m.id} onClick={() => onOpenDetail(m)} className="w-full flex items-center gap-2.5 py-2.5 text-left"
+              style={{ borderTop: `1px solid ${T.line}` }}>
+              <Video size={14} style={{ color: T.faint }} />
+              <span className="text-[13px] font-semibold truncate">{m.title}</span>
+              <Tag tone={(m.level === "restricted" ? "red" : m.level === "internal" ? "amb" : undefined) as never}>{m.level}</Tag>
+              <span className="ml-auto text-[10.5px] shrink-0" style={{ color: T.faint }}>
+                {fmtTime(m.started_ms)} – {m.ended_ms ? fmtTime(m.ended_ms) : ""}
+              </span>
+            </button>
           ))
         )}
       </Card>
