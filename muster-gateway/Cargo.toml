@@ -8,6 +8,9 @@ description = "Muster model-gateway — 对外讲 OpenAI Responses API,对内走
 
 [dependencies]
 muster-provider = { path = "../muster-provider" }
+muster-route = { path = "../muster-route" }
+muster-audit = { path = "../muster-audit" }
+thiserror = "1"
 axum = "0.7"
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "signal", "net"] }
 tokio-stream = "0.1"
@@ -18,4 +21,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
+tempfile = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
