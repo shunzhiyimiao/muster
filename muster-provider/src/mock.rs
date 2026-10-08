@@ -34,6 +34,8 @@ pub struct MockProvider {
     meta: ProviderMetadata,
     healthy: AtomicBool,
     script: Mutex<VecDeque<MockTurn>>,
+    /// 收到过的每一个请求(原样克隆):让测试能断言"提示词里到底有什么"。
+    seen: Mutex<Vec<ChatRequest>>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +57,7 @@ impl MockProvider {
             },
             healthy: AtomicBool::new(true),
             script: Mutex::new(VecDeque::new()),
+            seen: Mutex::new(Vec::new()),
         }
     }
 
@@ -72,6 +75,11 @@ impl MockProvider {
     }
 
     /// Flip liveness — router fail-closed tests use this.
+    /// 到目前为止收到的全部请求(按顺序)。
+    pub fn requests(&self) -> Vec<ChatRequest> {
+        self.seen.lock().unwrap().clone()
+    }
+
     pub fn set_healthy(&self, healthy: bool) {
         self.healthy.store(healthy, Ordering::SeqCst);
     }
@@ -227,14 +235,16 @@ impl ModelProvider for MockProvider {
         &self.meta
     }
 
-    async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+    async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        self.seen.lock().unwrap().push(req);
         self.next_turn().map(|t| t.response)
     }
 
     async fn chat_stream(
         &self,
-        _req: ChatRequest,
+        req: ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
+        self.seen.lock().unwrap().push(req);
         let turn = self.next_turn()?;
         // 遇到挂起标记:发完前面的事件后永远 pending(既不产出也不结束)。
         if let Some(pos) = turn.stream_events.iter().position(|e| *e == *HANG_MARKER) {

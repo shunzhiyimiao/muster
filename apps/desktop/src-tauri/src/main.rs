@@ -1276,6 +1276,14 @@ struct ProgressPayload {
     who: Option<String>,
 }
 
+/// 通告是否自带图标(杂项符号 U+2300–U+27FF 或表情区 U+1F000 起);中文、字母、全角标点都不算。
+fn starts_with_pictograph(text: &str) -> bool {
+    text.chars().next().is_some_and(|c| {
+        let cp = c as u32;
+        (0x2300..0x2800).contains(&cp) || cp >= 0x1F000
+    })
+}
+
 /// 心跳的人话:阶段 + 已等多久 + 已收到多少。
 fn progress_text(stage: &str, elapsed_ms: u64, received_bytes: u64) -> String {
     let secs = elapsed_ms / 1000;
@@ -1901,7 +1909,8 @@ fn forward_runner_event(
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }
         RunnerEvent::Notice { text } => {
-            let line = format!("\n⚠️ {text}\n");
+            // 自带图标的通告(🤝 委派、📘 仓库说明、⛔ 配额)不再叠一个 ⚠️,否则什么都像警告
+            let line = if starts_with_pictograph(&text) { format!("\n{text}\n") } else { format!("\n⚠️ {text}\n") };
             tr.lock().unwrap().push_str(&line);
             a.emit("task-delta", DeltaPayload { run_id: rid.clone(), text: line }).ok();
         }

@@ -469,6 +469,8 @@ pub async fn run_task_at(
         }
     }
     let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+    // 仓库说明(AGENTS.md,与 Codex 同一约定):常驻提示词,哈希进 tool_env(见模块文档第 11 条)
+    let project_docs = crate::project_docs::load_project_docs(tools.workspace(), tools.workspace());
     let params_repr = serde_json::json!({
         "system_prompt": cfg.system_prompt,
         "temperature": null,
@@ -496,6 +498,7 @@ pub async fn run_task_at(
                         "workspace": tools.workspace().display().to_string(),
                         "mode": if tools.is_writable() { "worktree_rw" } else { "read_only" },
                         "branch": worktree.as_ref().map(|w| w.branch.clone()),
+                        "project_docs": project_docs.as_ref().map(|d| d.hash.0.clone()),
                     })
                     .to_string()
                     .as_bytes(),
@@ -560,6 +563,18 @@ pub async fn run_task_at(
     if let Some(p) = &cfg.persona {
         system_text.push_str("\n\n");
         system_text.push_str(p);
+    }
+    // 仓库说明:在岗位说明书之后、技能目录之前——先知道自己是谁,再知道这里的规矩,最后看手边有什么
+    if let Some(d) = &project_docs {
+        system_text.push_str("\n\n# 仓库说明(来自仓库的 AGENTS.md,必须遵守)\n\n");
+        system_text.push_str(&d.text);
+        if d.truncated {
+            system_text.push_str(&format!("\n\n(仓库说明超过 {} 字节,以上为截断后的内容)", crate::project_docs::PROJECT_DOC_MAX_BYTES));
+        }
+        let names: Vec<String> = d.sources.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        on_event(RunnerEvent::Notice {
+            text: format!("📘 读入仓库说明 {}({} 字节{})", names.join(" + "), d.bytes, if d.truncated { ",已截断" } else { "" }),
+        });
     }
     if !cfg.skills.is_empty() {
         system_text.push_str("\n\n");

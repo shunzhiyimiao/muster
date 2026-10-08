@@ -12,7 +12,7 @@
 - muster-route：E1 密级/E2 决策 decide() 纯函数/E3 会话棘轮
 - muster-audit：append-only + SHA-256 链，"8幕→SQL"见其 README
 - muster-eval：A7 评测，20 固定样本，A1 提示词改动后必须重跑
-- muster-runner：B1 任务执行器；每 run 独立 worktree（写权限由隔离换取，主仓零污染，产出 diff）；重试属 Runner 不属路由
+- muster-runner：B1 任务执行器；每 run 独立 worktree（写权限由隔离换取，主仓零污染，产出 diff）；重试属 Runner 不属路由；工作区根的 AGENTS.md（AGENTS.override.md 优先，32 KiB，与 Codex 同规则）常驻系统提示词、哈希进 run.start 的 tool_env
 - muster-skill：技能（SKILL.md，与 codex 同一约定：仓库级 .agents/skills/ + 个人级 ~/.muster/skills/）；只从本地发现不联网、目录进提示词而正文经 read_skill 按需读、审计只记哈希（skill.offer / skill.read）、自报密级即成为标签来源
 - muster-workflow：自定义工作流（WORKFLOW.md：schedule / skills / egress / outputs / channel + 步骤正文；仓库级 .agents/workflows/ + 个人级 ~/.muster/workflows/）；工作流自有仓库产出自动合入（只合自己名下的仓库，不走审批）；http_get 只许白名单主机、每次落 tool.egress 计入演习报告；调度器 v0 在桌面壳里（错过补跑一次），入口在我的工作台 › 任务 › 工作流；PDF 靠本机 Chrome headless，pptx 未实现
 - muster-roster：Agent 编制（AGENT.md 岗位卡：badge / name / role / aliases / skills / tools 只读或隔离可写 / commands 白名单 / model / sensitivity_max / default；仓库级 .agents/roster/ + 个人级 ~/.muster/roster/）；工牌号 = 审计 actor id；能力子集哈希进 approval.request，变了落 badge.update；密级上限是硬闸；指派顺序：消息开头 @ > 界面选中的工牌 > 频道默认 > 名册默认；名册为空退回内置 A-007；delegate 工具让主 Agent 把子任务委派给另一张工牌（同一隔离工作区、串行、只一层、档位取交集，父 run 落 run.delegate）；频道编制 channel_agents 存 state.db，引入/请离写 channel.roster，非空时只能点已引入的工牌、第一张是频道默认
@@ -25,9 +25,10 @@
 - apps/desktop：智能协作平台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
 
 ## 约定
-- 动手前后都跑 cargo test（当前基线 295 项全绿；桌面壳另有 42 项需在 apps/desktop/src-tauri 下跑）
+- 动手前后都跑 cargo test（当前基线 300 项全绿；桌面壳另有 42 项需在 apps/desktop/src-tauri 下跑）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
+- 根目录 AGENTS.md 是给 Agent（Muster 工牌与 Codex）读的章程摘要，运行时每次都进提示词；改铁律时与本文件两处同步
 - 总体规划在 docs/（16 周 P0–P6，任务号 P0-01…P6-08）；A2/A7/E1–E3/A9 等是其细化分解；codex fork 分仓在 ../muster-codex（零代码改动，去留待定）
 - **与 Codex 的关系（2026-10-08 评审后定为路 B）**：Muster 自带运行时，不以 Codex 为执行器；只借其 SKILL.md 技能约定、Responses 线协议（经网关）与会话分叉语义，并有选择地吸收其资产（读 AGENTS.md、兼读 ~/.agents/skills、复用沙箱与网络代理）。对外一律不再称"teams 版 codex"。评审与八步行动见 docs/评审-与Codex吻合度-2026-10-08.md
 - **服务端动手前先读 docs/服务端架构.md**（六条硬边界 + 分阶段 + 未决三项）；改完回来更新它

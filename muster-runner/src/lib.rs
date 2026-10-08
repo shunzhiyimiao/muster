@@ -52,6 +52,11 @@
 //!     (模型只能用文字作结);即便如此仍撞上限,`final_text` 也不是空串,而是一句
 //!     "到达上限、最后想做什么"。委派方与人拿到的最差结果也是一句交代,而不是沉默——
 //!     真机上一次委派两度撞上限、两次都交回空结论,父 Agent 只能自己去工作区翻。
+//! 11. **仓库说明常驻,与 Codex 同一约定**(见 [`project_docs`]):工作区根的 `AGENTS.md`
+//!     (`AGENTS.override.md` 优先,32 KiB 预算,规则照抄 codex 的 agents_md.rs)每次都进系统提示词,
+//!     哈希进 `run.start` 的 tool_env——有没有说明、说明是哪一版,是不同的运行。技能是按需读的
+//!     "怎么做",AGENTS.md 是永远在的"在这里要守什么";一个按 Codex 规范写好说明的仓库,
+//!     换 Muster 的 Agent 来做事看到的是同一份。
 //!
 //! ## 诚实边界(v0)
 //!
@@ -78,6 +83,7 @@
 
 pub mod approval;
 pub mod capsule;
+pub mod project_docs;
 pub mod command;
 pub mod runner;
 pub mod tools;
@@ -97,3 +103,4 @@ pub use runner::{HEARTBEAT_EVERY,
 pub use command::CommandPolicy;
 pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};
 pub use worktree::{branch_diff, FileChange, RunDiff, Worktree, WorktreeError};
+pub use project_docs::{load_project_docs, ProjectDocs, PROJECT_DOC_MAX_BYTES};
