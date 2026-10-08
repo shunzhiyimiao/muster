@@ -88,6 +88,55 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// 把 `git diff --numstat` / `--name-status` / 正文拼成 [`RunDiff`]。
+/// [`Worktree::diff`](申请时)与 [`branch_diff`](审批时)共用,保证两边口径一致。
+fn assemble_diff(numstat: &str, namestatus: &str, patch: String) -> RunDiff {
+    let mut status_of = std::collections::HashMap::new();
+    for line in namestatus.lines() {
+        let mut it = line.split('\t');
+        if let (Some(st), Some(p)) = (it.next(), it.last()) {
+            status_of.insert(p.to_owned(), st.chars().next().unwrap_or('M').to_string());
+        }
+    }
+
+    let mut files = Vec::new();
+    let (mut ins, mut del) = (0u32, 0u32);
+    for line in numstat.lines() {
+        let mut it = line.split('\t');
+        let (a, r, p) = (it.next(), it.next(), it.last());
+        let (Some(a), Some(r), Some(p)) = (a, r, p) else { continue };
+        // 二进制文件 numstat 为 "-"
+        let added: u32 = a.parse().unwrap_or(0);
+        let removed: u32 = r.parse().unwrap_or(0);
+        ins += added;
+        del += removed;
+        files.push(FileChange {
+            status: status_of.get(p).cloned().unwrap_or_else(|| "M".into()),
+            path: p.to_owned(),
+            added,
+            removed,
+        });
+    }
+
+    RunDiff { files_changed: files.len(), files, patch, insertions: ins, deletions: del }
+}
+
+/// 某条分支相对主仓的改动:从它与主仓 HEAD 的共同祖先到分支顶。
+///
+/// 审批人裁决前看的就是这个。此前审批页只有分支名和哈希前缀,合入前看不到改了什么
+/// ——审批就是盲签(真机上一条只装着临时文件的空壳申请,靠人去 worktree 里翻才看出来)。
+/// 与 [`Worktree::diff`] 用同一组 git 命令比较同一对树,同一份改动算出的 patch
+/// 逐字节相同,因此它的 SHA-256 能与 `approval.request` 里记的 `command_hash` 对上:
+/// 对得上就是"你看到的就是它申请的那份",对不上就说明分支在申请后又动过。
+pub fn branch_diff(repo: &Path, branch: &str) -> Result<RunDiff, WorktreeError> {
+    let base = git(repo, &["merge-base", "HEAD", branch])?;
+    let base = base.trim();
+    let numstat = git(repo, &["diff", "--numstat", base, branch])?;
+    let namestatus = git(repo, &["diff", "--name-status", base, branch])?;
+    let patch = git(repo, &["diff", base, branch])?;
+    Ok(assemble_diff(&numstat, &namestatus, patch))
+}
+
 impl Worktree {
     /// 在 `base` 仓库上为 `run_id` 建一个独立 worktree(从当前 HEAD)。
     ///
@@ -151,35 +200,7 @@ impl Worktree {
         let numstat = git(&self.path, &["diff", "--cached", "--numstat", &self.base_commit])?;
         let namestatus = git(&self.path, &["diff", "--cached", "--name-status", &self.base_commit])?;
         let patch = git(&self.path, &["diff", "--cached", &self.base_commit])?;
-
-        let mut status_of = std::collections::HashMap::new();
-        for line in namestatus.lines() {
-            let mut it = line.split('\t');
-            if let (Some(st), Some(p)) = (it.next(), it.last()) {
-                status_of.insert(p.to_owned(), st.chars().next().unwrap_or('M').to_string());
-            }
-        }
-
-        let mut files = Vec::new();
-        let (mut ins, mut del) = (0u32, 0u32);
-        for line in numstat.lines() {
-            let mut it = line.split('\t');
-            let (a, r, p) = (it.next(), it.next(), it.last());
-            let (Some(a), Some(r), Some(p)) = (a, r, p) else { continue };
-            // 二进制文件 numstat 为 "-"
-            let added: u32 = a.parse().unwrap_or(0);
-            let removed: u32 = r.parse().unwrap_or(0);
-            ins += added;
-            del += removed;
-            files.push(FileChange {
-                status: status_of.get(p).cloned().unwrap_or_else(|| "M".into()),
-                path: p.to_owned(),
-                added,
-                removed,
-            });
-        }
-
-        Ok(RunDiff { files_changed: files.len(), files, patch, insertions: ins, deletions: del })
+        Ok(assemble_diff(&numstat, &namestatus, patch))
     }
 
     /// 把已暂存的改动提交到隔离分支。
@@ -315,6 +336,35 @@ mod tests {
         assert!(base_src.contains("a - b"), "基础仓被污染了:{base_src}");
         assert!(!base.path().join("NEW.md").exists());
 
+        wt.cleanup().unwrap();
+    }
+
+    /// 审批时按分支重算的 diff 必须与申请时 worktree 里算的逐字节相同——
+    /// 否则审批页上的"与申请时一致"就没有意义。
+    #[test]
+    fn branch_diff_matches_worktree_diff_byte_for_byte() {
+        let base = repo();
+        let root = tempfile::tempdir().unwrap();
+        let wt = Worktree::create(base.path(), root.path(), "RUN-BD").unwrap();
+        std::fs::write(wt.path.join("main.rs"), "fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        std::fs::write(wt.path.join("NEW.md"), "新文件\n").unwrap();
+        let at_request = wt.diff().unwrap();
+        wt.commit("A-007", "改动(待审批)").unwrap();
+
+        let at_review = branch_diff(base.path(), &wt.branch).unwrap();
+        assert_eq!(at_review.patch, at_request.patch, "两边 patch 必须逐字节相同");
+        assert_eq!(at_review.files_changed, 2);
+        assert_eq!((at_review.insertions, at_review.deletions), (at_request.insertions, at_request.deletions));
+        assert_eq!(at_review.files.iter().find(|f| f.path == "NEW.md").unwrap().status, "A");
+
+        // 主仓在申请之后又前进了一步,merge-base 仍是建树时的基线,diff 不受影响
+        std::fs::write(base.path().join("OTHER.txt"), "别的改动\n").unwrap();
+        git(base.path(), &["add", "-A"]).unwrap();
+        git(base.path(), &["commit", "-qm", "主仓前进"]).unwrap();
+        let later = branch_diff(base.path(), &wt.branch).unwrap();
+        assert_eq!(later.patch, at_request.patch, "主仓前进不该改变分支自己的 diff");
+
+        assert!(branch_diff(base.path(), "muster/run-RUN-NOPE").is_err(), "不存在的分支要报错,不能回空 diff");
         wt.cleanup().unwrap();
     }
 

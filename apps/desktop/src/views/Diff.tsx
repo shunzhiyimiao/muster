@@ -7,8 +7,57 @@ import { DiffPayload } from "../api";
 
 const STATUS_ZH: Record<string, string> = { A: "新增", M: "修改", D: "删除", R: "重命名" };
 
-export function DiffPanel({ diff }: { diff: DiffPayload | null }) {
+/** 文件列表 + 可展开的完整 diff。任务卡旁的变更面板与审批页共用这一份渲染。 */
+export function DiffBody({ diff, emptyText = "没有代码改动。" }: { diff: DiffPayload; emptyText?: string }) {
   const [open, setOpen] = useState(false);
+  if (diff.files_changed === 0) {
+    return <div className="text-[10.5px]" style={{ color: T.faint }}>{emptyText}</div>;
+  }
+  return (
+    <>
+      <div className="space-y-1">
+        {diff.files.map((f) => (
+          <div key={f.path} className="flex items-center gap-1.5 text-[10.5px] rounded-lg px-2 py-1.5"
+            style={{ background: T.panel }}>
+            <FileCode size={11} style={{ color: T.sub, flex: "none" }} />
+            <span className="truncate flex-1" title={f.path}>{f.path}</span>
+            <Tag tone={f.status === "A" ? "grn" : f.status === "D" ? "red" : undefined}>
+              {STATUS_ZH[f.status] ?? f.status}
+            </Tag>
+            {f.added > 0 && (
+              <span className="flex items-center" style={{ color: T.green }}><Plus size={9} />{f.added}</span>
+            )}
+            {f.removed > 0 && (
+              <span className="flex items-center" style={{ color: T.red }}><Minus size={9} />{f.removed}</span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <button onClick={() => setOpen((o) => !o)}
+        className="w-full mt-2.5 py-1.5 rounded-lg text-[11px] font-semibold"
+        style={{ background: T.indigoSoft, color: T.indigo }}>
+        {open ? "收起 diff" : "查看完整 diff"}
+      </button>
+      {open && (
+        <pre className="mt-2 rounded-lg p-2.5 overflow-x-auto text-[10px] leading-relaxed fade"
+          style={{ background: "#17181C", color: "#D6D8E3", maxHeight: 320 }}>
+          {diff.patch.split("\n").map((line, i) => (
+            <div key={i} style={{
+              color: line.startsWith("+") && !line.startsWith("+++") ? "#7EE2A8"
+                : line.startsWith("-") && !line.startsWith("---") ? "#F5A3A5"
+                : line.startsWith("@@") ? "#8385F2" : "#D6D8E3",
+            }}>
+              {line || " "}
+            </div>
+          ))}
+        </pre>
+      )}
+    </>
+  );
+}
+
+export function DiffPanel({ diff }: { diff: DiffPayload | null }) {
   if (!diff) {
     return (
       <Card className="p-4">
@@ -37,52 +86,11 @@ export function DiffPanel({ diff }: { diff: DiffPayload | null }) {
         <span className="truncate" title={diff.branch}>{diff.branch}</span>
       </div>
 
-      {none ? (
-        <div className="text-[10.5px]" style={{ color: T.faint }}>本次运行没有产生代码改动。</div>
-      ) : (
-        <>
-          <div className="space-y-1">
-            {diff.files.map((f) => (
-              <div key={f.path} className="flex items-center gap-1.5 text-[10.5px] rounded-lg px-2 py-1.5"
-                style={{ background: T.panel }}>
-                <FileCode size={11} style={{ color: T.sub, flex: "none" }} />
-                <span className="truncate flex-1" title={f.path}>{f.path}</span>
-                <Tag tone={f.status === "A" ? "grn" : f.status === "D" ? "red" : undefined}>
-                  {STATUS_ZH[f.status] ?? f.status}
-                </Tag>
-                {f.added > 0 && (
-                  <span className="flex items-center" style={{ color: T.green }}><Plus size={9} />{f.added}</span>
-                )}
-                {f.removed > 0 && (
-                  <span className="flex items-center" style={{ color: T.red }}><Minus size={9} />{f.removed}</span>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <button onClick={() => setOpen((o) => !o)}
-            className="w-full mt-2.5 py-1.5 rounded-lg text-[11px] font-semibold"
-            style={{ background: T.indigoSoft, color: T.indigo }}>
-            {open ? "收起 diff" : "查看完整 diff"}
-          </button>
-          {open && (
-            <pre className="mt-2 rounded-lg p-2.5 overflow-x-auto text-[10px] leading-relaxed fade"
-              style={{ background: "#17181C", color: "#D6D8E3", maxHeight: 320 }}>
-              {diff.patch.split("\n").map((line, i) => (
-                <div key={i} style={{
-                  color: line.startsWith("+") && !line.startsWith("+++") ? "#7EE2A8"
-                    : line.startsWith("-") && !line.startsWith("---") ? "#F5A3A5"
-                    : line.startsWith("@@") ? "#8385F2" : "#D6D8E3",
-                }}>
-                  {line || " "}
-                </div>
-              ))}
-            </pre>
-          )}
-          <div className="mt-2 text-[9.5px] leading-relaxed" style={{ color: T.faint }}>
-            改动在隔离分支上,主仓未被触碰。合入与推送需单独授权(P5),Runner 不代劳。
-          </div>
-        </>
+      <DiffBody diff={diff} emptyText="本次运行没有产生代码改动。" />
+      {!none && (
+        <div className="mt-2 text-[9.5px] leading-relaxed" style={{ color: T.faint }}>
+          改动在隔离分支上,主仓未被触碰。合入与推送需单独授权(P5),Runner 不代劳。
+        </div>
       )}
     </Card>
   );

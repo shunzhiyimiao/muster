@@ -3881,6 +3881,56 @@ fn approvals_pending(state: State<'_, AppState>) -> Result<Vec<PendingApprovalOu
         .collect())
 }
 
+/// 审批页上的改动正文:分支相对主仓的 diff,以及它与申请时链上哈希是否一致。
+#[derive(Serialize)]
+struct ApprovalDiffOut {
+    run_id: String,
+    branch: String,
+    files_changed: usize,
+    insertions: u32,
+    deletions: u32,
+    files: Vec<muster_runner::FileChange>,
+    patch: String,
+    /// approval.request 里记的 diff 哈希;None = 链上没有这条待裁决的申请
+    recorded_hash: Option<String>,
+    /// 当前分支的改动是否就是申请时那份;None = 没有可比对的记录
+    matches_request: Option<bool>,
+}
+
+/// 审批人看改动。此前审批页只有分支名与哈希前缀,合入前看不到改了什么——审批就是盲签。
+/// 单机场景下 worktree、分支、审批人都在同一台机器上,直接按分支算就是了;
+/// 跨节点怎么看(docs/服务端架构.md §10 的 a/b/c)不受影响,这里不碰。
+#[tauri::command]
+fn approvals_diff(state: State<'_, AppState>, run_id: String) -> Result<ApprovalDiffOut, String> {
+    let recorded = {
+        let guard = state.0.lock().unwrap();
+        let b = guard.as_ref().ok_or("后端未初始化")?;
+        let store = b.audit.lock().unwrap();
+        pending_approval_list(store.conn(), None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|p| p.run_id.as_deref() == Some(run_id.as_str()))
+            .map(|p| p.command_hash)
+    };
+    let home = remote::home_dir().map(|p| p.display().to_string()).ok_or("找不到家目录(HOME / USERPROFILE 都没有)")?;
+    let base = std::env::var("MUSTER_WORKSPACE").unwrap_or_else(|_| format!("{home}/muster"));
+    let branch = muster_runner::approval::branch_for(&run_id);
+    let diff = muster_runner::branch_diff(std::path::Path::new(&base), &branch)
+        .map_err(|e| format!("取不到分支 {branch} 的改动:{e}"))?;
+    let actual = ContentHash::sha256(diff.patch.as_bytes()).0;
+    Ok(ApprovalDiffOut {
+        matches_request: recorded.as_ref().map(|r| r == &actual),
+        recorded_hash: recorded,
+        run_id,
+        branch,
+        files_changed: diff.files_changed,
+        insertions: diff.insertions,
+        deletions: diff.deletions,
+        files: diff.files,
+        patch: diff.patch,
+    })
+}
+
 /// 人的裁决:批准则合入主仓,拒绝则丢弃;两者都写审计,处置后回收 worktree。
 #[tauri::command]
 fn approvals_decide(
@@ -4576,6 +4626,7 @@ fn main() {
             remote_meeting_agent,
             approvals_pending,
             approvals_decide,
+            approvals_diff,
             capsules_list,
             skills_list,
             workflows_list,

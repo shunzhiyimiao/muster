@@ -293,6 +293,13 @@ export interface DiffPayload {
   files: FileChange[];
   patch: string;
 }
+/** 审批页上的改动:分支 diff + 与申请时链上哈希的比对结果 */
+export interface ApprovalDiffOut extends DiffPayload {
+  /** approval.request 里记的 diff 哈希;null = 链上没有这条待裁决的申请 */
+  recorded_hash: string | null;
+  /** 当前分支改动是否就是申请时那份;null = 没有可比对的记录 */
+  matches_request: boolean | null;
+}
 export interface StoredMsg {
   channel_id: string;
   role: string;
@@ -466,6 +473,7 @@ export const api = {
   transcriptPurge: (kind: string, value?: string) =>
     invoke<number>("transcript_purge", { kind, value: value ?? null }),
   approvalsPending: () => invoke<PendingApprovalOut[]>("approvals_pending"),
+  approvalsDiff: (runId: string) => invoke<ApprovalDiffOut>("approvals_diff", { runId }),
   approvalsDecide: (runId: string, granted: boolean, note?: string) =>
     invoke<string>("approvals_decide", { runId, granted, note: note ?? null }),
   capsulesList: () => invoke<CapsuleOut[]>("capsules_list"),

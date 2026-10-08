@@ -96,4 +96,4 @@ pub use runner::{
 };
 pub use command::CommandPolicy;
 pub use tools::{ExtraTool, ExtraToolFuture, ToolOutcome, ToolSet};
-pub use worktree::{FileChange, RunDiff, Worktree, WorktreeError};
+pub use worktree::{branch_diff, FileChange, RunDiff, Worktree, WorktreeError};

@@ -1,24 +1,40 @@
-/* P5 审批:合入申请的人工裁决。批准与拒绝都写审计。 */
-import { useState } from "react";
+/* P5 审批:合入申请的人工裁决。批准与拒绝都写审计。
+   裁决前先看得到改动:每条申请自动加载分支 diff,并标明是否与申请时链上记的哈希一致。 */
+import { useEffect, useState } from "react";
 import { Check, GitBranch, GitMerge, ShieldAlert, X } from "lucide-react";
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
-import { PendingApprovalOut, api, fmtDate } from "../api";
+import { ApprovalDiffOut, PendingApprovalOut, api, fmtDate } from "../api";
+import { DiffBody } from "./Diff";
+
+type LoadedDiff = { diff: ApprovalDiffOut } | { error: string };
 
 export function ApprovalsPanel({
   pending,
   onDecided,
-  compact,
   canApprove = true,
 }: {
   pending: PendingApprovalOut[];
   onDecided: () => void;
-  compact?: boolean;
   /** P2:当前身份是否有裁决权;无权时不让人白点,直接说明原因 */
   canApprove?: boolean;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  // 每条待裁决申请的改动。合入前看不到改了什么,审批就是盲签——所以一出现就加载,不等人点
+  const [diffs, setDiffs] = useState<Record<string, LoadedDiff>>({});
+  const runIds = pending.map((p) => p.run_id ?? "").join(",");
+  useEffect(() => {
+    pending.forEach((p) => {
+      const rid = p.run_id ?? "";
+      if (!rid || diffs[rid]) return;
+      api
+        .approvalsDiff(rid)
+        .then((diff) => setDiffs((m) => ({ ...m, [rid]: { diff } })))
+        .catch((e) => setDiffs((m) => ({ ...m, [rid]: { error: String(e) } })));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runIds]);
 
   const act = (runId: string, granted: boolean) => {
     setBusy(runId);
@@ -68,11 +84,30 @@ export function ApprovalsPanel({
               <GitBranch size={10} />
               <span className="truncate" title={p.branch}>{p.branch}</span>
             </div>
-            {!compact && (
-              <div className="mt-1 text-[9.5px] break-all" style={{ color: T.faint }}>
-                内容哈希 {p.command_hash.slice(0, 24)}…
-              </div>
-            )}
+            <div className="mt-2">
+              {(() => {
+                const d = diffs[p.run_id ?? ""];
+                if (!d) return <div className="text-[10px]" style={{ color: T.faint }}>正在读取改动…</div>;
+                if ("error" in d) {
+                  return (
+                    <div className="rounded-lg px-2 py-1.5 text-[10px]" style={{ background: T.amberSoft, color: T.amber }}>
+                      读不到改动:{d.error}
+                    </div>
+                  );
+                }
+                return (
+                  <>
+                    <DiffBody diff={d.diff} emptyText="这条分支上没有任何改动。" />
+                    <div className="mt-1.5 text-[9.5px] break-all" title={`申请时记录的哈希 ${p.command_hash}`}
+                      style={{ color: d.diff.matches_request === false ? T.amber : d.diff.matches_request ? T.green : T.faint }}>
+                      {d.diff.matches_request === true && "✓ 与申请时记录的哈希一致,你看到的就是它申请合入的那份"}
+                      {d.diff.matches_request === false && "⚠ 与申请时记录的哈希不一致——分支在申请后又动过,以这里显示的为准"}
+                      {d.diff.matches_request === null && `内容哈希 ${p.command_hash.slice(0, 24)}…`}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
 
             {!p.worktree_exists && (
               <div className="mt-2 rounded-lg px-2 py-1.5 text-[10px]" style={{ background: T.amberSoft, color: T.amber }}>
