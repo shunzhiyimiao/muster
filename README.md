@@ -1,6 +1,6 @@
 # Muster · 智能协作平台
 
-**完全本地部署的团队 + Agent 协作系统。** 人、Agent、频道、任务、审批与审计在同一个平台上;
+**可完全本地部署的 AI 原生团队协作系统,兼容 Codex 的技能与接口约定。** 人、Agent、频道、任务、审批与审计在同一个平台上;
 模型可以是云端的,也可以是内网/本机的——**由数据密级决定,而不是由用户随手选**。
 
 三条产品主张,都做成了代码里的结构性保证而非约定:
@@ -36,7 +36,7 @@ cargo run -p muster-eval -- --list
 | `muster-runner` | B1 | 任务执行器:路由 → 流式工具循环 → Capsule-ready 审计链 |
 | `muster-skill` | — | 技能:SKILL.md 过程性知识包(与 codex 同一约定);目录进提示词、正文经 `read_skill` 按需读取、审计只记哈希 |
 | `muster-workflow` | — | 自定义工作流:WORKFLOW.md 定义 + cron 定时 + 自有仓库自动合入 + 白名单抓取(tool.egress 计量)+ 报告产物(html / pdf) |
-| `muster-roster` | — | Agent 编制:AGENT.md 岗位卡(工牌、岗位、别名、技能、工具档位、命令白名单、密级上限);能力哈希进审批与 badge.update;@别名 点将;delegate 把子任务委派给另一张工牌;频道可引入多张工牌 |
+| `muster-roster` | — | Agent 编制:AGENT.md 岗位卡(工牌、岗位、别名、技能、工具档位、命令白名单、密级上限);能力哈希进审批与 badge.update;@别名 指派;delegate 把子任务委派给另一张工牌;频道可引入多张工牌 |
 | `muster-gateway` | — | 模型网关:对外讲 Responses,对内讲 chat |
 | `muster-eval` | A7 | 20 固定样本的工具调用评测,确定性判卷,退出码可挂 CI |
 | `muster-prompt` | A1 | Agent 系统提示词的唯一出处(执行器与评测同源) |
@@ -53,5 +53,12 @@ Muster 自身采用 **AGPL-3.0-or-later**(2026-09-23 定,全文见根目录 `LIC
 各 crate 的 `Cargo.toml` 与桌面壳 `package.json` 均已声明同一 SPDX 标识。
 
 设计决策写在各 crate 的 `lib.rs` 文档注释与 README 里,**改代码前先读**。
-总体规划(16 周 P0–P6,任务号 P0-01…P6-08)与概念稿见 `docs/`;
-Codex 受控 fork 在同级目录 `../muster-codex`(分仓,保持最小 diff 以便 rebase 上游)。
+总体规划(16 周 P0–P6,任务号 P0-01…P6-08)与概念稿见 `docs/`。
+
+## 与 Codex 的关系
+
+Muster 自带运行时(muster-runner),**不以 Codex 为执行器**;从 Codex 借用的是三样约定:
+SKILL.md 技能格式(仓库级 `.agents/skills/` 与 Codex 同一份文件)、Responses 线协议(经 muster-gateway
+让只讲 Responses 的 Codex 用上 chat 系模型)、会话分叉语义。下一步有选择地吸收它的资产:读 AGENTS.md、
+兼读 `~/.agents/skills`、复用其沙箱与网络代理。同级目录 `../muster-codex` 是零代码改动的参考 fork,去留待定。
+这一定位在 2026-10-08 的吻合度评审后确定(路 B),见 `docs/评审-与Codex吻合度-2026-10-08.md`。

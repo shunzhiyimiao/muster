@@ -221,7 +221,7 @@ export function ChatPane({
   channels?: Channel[];
   /** 个人会话当前的密级底线,决定哪些频道发得进去 */
   personalFloor?: Sensitivity;
-  /** 名册(编制):用来点将,以及显示每条回复是哪张工牌说的 */
+  /** 名册(编制):用来指派协作对象,以及显示每条回复是哪张工牌说的 */
   agents?: AgentOut[];
   defaultBadge?: string | null;
 }) {

@@ -1566,7 +1566,7 @@ async fn send_message(
     text: String,
     // 写进哪条对话。None = 主对话(团队频道永远是它)。
     thread_id: Option<String>,
-    // 点将:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
+    // 指派:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
     badge: Option<String>,
 ) -> Result<String, String> {
     let (router, audit, store) = {
@@ -1588,7 +1588,7 @@ async fn send_message(
     // "为什么是这个级别"始终指向信息量最大的肇因。
     let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_sources(&channel))
         .await?;
-    // 点将:谁来答。密级上限在这里核对,派不了就明说
+    // 指派:谁来答。密级上限在这里核对,派不了就明说
     let roster = load_roster()?;
     let allowed = store.lock().unwrap().channel_agents(&channel.id);
     let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0, &allowed)?;
@@ -2008,7 +2008,7 @@ async fn run_workspace_task(
     channel_id: String,
     text: String,
     thread_id: Option<String>,
-    // 点将:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
+    // 指派:工牌号 / 别名;None = 看消息开头的 @,再没有就用默认工牌。
     badge: Option<String>,
 ) -> Result<String, String> {
     let (router, audit, store) = {
@@ -2050,7 +2050,7 @@ async fn run_workspace_task(
     let mut label_srcs = label_sources(&channel);
     label_srcs.extend(found.skills.iter().filter_map(|s| s.label_source()));
     let sources = turn_sources_and_persist(&store, &audit, &session_id, &label_srcs).await?;
-    // 点将:谁来干。只读工牌不建隔离工作区(没有写权限可换),其余按岗位卡装配
+    // 指派:谁来干。只读工牌不建隔离工作区(没有写权限可换),其余按岗位卡装配
     let roster = load_roster()?;
     let allowed = store.lock().unwrap().channel_agents(&channel.id);
     let (agent, ask) = pick_agent(&roster, badge.as_deref(), &text, muster_route::effective_sensitivity(&sources).0, &allowed)?;
@@ -2731,7 +2731,7 @@ fn roster_badges() -> Vec<String> {
         .unwrap_or_else(|_| vec!["A-007".into()])
 }
 
-/// 点将:**消息开头的 @ > 界面上选中的工牌 > 频道默认(编制第一张)> 名册默认**;
+/// 指派:**消息开头的 @ > 界面上选中的工牌 > 频道默认(编制第一张)> 名册默认**;
 /// 然后核对密级上限(硬闸,fail-closed)。@ 排第一,因为它是这一条消息的明确意图,
 /// 而按钮上的选择是粘住的状态——真机撞见过:按钮停在阿岩,写了 @小七,活却派给了阿岩。
 /// 返回 (工牌, 去掉称呼后的正文)。
