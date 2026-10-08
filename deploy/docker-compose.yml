@@ -31,9 +31,13 @@ services:
     # "could not establish pc connection"(信令与媒体是两条路,只有后者断了)。
     # use_external_ip=false:本机开发时别去猜公网地址。
     command: --bind 0.0.0.0
+    depends_on: [redis]
     environment:
       LIVEKIT_CONFIG: |
         port: 7880
+        # 录制(Egress)靠 redis 与 LiveKit 服务端通信;没有录制需求时这一段可以删
+        redis:
+          address: redis:6379
         rtc:
           tcp_port: 7881
           udp_port: 7882
@@ -54,6 +58,33 @@ services:
       - "7880:7880"    # WebSocket 信令
       - "7881:7881"    # TCP 回退
       - "7882:7882/udp" # WebRTC 媒体
+
+  # 录制(2026-10-08,会议线阶段 2)。LiveKit Egress 作为一个隐形参会者把房间合成一路
+  # 音视频,**写到本地文件**(./recordings,与 muster-server 共享)。它内置的页面模板
+  # 在容器内 7980 端口自己提供,不访问外网——内网部署也能录。
+  #   - redis 是它与 LiveKit 服务端通信的队列,必须与上面 livekit 的 redis 指向同一个
+  #   - cap_add SYS_ADMIN 与 shm_size 是 Chrome 合成画面的硬要求(egress v1.7.6+)
+  #   - 这个镜像近 4GB,首次拉取要几分钟
+  # restricted 的会录不了:入会票就禁录,服务端再拦一次;这是密级的事,不是配置的事。
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+  egress:
+    image: livekit/egress:latest
+    depends_on: [redis, livekit]
+    cap_add: [SYS_ADMIN]
+    shm_size: "1gb"
+    environment:
+      EGRESS_CONFIG_BODY: |
+        log_level: info
+        api_key: devkey
+        api_secret: devsecret_0123456789abcdef0123456789abcdef
+        ws_url: ws://livekit:7880
+        insecure: true
+        redis:
+          address: redis:6379
+    volumes:
+      - ./recordings:/out
 
   # 转写:**必须是本地的**。会议音频是全系统密级最高的数据流,
   # 走云端 STT 会让演习报告说「零外发」而整场会议音频都出去了。

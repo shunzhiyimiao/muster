@@ -6,3 +6,6 @@ apps/desktop/src-tauri/target/
 
 # 生产密钥只该在服务器上,不进仓库
 deploy/.env
+
+# 会议录像是正文,不进仓库(开发环境里 Egress 写到这里)
+deploy/recordings/

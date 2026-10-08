@@ -198,3 +198,51 @@ CREATE TABLE IF NOT EXISTS provider (
 -- 默认通道只能有一个。靠唯一索引而不是应用层检查:两个并发的
 -- "设为默认"请求都读到"当前没有默认",然后都写进去——应用层挡不住
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_single_default ON provider(is_default) WHERE is_default;
+
+-- 2026-10-08 会议线阶段 2(对标 Teams):字幕翻译、总结、录制。
+-- 纪要行带语言;翻译行通过 origin_id 指回原文行(同一句话的不同语言是不同的行,
+-- 字幕按语言筛,纪要面板把翻译挂在原文下面)。
+ALTER TABLE meeting_transcript ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT 'zh';
+ALTER TABLE meeting_transcript ADD COLUMN IF NOT EXISTS origin_id BIGINT REFERENCES meeting_transcript(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_transcript_origin ON meeting_transcript(origin_id) WHERE origin_id IS NOT NULL;
+
+-- 每个参会者给自己选的字幕语言。Agent 据此决定要翻成哪些语言——
+-- 没人要的语言不翻(每翻一种就是一次模型调用)。
+CREATE TABLE IF NOT EXISTS meeting_caption_pref (
+    meeting_id UUID NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL,
+    lang       TEXT NOT NULL,
+    updated_ms BIGINT NOT NULL,
+    PRIMARY KEY (meeting_id, account_id)
+);
+
+-- 会议总结(散会回顾 / 会中小结)。**正文存储侧**,审计链只有哈希。
+CREATE TABLE IF NOT EXISTS meeting_summary (
+    id          BIGSERIAL PRIMARY KEY,
+    meeting_id  UUID NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    author_id   TEXT NOT NULL,
+    model       TEXT,
+    created_ms  BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_summary_meeting ON meeting_summary(meeting_id, created_ms);
+
+-- 录制。文件由自托管的 LiveKit Egress 写到录制目录(正文侧),这里是它的元数据与
+-- 文件哈希;status:starting / active / stopping / ready / failed。
+CREATE TABLE IF NOT EXISTS meeting_recording (
+    id           UUID PRIMARY KEY,
+    meeting_id   UUID NOT NULL REFERENCES meeting(id) ON DELETE CASCADE,
+    egress_id    TEXT,
+    started_by   TEXT NOT NULL,
+    started_ms   BIGINT NOT NULL,
+    ended_ms     BIGINT,
+    status       TEXT NOT NULL DEFAULT 'starting',
+    audio_only   BOOLEAN NOT NULL DEFAULT FALSE,
+    filepath     TEXT,
+    size_bytes   BIGINT,
+    duration_ms  BIGINT,
+    content_hash TEXT,
+    error        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recording_meeting ON meeting_recording(meeting_id, started_ms);

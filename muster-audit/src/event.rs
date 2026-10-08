@@ -458,7 +458,15 @@ pub enum EventBody {
     /// 与 `model.call` 的 request_hash 同一姿态:事后能验"纪要有没有被改过",
     /// 却读不出说了什么。`speaker_id` 是账号 id,属元数据。
     #[serde(rename = "meeting.transcript")]
-    MeetingTranscript { meeting_id: String, speaker_id: String, text_hash: ContentHash },
+    MeetingTranscript {
+        meeting_id: String,
+        speaker_id: String,
+        text_hash: ContentHash,
+        /// 这行文本的语言(`zh` / `en` …);翻译行与原文行同样入链,靠它区分。
+        /// 2026-10-08 后加,旧事件缺省为空串。
+        #[serde(default)]
+        lang: String,
+    },
 
     /// 会议密级抬升:只升不降,与 `session.lock.raise` 同一语义,主体换成会议。
     /// 抬升理由(共享了什么)可能带正文,只留哈希。
@@ -474,6 +482,29 @@ pub enum EventBody {
     /// 这是治理事项,与把一张工牌引入频道(`channel.roster`)同一待遇。
     #[serde(rename = "meeting.agent")]
     MeetingAgent { meeting_id: String, wanted: bool },
+
+    /// 会议总结(散会回顾 / 会中小结)落库。正文在 PostgreSQL 正文侧,这里只有哈希;
+    /// `kind` 是 `recap` / `interim` 这类口径,`author` 是生成它的工牌或人。
+    #[serde(rename = "meeting.summary")]
+    MeetingSummary { meeting_id: String, kind: String, text_hash: ContentHash },
+
+    /// 开始录制。录像是**长期留存、极易被搬走的正文**——谁、何时、按下了录制,
+    /// 必须留痕;restricted 的会根本到不了这一步(入会票就禁录)。
+    #[serde(rename = "meeting.record.start")]
+    MeetingRecordStart { meeting_id: String, recording_id: String, audio_only: bool },
+
+    /// 录制结束(文件就绪或失败)。`content_hash` 是**文件本身**的哈希——
+    /// 事后能验"这份录像有没有被改过";文件在录制目录里,审计不存正文。
+    #[serde(rename = "meeting.record.stop")]
+    MeetingRecordStop {
+        meeting_id: String,
+        recording_id: String,
+        /// `ready` / `failed:<原因分类>`。
+        outcome: String,
+        duration_ms: u64,
+        size_bytes: u64,
+        content_hash: Option<ContentHash>,
+    },
 
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
@@ -522,6 +553,9 @@ impl EventBody {
             EventBody::MeetingTranscript { .. } => "meeting.transcript",
             EventBody::MeetingLevelRaise { .. } => "meeting.level.raise",
             EventBody::MeetingAgent { .. } => "meeting.agent",
+            EventBody::MeetingSummary { .. } => "meeting.summary",
+            EventBody::MeetingRecordStart { .. } => "meeting.record.start",
+            EventBody::MeetingRecordStop { .. } => "meeting.record.stop",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }

@@ -40,6 +40,15 @@
 //! 所以这里一律**先 append 审计,再写库**;审计写不进去,操作就失败(fail-closed)。
 //! 纪要行是写入最密的一类(每几秒一行),也照此办——"正文有、链上无"恰恰最不能
 //! 发生在它身上。
+//!
+//! ## 字幕、翻译、总结(阶段 2,对标 Teams)
+//!
+//! - **字幕**就是纪要行的另一种显示:同一条推送,会议室页叠在画面上。没有第二条转写链路。
+//! - **翻译**由会议 Agent 做(模型调用必须在能跑 `muster_route` 的进程里,服务端不代劳):
+//!   每个参会者给自己选字幕语言([`set_caption_lang`]),Agent 读 [`caption_langs`] 决定翻成
+//!   哪些语言,翻译行以 `lang` + `origin_id` 落回 [`add_transcript`]。没人要的语言不翻。
+//! - **总结**同样由 Agent 生成后落到 [`add_summary`];正文在库里,链上只有哈希。
+//! - **录制**见 `recording.rs`。
 
 use axum::extract::{Path, State};
 use axum::Json;
@@ -75,7 +84,15 @@ pub struct MeetingOut {
     /// 这场会是否请了 Agent。**只是意愿**——它到没到看参会者列表。
     #[serde(default)]
     pub wants_agent: bool,
+    /// 是否正在录制。晚进来的人也必须看见"正在录制"——被录而不知情是会议产品最不能犯的错。
+    #[serde(default)]
+    pub recording_active: bool,
 }
+
+/// 列表查询共用的列:录制状态由 meeting_recording 派生,不另存一份会漂的字段。
+const MEETING_COLS: &str = "id, channel_id, title, level, room, started_ms, ended_ms, wants_agent,
+    EXISTS(SELECT 1 FROM meeting_recording r WHERE r.meeting_id = meeting.id
+           AND r.status IN ('starting','active','stopping')) AS recording_active";
 
 #[derive(Deserialize)]
 pub struct NewMeeting {
@@ -86,6 +103,50 @@ pub struct NewMeeting {
 pub struct NewTranscript {
     pub speaker_id: String,
     pub text: String,
+    /// 这行的语言;缺省按原文语言 `zh`。
+    #[serde(default)]
+    pub lang: Option<String>,
+    /// 翻译行指回原文行;原文行为空。
+    #[serde(default)]
+    pub origin_id: Option<i64>,
+}
+
+/// 原文语言:Agent 的转写提示语言。字幕"跟原文"时就看这个语言的行。
+pub const SOURCE_LANG: &str = "zh";
+/// 散会后还收纪要的宽限(毫秒):在途的转写与翻译要落地。
+pub const TRANSCRIPT_GRACE_MS: i64 = 90_000;
+
+#[derive(Deserialize)]
+pub struct CaptionPref {
+    /// 字幕语言代码(`en` / `ja` …);`source` 或 `off` = 不要翻译,看原文。
+    pub lang: String,
+}
+
+#[derive(Serialize)]
+pub struct CaptionLangs {
+    pub source: &'static str,
+    /// 在场的人要的翻译语言(去重,不含原文语言)。Agent 只翻这些。
+    pub langs: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct NewSummary {
+    /// `recap`(散会回顾)/ `interim`(会中小结)。
+    pub kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SummaryOut {
+    pub id: i64,
+    pub meeting_id: Uuid,
+    pub kind: String,
+    pub text: String,
+    pub author_id: String,
+    pub model: Option<String>,
+    pub created_ms: i64,
 }
 
 #[derive(Deserialize)]
@@ -115,17 +176,17 @@ fn level_str(s: Sensitivity) -> &'static str {
 
 /// 会议的一行基本信息。各 handler 先查它:不存在 → 404,再谈权限。
 #[derive(sqlx::FromRow)]
-struct MeetingRow {
-    channel_id: String,
-    title: String,
-    level: String,
-    started_ms: i64,
-    ended_ms: Option<i64>,
-    wants_agent: bool,
-    room: String,
+pub(crate) struct MeetingRow {
+    pub channel_id: String,
+    pub title: String,
+    pub level: String,
+    pub started_ms: i64,
+    pub ended_ms: Option<i64>,
+    pub wants_agent: bool,
+    pub room: String,
 }
 
-async fn load(db: &Db, mid: Uuid) -> Result<MeetingRow> {
+pub(crate) async fn load(db: &Db, mid: Uuid) -> Result<MeetingRow> {
     sqlx::query_as::<_, MeetingRow>(
         "SELECT channel_id, title, level, started_ms, ended_ms, wants_agent, room
          FROM meeting WHERE id = $1",
@@ -228,6 +289,7 @@ pub async fn start(
         started_ms: started,
         ended_ms: None,
         wants_agent: false,
+        recording_active: false,
     }))
 }
 
@@ -237,10 +299,9 @@ pub async fn list(
     Path(cid): Path<String>,
 ) -> Result<Json<Vec<MeetingOut>>> {
     require(&db, &id, &Action::SendMessage, &IdScope::Channel(cid.clone())).await?;
-    let rows = sqlx::query_as::<_, MeetingOut>(
-        "SELECT id, channel_id, title, level, room, started_ms, ended_ms, wants_agent
-         FROM meeting WHERE channel_id = $1 ORDER BY started_ms DESC LIMIT 50",
-    )
+    let rows = sqlx::query_as::<_, MeetingOut>(&format!(
+        "SELECT {MEETING_COLS} FROM meeting WHERE channel_id = $1 ORDER BY started_ms DESC LIMIT 50"
+    ))
     .bind(&cid)
     .fetch_all(&db.pool)
     .await?;
@@ -293,6 +354,9 @@ pub async fn raise_level(
         speaker_id: "系统".into(),
         text: format!("会议密级已抬升至 {}({})", level_str(want), r.cause),
         ts_ms: now_ms(),
+        id: 0,
+        lang: SOURCE_LANG.into(),
+        origin_id: None,
     });
     push_meeting(&hub, &row.channel_id, mid, "level", &row.title, level_str(want), row.wants_agent);
     Ok(Json(serde_json::json!({ "level": level_str(want) })))
@@ -303,7 +367,9 @@ pub async fn raise_level(
 /// **本接口只收文本**——音频到文本那一步必须在调用方经 `muster_route` 完成,
 /// 服务端不代劳,也就无从绕过密级路由。转写正文属正文存储侧:可导出、
 /// 可按保留期删除,审计链里只有它的哈希(与桌面壳 state.db 同性质)。
-/// 会议结束后不再收:结束就是结束,记录不能在散会后继续长。
+/// 会议结束后还收 [`TRANSCRIPT_GRACE_MS`]:最后一句往往是结论,而转写(whisper 要几秒)
+/// 与翻译(再一次模型调用)都在途;过了宽限才拒——记录不能在散会后无限期地长。
+/// 宽限期内落的行在链上排在 `meeting.end` 之后,如实。
 pub async fn add_transcript(
     State((db, hub, audit)): State<MeetingState>,
     id: Identity,
@@ -311,12 +377,29 @@ pub async fn add_transcript(
     Json(t): Json<NewTranscript>,
 ) -> Result<Json<serde_json::Value>> {
     let row = load(&db, mid).await?;
-    if row.ended_ms.is_some() {
-        return Err(ServerError::BadRequest("会议已结束,不再接收纪要".into()));
+    if let Some(ended) = row.ended_ms {
+        if now_ms() - ended > TRANSCRIPT_GRACE_MS {
+            return Err(ServerError::BadRequest("会议已结束,不再接收纪要".into()));
+        }
     }
     require(&db, &id, &Action::SendMessage, &IdScope::Channel(row.channel_id.clone())).await?;
     if t.text.trim().is_empty() {
         return Err(ServerError::BadRequest("纪要行不能为空".into()));
+    }
+    let lang = normalize_lang(t.lang.as_deref().unwrap_or(SOURCE_LANG))
+        .ok_or_else(|| ServerError::BadRequest("语言代码不合法".into()))?;
+    // 翻译行必须指回**同一场会**的原文行,否则一条翻译能把别的会的话"搬"进来
+    if let Some(origin) = t.origin_id {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM meeting_transcript WHERE id = $1 AND meeting_id = $2 AND origin_id IS NULL",
+        )
+        .bind(origin)
+        .bind(mid)
+        .fetch_one(&db.pool)
+        .await?;
+        if n == 0 {
+            return Err(ServerError::BadRequest("origin_id 不是这场会的原文行".into()));
+        }
     }
 
     audit
@@ -329,19 +412,23 @@ pub async fn add_transcript(
                 meeting_id: mid.to_string(),
                 speaker_id: t.speaker_id.clone(),
                 text_hash: ContentHash::sha256(t.text.as_bytes()),
+                lang: lang.clone(),
             },
         ))
         .await?;
 
     let ts = now_ms();
-    sqlx::query(
-        "INSERT INTO meeting_transcript(meeting_id, speaker_id, text, ts_ms) VALUES($1,$2,$3,$4)",
+    let (line_id,): (i64,) = sqlx::query_as(
+        "INSERT INTO meeting_transcript(meeting_id, speaker_id, text, ts_ms, lang, origin_id)
+         VALUES($1,$2,$3,$4,$5,$6) RETURNING id",
     )
     .bind(mid)
     .bind(&t.speaker_id)
     .bind(&t.text)
     .bind(ts)
-    .execute(&db.pool)
+    .bind(&lang)
+    .bind(t.origin_id)
+    .fetch_one(&db.pool)
     .await?;
 
     hub.push(&row.channel_id, &Push::Transcript {
@@ -349,15 +436,39 @@ pub async fn add_transcript(
         speaker_id: t.speaker_id,
         text: t.text,
         ts_ms: ts,
+        id: line_id,
+        lang,
+        origin_id: t.origin_id,
     });
-    Ok(Json(serde_json::json!({ "ok": true, "ts_ms": ts })))
+    Ok(Json(serde_json::json!({ "ok": true, "id": line_id, "ts_ms": ts })))
+}
+
+/// 语言代码只认 `[a-z]{2,3}(-[A-Za-z0-9]{2,8})?`:它会进 SQL、进推送、进审计,
+/// 不能让任意字符串混进来。
+pub fn normalize_lang(s: &str) -> Option<String> {
+    let s = s.trim();
+    let mut parts = s.splitn(2, '-');
+    let main = parts.next()?;
+    if !(2..=3).contains(&main.len()) || !main.chars().all(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    match parts.next() {
+        None => Some(main.to_string()),
+        Some(sub) if (2..=8).contains(&sub.len()) && sub.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            Some(format!("{main}-{sub}"))
+        }
+        Some(_) => None,
+    }
 }
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct TranscriptLine {
+    pub id: i64,
     pub speaker_id: String,
     pub text: String,
     pub ts_ms: i64,
+    pub lang: String,
+    pub origin_id: Option<i64>,
 }
 
 /// 取会议纪要。**中途入会要靠它补上下文**——人和 Agent 都一样:
@@ -371,8 +482,141 @@ pub async fn transcript(
     let row = load(&db, mid).await?;
     require(&db, &id, &Action::SendMessage, &IdScope::Channel(row.channel_id)).await?;
     let rows = sqlx::query_as::<_, TranscriptLine>(
-        "SELECT speaker_id, text, ts_ms FROM meeting_transcript
+        "SELECT id, speaker_id, text, ts_ms, lang, origin_id FROM meeting_transcript
          WHERE meeting_id = $1 ORDER BY ts_ms ASC, id ASC",
+    )
+    .bind(mid)
+    .fetch_all(&db.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
+/// 给自己选字幕语言。`source` / `off` = 看原文,不要翻译。
+/// 推一条 `meeting` 事件(`captions`),Agent 据此调整翻译目标集合。
+pub async fn set_caption_lang(
+    State((db, hub, _audit)): State<MeetingState>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+    Json(p): Json<CaptionPref>,
+) -> Result<Json<CaptionLangs>> {
+    let row = load(&db, mid).await?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(row.channel_id.clone())).await?;
+    let want = p.lang.trim();
+    if want == "source" || want == "off" || want == SOURCE_LANG {
+        sqlx::query("DELETE FROM meeting_caption_pref WHERE meeting_id = $1 AND account_id = $2")
+            .bind(mid)
+            .bind(&id.account_id)
+            .execute(&db.pool)
+            .await?;
+    } else {
+        let lang = normalize_lang(want).ok_or_else(|| ServerError::BadRequest("语言代码不合法".into()))?;
+        sqlx::query(
+            "INSERT INTO meeting_caption_pref(meeting_id, account_id, lang, updated_ms) VALUES($1,$2,$3,$4)
+             ON CONFLICT (meeting_id, account_id) DO UPDATE SET lang = EXCLUDED.lang, updated_ms = EXCLUDED.updated_ms",
+        )
+        .bind(mid)
+        .bind(&id.account_id)
+        .bind(&lang)
+        .bind(now_ms())
+        .execute(&db.pool)
+        .await?;
+    }
+    let langs = caption_lang_set(&db, mid).await?;
+    push_meeting(&hub, &row.channel_id, mid, "captions", &row.title, &row.level, row.wants_agent);
+    Ok(Json(CaptionLangs { source: SOURCE_LANG, langs }))
+}
+
+/// 在场的人要的翻译语言。Agent 每句话翻之前问一次(有缓存),没人要就不翻。
+pub async fn caption_langs(
+    State((db, _hub, _audit)): State<MeetingState>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+) -> Result<Json<CaptionLangs>> {
+    let row = load(&db, mid).await?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(row.channel_id)).await?;
+    Ok(Json(CaptionLangs { source: SOURCE_LANG, langs: caption_lang_set(&db, mid).await? }))
+}
+
+async fn caption_lang_set(db: &Db, mid: Uuid) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT lang FROM meeting_caption_pref WHERE meeting_id = $1 AND lang <> $2 ORDER BY lang",
+    )
+    .bind(mid)
+    .bind(SOURCE_LANG)
+    .fetch_all(&db.pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+/// 落一份总结(散会回顾 / 会中小结)。生成在 Agent 那边,服务端只收文本——
+/// 与纪要同一条边界。散会后也收:回顾本来就是散会后才有的。
+pub async fn add_summary(
+    State((db, hub, audit)): State<MeetingState>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+    Json(s): Json<NewSummary>,
+) -> Result<Json<SummaryOut>> {
+    let row = load(&db, mid).await?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(row.channel_id.clone())).await?;
+    let kind = match s.kind.as_str() {
+        "recap" | "interim" => s.kind.clone(),
+        other => return Err(ServerError::BadRequest(format!("未知总结类型 {other}"))),
+    };
+    let text = s.text.trim().to_string();
+    if text.is_empty() {
+        return Err(ServerError::BadRequest("总结不能为空".into()));
+    }
+
+    audit
+        .append(envelope(
+            &id,
+            &row.channel_id,
+            mid,
+            parse_level(&row.level)?,
+            EventBody::MeetingSummary {
+                meeting_id: mid.to_string(),
+                kind: kind.clone(),
+                text_hash: ContentHash::sha256(text.as_bytes()),
+            },
+        ))
+        .await?;
+
+    let created = now_ms();
+    let (sid,): (i64,) = sqlx::query_as(
+        "INSERT INTO meeting_summary(meeting_id, kind, text, author_id, model, created_ms)
+         VALUES($1,$2,$3,$4,$5,$6) RETURNING id",
+    )
+    .bind(mid)
+    .bind(&kind)
+    .bind(&text)
+    .bind(&id.account_id)
+    .bind(&s.model)
+    .bind(created)
+    .fetch_one(&db.pool)
+    .await?;
+
+    push_meeting(&hub, &row.channel_id, mid, "summary", &row.title, &row.level, row.wants_agent);
+    Ok(Json(SummaryOut {
+        id: sid,
+        meeting_id: mid,
+        kind,
+        text,
+        author_id: id.account_id,
+        model: s.model,
+        created_ms: created,
+    }))
+}
+
+pub async fn summaries(
+    State((db, _hub, _audit)): State<MeetingState>,
+    id: Identity,
+    Path(mid): Path<Uuid>,
+) -> Result<Json<Vec<SummaryOut>>> {
+    let row = load(&db, mid).await?;
+    require(&db, &id, &Action::SendMessage, &IdScope::Channel(row.channel_id)).await?;
+    let rows = sqlx::query_as::<_, SummaryOut>(
+        "SELECT id, meeting_id, kind, text, author_id, model, created_ms FROM meeting_summary
+         WHERE meeting_id = $1 ORDER BY created_ms ASC, id ASC",
     )
     .bind(mid)
     .fetch_all(&db.pool)
@@ -427,10 +671,9 @@ pub async fn agent_wanted(
     State((db, _hub, _audit)): State<MeetingState>,
     _id: Identity,
 ) -> Result<Json<Vec<MeetingOut>>> {
-    let rows = sqlx::query_as::<_, MeetingOut>(
-        "SELECT id, channel_id, title, level, room, started_ms, ended_ms, wants_agent
-         FROM meeting WHERE wants_agent AND ended_ms IS NULL ORDER BY started_ms",
-    )
+    let rows = sqlx::query_as::<_, MeetingOut>(&format!(
+        "SELECT {MEETING_COLS} FROM meeting WHERE wants_agent AND ended_ms IS NULL ORDER BY started_ms"
+    ))
     .fetch_all(&db.pool)
     .await?;
     Ok(Json(rows))
@@ -485,6 +728,9 @@ pub async fn end(
         .bind(mid)
         .execute(&db.pool)
         .await?;
+
+    // 散会即停录:录着的会结束了,文件要收口。停不了只告警,散会本身不受影响。
+    crate::recording::auto_stop(&db, &hub, &audit, mid, &row.channel_id, &row.level, &id).await;
 
     push_meeting(&hub, &row.channel_id, mid, "ended", &row.title, &row.level, row.wants_agent);
     Ok(Json(serde_json::json!({ "ok": true, "ended_ms": ended, "room": row.room })))
@@ -627,6 +873,17 @@ mod tests {
         assert!(internal > open && restricted > internal, "密级比较即楼层");
         assert!(parse_level("绝密").is_err(), "未知密级必须拒绝,不得兜底");
         assert_eq!(level_str(restricted), "restricted");
+    }
+
+    /// 语言代码进 SQL、进推送、进审计,只认规范形状。
+    #[test]
+    fn lang_codes_are_validated() {
+        assert_eq!(normalize_lang("en").as_deref(), Some("en"));
+        assert_eq!(normalize_lang(" zh-Hant ").as_deref(), Some("zh-Hant"));
+        assert_eq!(normalize_lang("yue").as_deref(), Some("yue"));
+        for bad in ["", "E", "english", "en_US", "en-", "zh-漢", "en;drop"] {
+            assert!(normalize_lang(bad).is_none(), "{bad:?} 不该通过");
+        }
     }
 
     /// 会议事件的信封:会议即 session、频道即 scope、密级即 label;

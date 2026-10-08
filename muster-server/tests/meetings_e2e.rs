@@ -244,6 +244,10 @@ async fn expect_all(
     got.into_iter().map(Option::unwrap).collect()
 }
 
+fn all_text(evs: &[AuditEvent]) -> String {
+    evs.iter().map(|e| e.payload.to_string()).collect()
+}
+
 fn ids_of(list: &Value) -> Vec<String> {
     list.as_array()
         .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
@@ -304,6 +308,47 @@ async fn lifecycle_is_chained_without_plaintext() {
     assert_eq!(st, 200);
     let got: Vec<&str> = hist.as_array().unwrap().iter().map(|r| r["text"].as_str().unwrap()).collect();
     assert_eq!(got, lines, "中途进会补的历史必须按说话顺序");
+    assert!(hist.as_array().unwrap().iter().all(|r| r["lang"] == "zh" && r["origin_id"].is_null()), "原文行 lang=zh、无 origin");
+    let first_id = hist[0]["id"].as_i64().expect("纪要行要带 id,翻译行靠它指回原文");
+
+    // 翻译行:lang + origin_id 指回原文;指到别的会 / 非法语言代码都拒
+    let (st, j) = s
+        .post(&format!("/meetings/{mid}/transcript"), &ta,
+              json!({ "speaker_id": seed.alice, "text": "Let's align on the budget caliber first", "lang": "en", "origin_id": first_id }))
+        .await;
+    assert_eq!(st, 200, "{j}");
+    let (st, _) = s
+        .post(&format!("/meetings/{mid}/transcript"), &ta,
+              json!({ "speaker_id": seed.alice, "text": "x", "lang": "en", "origin_id": 999_999_999i64 }))
+        .await;
+    assert_eq!(st, 400, "origin_id 不是这场会的原文行");
+    let (st, _) = s
+        .post(&format!("/meetings/{mid}/transcript"), &ta, json!({ "speaker_id": seed.alice, "text": "x", "lang": "en_US" }))
+        .await;
+    assert_eq!(st, 400, "语言代码不合法");
+    let (_, hist) = s.get(&format!("/meetings/{mid}/transcript"), &tb).await;
+    let tr = hist.as_array().unwrap().iter().find(|r| r["lang"] == "en").expect("翻译行应在历史里");
+    assert_eq!(tr["origin_id"].as_i64(), Some(first_id));
+
+    // 字幕语言偏好:bob 要英文 → 集合里有 en;改回原文 → 空
+    let (st, j) = s.post(&format!("/meetings/{mid}/captions"), &tb, json!({ "lang": "en" })).await;
+    assert_eq!(st, 200, "{j}");
+    assert_eq!(j["langs"], json!(["en"]));
+    assert_eq!(j["source"], "zh");
+    let (_, j) = s.get(&format!("/meetings/{mid}/captions"), &ta).await;
+    assert_eq!(j["langs"], json!(["en"]), "Agent 据此决定翻成哪些语言");
+    let (_, j) = s.post(&format!("/meetings/{mid}/captions"), &tb, json!({ "lang": "source" })).await;
+    assert_eq!(j["langs"], json!([]), "没人要就不翻");
+
+    // 总结:落库 + 链上只有哈希;未知类型拒
+    let recap = "## 一句话摘要\n对齐了预算口径,幂等键顺延一周。";
+    let (st, j) = s.post(&format!("/meetings/{mid}/summary"), &ta, json!({ "kind": "recap", "text": recap, "model": "mock" })).await;
+    assert_eq!(st, 200, "{j}");
+    assert_eq!(j["kind"], "recap");
+    assert_eq!(s.post(&format!("/meetings/{mid}/summary"), &ta, json!({ "kind": "poem", "text": "x" })).await.0, 400);
+    let (_, list) = s.get(&format!("/meetings/{mid}/summary"), &tb).await;
+    assert_eq!(list.as_array().map(|a| a.len()), Some(1));
+    assert_eq!(list[0]["text"], recap);
 
     // 请 Agent → agent-wanted 列出
     let (st, _) = s.post(&format!("/meetings/{mid}/agent"), &ta, json!({ "want": true })).await;
@@ -326,12 +371,25 @@ async fn lifecycle_is_chained_without_plaintext() {
     assert_eq!(st, 200);
     assert_eq!(j["already"], true, "再结束一次只回 already");
     assert_eq!(s.post(&format!("/meetings/{mid}/join"), &tb, json!({})).await.0, 400);
+    // 散会后 90 秒内还收:在途的转写 / 翻译要落地(最后一句往往是结论)
     assert_eq!(
-        s.post(&format!("/meetings/{mid}/transcript"), &ta, json!({ "speaker_id": seed.alice, "text": "散会后" }))
+        s.post(&format!("/meetings/{mid}/transcript"), &ta, json!({ "speaker_id": seed.alice, "text": "最后补一句结论" }))
+            .await
+            .0,
+        200,
+        "宽限期内的在途纪要要收"
+    );
+    sqlx::query("UPDATE meeting SET ended_ms = ended_ms - 600000 WHERE id = $1")
+        .bind(Uuid::parse_str(&mid).unwrap())
+        .execute(&s.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        s.post(&format!("/meetings/{mid}/transcript"), &ta, json!({ "speaker_id": seed.alice, "text": "散会十分钟后" }))
             .await
             .0,
         400,
-        "散会后不再收纪要"
+        "过了宽限就不再收"
     );
     assert_eq!(s.post(&format!("/meetings/{mid}/agent"), &ta, json!({ "want": false })).await.0, 400);
     let (_, wanted) = s.get("/meetings/agent-wanted", &tb).await;
@@ -360,36 +418,49 @@ async fn lifecycle_is_chained_without_plaintext() {
             "meeting.transcript",
             "meeting.transcript",
             "meeting.transcript",
+            "meeting.transcript", // 翻译行同样入链
+            "meeting.summary",
             "meeting.agent",
             "meeting.leave",
             "meeting.end",
+            "meeting.transcript", // 宽限期内补的结论,如实排在 end 之后
         ],
-        "被拒的请求(空标题、空纪要、散会后的操作、重复结束)不该在链上留下任何事件"
+        "被拒的请求(空标题、空纪要、坏 origin、坏语言码、未知总结类型、过了宽限的纪要、重复结束)不该在链上留下任何事件"
     );
+    assert_eq!(evs[6].payload["lang"], "en");
+    assert_eq!(evs[3].payload["lang"], "zh");
+    assert_eq!(evs[7].payload["kind"], "recap");
+    assert!(!all_text(&evs).contains("预算口径,幂等键"), "总结正文不进链");
     for e in &evs {
         assert_eq!(e.session_id.as_deref(), Some(format!("meeting:{mid}").as_str()));
         assert_eq!(e.scope.channel.as_deref(), Some(seed.chan.as_str()));
         assert_eq!(e.label, Some(Sensitivity::Internal), "信封 label = 当时的会议密级");
         assert_eq!(e.policy_version.as_deref(), Some("policy-v1"));
     }
-    let all: String = evs.iter().map(|e| e.payload.to_string()).collect();
+    let all = all_text(&evs);
     assert!(!all.contains(title), "标题正文进了审计链");
+    assert!(!all.contains("budget caliber"), "翻译正文进了审计链");
     for l in lines {
         assert!(!all.contains(l), "纪要正文进了审计链:{l}");
     }
     // 但哈希能和正文对上:事后可验"纪要有没有被改过"
     let hashes: Vec<&str> = evs
         .iter()
-        .filter(|e| e.payload["event_type"] == "meeting.transcript")
+        .filter(|e| e.payload["event_type"] == "meeting.transcript" && e.payload["lang"] == "zh")
         .map(|e| e.payload["text_hash"].as_str().unwrap())
         .collect();
-    let expect: Vec<String> = lines.iter().map(|l| ContentHash::sha256(l.as_bytes()).0).collect();
-    assert_eq!(hashes, expect);
+    let expect: Vec<String> = lines
+        .iter()
+        .chain(["最后补一句结论"].iter())
+        .map(|l| ContentHash::sha256(l.as_bytes()).0)
+        .collect();
+    assert_eq!(hashes, expect, "原文三行 + 宽限期内补的那句");
     assert_eq!(evs[0].payload["title_hash"], ContentHash::sha256(title.as_bytes()).0);
     assert_eq!(evs[0].actor.id, seed.alice);
-    assert_eq!(evs[7].actor.id, seed.bob, "离会事件的 actor 是离开的人");
-    let end = evs.last().unwrap();
-    assert_eq!(end.payload["transcript_lines"], 3);
+    assert_eq!(evs[9].actor.id, seed.bob, "离会事件的 actor 是离开的人");
+    let end = &evs[10];
+    assert_eq!(end.payload["event_type"], "meeting.end");
+    assert_eq!(end.payload["transcript_lines"], 4, "散会那一刻:原文 3 行 + 翻译 1 行");
     assert!(end.payload["duration_ms"].as_u64().is_some());
 
     seed.teardown(&s.db).await;

@@ -28,6 +28,12 @@ futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 录制:调 LiveKit 的 Egress 接口(Twirp over HTTP,JSON 编码)。只连自托管的 LiveKit,
+# 不是对外出网——媒体面本来就在它那边。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# 录像文件按 Range 流式回放
+tokio-util = { version = "0.7", features = ["io"] }
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

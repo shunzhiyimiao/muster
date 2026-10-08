@@ -50,11 +50,17 @@ services:
       LIVEKIT_URL: wss://livekit.${MUSTER_DOMAIN}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?需要 LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?需要 LIVEKIT_API_SECRET(≥32 字符)}
+      # 录制:服务端在 compose 网络里直接调 LiveKit 的 Egress 接口;录像文件与 egress 共享一个卷
+      LIVEKIT_HTTP_URL: http://livekit:7880
+      MUSTER_RECORDINGS_DIR: /out
+      MUSTER_RECORDINGS_MOUNT: /out
       RUST_LOG: ${RUST_LOG:-muster_server=info}
     volumes:
       # 服务端自己的审计链。**丢了就断链**——而断掉的链证明不了任何事,
       # 服务端也会拒绝在坏账本上继续记账(启动即失败,不会默默新开一条)
       - audit:/data
+      # 录像。**不对外**:只经服务端按权限回放
+      - recordings:/out
     depends_on:
       postgres: { condition: service_healthy }
 
@@ -77,11 +83,14 @@ services:
     image: livekit/livekit-server:latest
     restart: unless-stopped
     command: --bind 0.0.0.0
+    depends_on: [redis]
     environment:
       # 引号不能省:值里带冒号,不引起来 YAML 会当成嵌套映射
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
       LIVEKIT_CONFIG: |
         port: 7880
+        redis:
+          address: redis:6379
         rtc:
           tcp_port: 7881
           udp_port: 7882
@@ -105,6 +114,31 @@ services:
       - "7882:7882/udp" # WebRTC 媒体(单端口复用)
       - "3478:3478/udp" # TURN。对称 NAT / 严格防火墙后面靠它中转
 
+  # 录制。与开发那份同样的形态,区别只在:密钥来自 .env,文件落在命名卷里,**不映射端口**。
+  # Egress 合成画面要跑一个 Chrome,给它留核——录一场 1080p 会议约 2 个核。
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+  egress:
+    image: livekit/egress:latest
+    restart: unless-stopped
+    depends_on: [redis, livekit]
+    cap_add: [SYS_ADMIN]
+    shm_size: "1gb"
+    cpus: ${EGRESS_CPUS:-2}
+    environment:
+      EGRESS_CONFIG_BODY: |
+        log_level: info
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://livekit:7880
+        insecure: true
+        redis:
+          address: redis:6379
+    volumes:
+      - recordings:/out
+
   whisper:
     image: fedirz/faster-whisper-server:latest-cpu
     restart: unless-stopped
@@ -124,5 +158,6 @@ services:
 volumes:
   pgdata:
   audit:
+  recordings:
   caddy_data:
   caddy_config:

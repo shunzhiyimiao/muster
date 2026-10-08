@@ -45,6 +45,10 @@
 //! - 会议线(2026-10-08 起)**已进服务端链**:建会 / 入会 / 离会 / 结束 / 每行纪要的哈希 /
 //!   密级抬升 / 请 Agent,先记账再动库(见 `meeting.rs`)。仍缺:掉线不会记 leave
 //!   (只有客户端主动离开才记),LiveKit 侧的真实在场要靠它的 webhook,未接。
+//! - 录制(`recording.rs`)靠自托管的 LiveKit Egress 写本地文件,服务端**轮询**它的状态
+//!   收口(没接 egress webhook);录像文件服务端只按 Range 回放,没有转码、没有保留期。
+//!   翻译与总结的模型调用发生在会议 Agent 进程里,**那边目前没有自己的审计链**——
+//!   服务端链上有翻译行与总结的哈希,但"用的哪个模型、出没出网"只在 Agent 日志里。
 //!
 //! 上线前必须逐条清掉——这份清单存在的意义就是别让"先跑通"悄悄变成"就这样了"。
 
@@ -59,6 +63,7 @@ pub mod message;
 pub mod org;
 pub mod provider;
 pub mod ratelimit;
+pub mod recording;
 pub mod routes;
 pub mod ws;
 

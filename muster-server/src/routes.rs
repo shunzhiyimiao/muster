@@ -9,7 +9,7 @@ use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::ratelimit::LoginLimiter;
-use crate::{action, events, meeting, message, org, provider, ws, Db};
+use crate::{action, events, meeting, message, org, provider, recording, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
@@ -47,6 +47,14 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/meetings/:mid/end", post(meeting::end))
         .route("/meetings/:mid/agent", post(meeting::set_wants_agent))
         .route("/meetings/agent-wanted", get(meeting::agent_wanted))
+        // 阶段 2:字幕语言偏好、总结、录制。翻译与总结的**生成**都在 Agent 那边,
+        // 这里只收文本(与纪要同一条边界);录制由自托管的 LiveKit Egress 落文件
+        .route("/meetings/:mid/captions", get(meeting::caption_langs).post(meeting::set_caption_lang))
+        .route("/meetings/:mid/summary", get(meeting::summaries).post(meeting::add_summary))
+        .route("/meetings/:mid/recording/start", post(recording::start))
+        .route("/meetings/:mid/recording/stop", post(recording::stop))
+        .route("/meetings/:mid/recordings", get(recording::list))
+        .route("/recordings/:rid/file", get(recording::file))
         .with_state((db.clone(), hub.clone(), audit.clone()));
 
     // 行动项:提案由 Agent 落,**确认必须由人**——见 action.rs 的模块文档

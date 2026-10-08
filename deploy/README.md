@@ -46,6 +46,9 @@ cargo run -p muster-server --example admin -- disable bob
 | `LIVEKIT_URL` | 会议需要 | 如 `ws://localhost:7880` |
 | `LIVEKIT_API_KEY` | 会议需要 | compose 的 `--dev` 模式是 `devkey` |
 | `LIVEKIT_API_SECRET` | 会议需要 | ≥32 字符,须与 compose 里 `LIVEKIT_KEYS` 的值一致。**仓库里那把是公开的,内网部署必须换** |
+| `LIVEKIT_HTTP_URL` | 录制需要 | LiveKit 服务端的 HTTP 地址(Egress 接口),缺省由 `LIVEKIT_URL` 的 ws→http 推出 |
+| `MUSTER_RECORDINGS_DIR` | 录制需要 | 录像目录在**服务端这台机器**上的路径,默认 `./deploy/recordings`;与 egress 容器挂载的同一目录 |
+| `MUSTER_RECORDINGS_MOUNT` | 否 | 该目录在 egress 容器内的路径,默认 `/out` |
 
 ## 会议
 
@@ -55,7 +58,17 @@ POST /meetings/:mid/join                          → 拿 LiveKit 入会令牌
 POST /meetings/:mid/transcript {"speaker_id","text"}
 POST /meetings/:mid/level      {"level","cause"}  → 密级抬升(只升不降)
 POST /meetings/:mid/end
+POST /meetings/:mid/leave
+GET/POST /meetings/:mid/captions  {"lang":"en"}        → 给自己选字幕语言;Agent 据此决定翻成哪些语言
+GET/POST /meetings/:mid/summary   {"kind","text"}      → 会议总结(Agent 生成,服务端只收文本)
+POST /meetings/:mid/recording/start {"audio_only":false} → 录制(LiveKit Egress 写本地文件;restricted 禁录)
+POST /meetings/:mid/recording/stop
+GET  /meetings/:mid/recordings
+GET  /recordings/:rid/file?token=                       → 回放(支持 Range)
 ```
+
+会议的每个状态变化都进服务端审计链(建会 / 入会 / 离会 / 结束 / 每行纪要与翻译的哈希 /
+密级抬升 / 请 Agent / 总结哈希 / 录制开始与结束含**文件哈希**),先记账再动库。
 
 令牌里的 `canPublish` **不是配置项**,是 `muster_identity::can()` 判定结果的
 直接映射:能在该频道发言的人才能开麦。会议密级 ≥ restricted 时禁止录制——

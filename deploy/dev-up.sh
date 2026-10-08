@@ -27,7 +27,8 @@ LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/nul
 LAN_IP=${LAN_IP:-127.0.0.1}
 export LIVEKIT_NODE_IP="$LAN_IP"
 
-say "1/5 起依赖(PostgreSQL / LiveKit / whisper)"
+say "1/5 起依赖(PostgreSQL / LiveKit / redis / Egress / whisper)"
+mkdir -p deploy/recordings
 ok "局域网地址 ${LAN_IP}(第二台机器用它连过来)"
 if ! docker info >/dev/null 2>&1; then
   bad "Docker 没在跑。先打开 Docker Desktop,再重跑本脚本。"; exit 1
@@ -65,6 +66,11 @@ export LIVEKIT_URL=ws://LAN_IP_PLACEHOLDER:7880
 export LIVEKIT_API_KEY=devkey
 export LIVEKIT_API_SECRET=devsecret_0123456789abcdef0123456789abcdef
 export MUSTER_SERVER_AUDIT_DB=/tmp/muster-dev-audit.db
+# 录制:服务端调 LiveKit 的 Egress 接口(HTTP,与信令同一端口),录像由 egress 容器写到
+# deploy/recordings(容器内是 /out),服务端从宿主机路径读
+export LIVEKIT_HTTP_URL=http://localhost:7880
+export MUSTER_RECORDINGS_DIR=$PWD/deploy/recordings
+export MUSTER_RECORDINGS_MOUNT=/out
 export MUSTER_SERVER=http://localhost:8787
 # 监听 0.0.0.0:局域网里的第二台机器才连得上(默认只听 127.0.0.1)
 export MUSTER_BIND=0.0.0.0:8787

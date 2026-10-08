@@ -24,8 +24,20 @@ pub enum Push {
     Message(MessageOut),
     /// 任务过程事件转发(P3-06):Runner 在开发者机器上跑,过程经服务端回频道。
     TaskDelta { channel_id: String, run_id: String, text: String },
-    /// 会议纪要行(转写落库后推送)。
-    Transcript { meeting_id: String, speaker_id: String, text: String, ts_ms: i64 },
+    /// 会议纪要行(转写落库后推送)。`lang` 是这行的语言;翻译行带 `origin_id`
+    /// 指回原文行——字幕按自己选的语言筛,纪要面板把翻译挂在原文下面。
+    Transcript {
+        meeting_id: String,
+        speaker_id: String,
+        text: String,
+        ts_ms: i64,
+        #[serde(default)]
+        id: i64,
+        #[serde(default)]
+        lang: String,
+        #[serde(default)]
+        origin_id: Option<i64>,
+    },
     /// 在场状态(P3-07 的最小形态:只有进出,没有 TTL 聚合)。
     Presence { channel_id: String, account_id: String, online: bool },
     /// 行动项有了新状态(被提出 / 被裁决)。
@@ -34,7 +46,7 @@ pub enum Push {
     /// 人会以为 Agent 没听见,于是再说一遍,于是多出一条重复的待批项。
     ActionItem(crate::action::ActionItemOut),
     /// 会议本身的状态变化:`started` / `ended` / `agent`(请了 Agent 或请它离开)/
-    /// `level`(密级抬升)。大厅与侧栏徽标据此重拉,正在会里的人据此知道"会被结束了",
+    /// `level`(密级抬升)/ `summary`(总结落库)/ `captions`(有人改了字幕语言,Agent 据此调整翻译目标)。大厅与侧栏徽标据此重拉,正在会里的人据此知道"会被结束了",
     /// agent-daemon 据此**立刻**认领而不是等下一轮轮询。
     Meeting {
         meeting_id: String,
@@ -43,6 +55,15 @@ pub enum Push {
         title: String,
         level: String,
         wants_agent: bool,
+    },
+    /// 录制状态:`started` / `stopping` / `ready` / `failed`。**所有在场的人都要看见**——
+    /// 被录而不知情,是会议产品最不能犯的错。
+    Recording {
+        meeting_id: String,
+        channel_id: String,
+        recording_id: String,
+        state: String,
+        by: String,
     },
 }
 
