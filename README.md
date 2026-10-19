@@ -1,3 +1,5 @@
+<p align="center"><img src="icon/muster-icon.png" width="112" alt="Muster"></p>
+
 # Muster · 智能协作平台
 
 **可完全本地部署的 AI 原生团队协作系统,兼容 Codex 的技能与接口约定。** 人、Agent、频道、任务、审批与审计在同一个平台上;
