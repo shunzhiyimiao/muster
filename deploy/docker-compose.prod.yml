@@ -165,6 +165,9 @@ services:
     restart: unless-stopped
     environment:
       MUSTER_SERVER: http://muster-server:8787
+      # 入会票里的 LiveKit 地址是给外面的人的(wss://livekit.<域名>,经 Caddy);
+      # 同一个 compose 网络里直接走容器名,不绕公网、不碰 DNS 与证书、不靠 NAT 回环
+      MUSTER_LIVEKIT_URL: ws://livekit:7880
       MUSTER_ACCOUNT: ${MUSTER_AGENT_ACCOUNT:?需要 MUSTER_AGENT_ACCOUNT(kind=agent 的账号)}
       MUSTER_PASSWORD: ${MUSTER_AGENT_PASSWORD:?需要 MUSTER_AGENT_PASSWORD}
       MUSTER_STT_URL: http://whisper:8000/v1

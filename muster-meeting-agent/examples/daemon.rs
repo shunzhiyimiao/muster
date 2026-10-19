@@ -99,6 +99,9 @@ struct Cfg {
     agent_name: String,
     /// 原文语言:转写提示语言,也是纪要原文行的 lang。
     lang: String,
+    /// 覆盖入会票里的 LiveKit 信令地址。入会票里那个是给外面的人的(公网 wss 经反代);
+    /// 守护进程和 LiveKit 跑在同一个 compose 网络里时直接走容器名,不绕公网。
+    livekit_url: Option<String>,
 }
 
 /// 翻译目标语言的缓存:在场的人各自选的字幕语言,10 秒内不重复问服务端。
@@ -153,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|_| MentionRules::default().aliases),
         agent_name: std::env::var("MUSTER_AGENT_NAME").unwrap_or_else(|_| "小七".into()),
         lang: std::env::var("MUSTER_STT_LANG").unwrap_or_else(|_| "zh".into()),
+        livekit_url: std::env::var("MUSTER_LIVEKIT_URL").ok().filter(|s| !s.is_empty()),
     });
 
     println!("会议 Agent 常驻服务已启动");
@@ -162,6 +166,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  作答 {}",
         if cfg.provider_config.is_some() { "已启用" } else { "未启用(只转写)" }
     );
+    if let Some(u) = &cfg.livekit_url {
+        println!("  LiveKit 信令走 {u}(覆盖入会票里的地址)");
+    }
     println!("  订阅服务端推送,{}s 兜底对账一次\n", POLL.as_secs());
 
     // 推送一到就叫醒主循环;Notify 会存下一个许可,主循环正忙时也不会漏
@@ -432,7 +439,10 @@ async fn serve_inner(
         return Err(format!("入会被拒:{e}").into());
     }
     let (lk_url, lk_token) = (
-        join["url"].as_str().ok_or("缺 url")?.to_string(),
+        match &cfg.livekit_url {
+            Some(u) => u.clone(),
+            None => join["url"].as_str().ok_or("缺 url")?.to_string(),
+        },
         join["token"].as_str().ok_or("缺 token")?.to_string(),
     );
     let level = match join["level"].as_str() {

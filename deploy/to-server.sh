@@ -158,6 +158,15 @@ step "配置"
 if ssh "$SERVER" "[ -f $REMOTE_DIR/deploy/.env ]"; then
   ok "deploy/.env 已存在,保持不动(要换密钥就手动改)"
   ssh "$SERVER" "sed -i 's|^MUSTER_DOMAIN=.*|MUSTER_DOMAIN=$DOMAIN|' $REMOTE_DIR/deploy/.env"
+  # 老 .env 没有会议 Agent 那几项的话补上——compose 里 agent 服务用的是 :? 必填,
+  # 缺了整套 up 都起不来。只补缺的,已有的一个字都不动
+  ssh "$SERVER" "cd $REMOTE_DIR && {
+    gen() { openssl rand -base64 48 | tr -d '\n=+/' | head -c 48; }
+    grep -q '^MUSTER_AGENT_ACCOUNT=' deploy/.env || echo 'MUSTER_AGENT_ACCOUNT=A-007' >> deploy/.env
+    grep -q '^MUSTER_AGENT_PASSWORD=' deploy/.env || echo \"MUSTER_AGENT_PASSWORD=\$(gen)\" >> deploy/.env
+    grep -q '^KIMI_API_KEY=' deploy/.env || echo 'KIMI_API_KEY=' >> deploy/.env
+  }"
+  ok "会议 Agent 的账号、口令已在 .env 里(缺的已补)"
 else
   # 在服务器上生成,不经过本机——少一处它们出现过的地方
   ssh "$SERVER" "cd $REMOTE_DIR && {
@@ -170,6 +179,11 @@ LIVEKIT_API_KEY=musterkey
 LIVEKIT_API_SECRET=\$(gen)
 WHISPER_MODEL=Systran/faster-whisper-small
 RUST_LOG=muster_server=info
+# 会议 Agent(compose 的 agent 服务)登录用的账号。口令在这里生成,下面建账号时要用同一个
+MUSTER_AGENT_ACCOUNT=A-007
+MUSTER_AGENT_PASSWORD=\$(gen)
+# Agent 的模型密钥(翻译、回顾、@应答)。留空也能跑,只转写不作答
+KIMI_API_KEY=
 EOF
     chmod 600 deploy/.env
   }"
@@ -295,6 +309,13 @@ cat <<EOF
   \$C muster-admin account-add alice '<口令>' Alice human
   \$C muster-admin grant alice member org
 
+  # 1b) 会议 Agent 的账号:口令必须与 deploy/.env 里的 MUSTER_AGENT_PASSWORD 一致,
+  #     否则 agent 容器登录失败、不停重启,会里点了"请 Agent"也没人来
+  AGENT_PW=\$(grep '^MUSTER_AGENT_PASSWORD=' deploy/.env | cut -d= -f2-)
+  \$C muster-admin account-add A-007 "\$AGENT_PW" 小七 agent
+  \$C muster-admin grant A-007 member org
+  $SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml restart agent
+
   # 2) 配 provider 目录。**不配的话能登录能开会,但跑任务会被路由拒绝**
   #    ——目录空就是一个通道都没有,而那个症状看不出根因
   \$C muster-admin provider-add kimi https://api.moonshot.cn/v1 \\
@@ -303,5 +324,7 @@ cat <<EOF
 
   填的是**环境变量名**,不是密钥。服务端一个密钥都不存;
   每台要跑模型的机器自己 export KIMI_API_KEY=…
+  会议 Agent 那份密钥写在 deploy/.env 的 KIMI_API_KEY=,改完 restart agent;
+  不填也能转写,只是不翻译、不写回顾、被 @ 不作答。
 
 EOF
