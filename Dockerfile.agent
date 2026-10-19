@@ -5,8 +5,10 @@
 # 转写走 http://whisper:8000/v1,LiveKit 入会地址由服务端下发。
 FROM rust:1-slim-bookworm AS build
 WORKDIR /s
+# libglib2.0-dev:webrtc-sys 的构建脚本会 pkg-config 查 glib-2.0(它要 gio 的头文件),
+# 没有就在编到一半时 panic "Package glib-2.0 was not found"。本机 Docker 里实测踩到的。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git pkg-config libssl-dev ca-certificates curl unzip \
+      git pkg-config libssl-dev libglib2.0-dev ca-certificates curl unzip \
       build-essential clang cmake \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -27,7 +29,8 @@ RUN cargo build --release -p muster-meeting-agent --features livekit --example d
  && strip target/release/examples/daemon
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+# libglib2.0-0:预编译的 libwebrtc 动态链接 glib / gio / gobject,运行时镜像里没有就起不来
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd -r -u 10002 agent
 COPY --from=build /s/target/release/examples/daemon /usr/local/bin/muster-daemon
