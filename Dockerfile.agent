@@ -1,0 +1,35 @@
+# 会议 Agent 常驻服务(muster-meeting-agent 的 daemon)的生产镜像。
+# 与 Dockerfile 分开:daemon 带 livekit feature,传递依赖原生 WebRTC(构建期从 GitHub
+# 拉 100MB+ 预编译 libwebrtc,target 1GB+),和 server 放一起会让改一行 server 代码
+# 就重编这坨。跑在服务器 compose 内网里:服务端走 http://muster-server:8787,
+# 转写走 http://whisper:8000/v1,LiveKit 入会地址由服务端下发。
+FROM rust:1-slim-bookworm AS build
+WORKDIR /s
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git pkg-config libssl-dev ca-certificates curl unzip \
+      build-essential clang cmake \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY muster-provider muster-provider
+COPY muster-route muster-route
+COPY muster-audit muster-audit
+COPY muster-eval muster-eval
+COPY muster-runner muster-runner
+COPY muster-skill muster-skill
+COPY muster-workflow muster-workflow
+COPY muster-roster muster-roster
+COPY muster-gateway muster-gateway
+COPY muster-prompt muster-prompt
+COPY muster-identity muster-identity
+COPY muster-server muster-server
+COPY muster-meeting-agent muster-meeting-agent
+RUN cargo build --release -p muster-meeting-agent --features livekit --example daemon \
+ && strip target/release/examples/daemon
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -r -u 10002 agent
+COPY --from=build /s/target/release/examples/daemon /usr/local/bin/muster-daemon
+USER agent
+ENTRYPOINT ["/usr/local/bin/muster-daemon"]

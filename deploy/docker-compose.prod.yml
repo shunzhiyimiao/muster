@@ -155,6 +155,32 @@ services:
     environment:
       WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
 
+  # 会议 Agent 常驻服务。按钮只在服务端记"意愿"(meeting.wants_agent),
+  # 是这个进程经 SSE 认领、进会、转写、@应答、散会提炼——它不在,点了按钮也没人来。
+  # 模型密钥从 .env 进这个容器:落在服务器上的是 daemon 节点的密钥,服务端仍一个都不存。
+  agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile.agent
+    restart: unless-stopped
+    environment:
+      MUSTER_SERVER: http://muster-server:8787
+      MUSTER_ACCOUNT: ${MUSTER_AGENT_ACCOUNT:?需要 MUSTER_AGENT_ACCOUNT(kind=agent 的账号)}
+      MUSTER_PASSWORD: ${MUSTER_AGENT_PASSWORD:?需要 MUSTER_AGENT_PASSWORD}
+      MUSTER_STT_URL: http://whisper:8000/v1
+      MUSTER_STT_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
+      MUSTER_STT_LANG: ${MUSTER_STT_LANG:-zh}
+      MUSTER_AGENT_NAME: ${MUSTER_AGENT_NAME:-小七}
+      MUSTER_AGENT_ALIASES: ${MUSTER_AGENT_ALIASES:-小七,小琪,小齐,小其}
+      KIMI_API_KEY: ${KIMI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      RUST_LOG: ${RUST_LOG_AGENT:-info}
+    depends_on:
+      - muster-server
+      - whisper
+      - livekit
+
 volumes:
   pgdata:
   audit:

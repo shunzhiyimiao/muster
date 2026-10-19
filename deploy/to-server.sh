@@ -86,8 +86,14 @@ fi
 # 磁盘满了 cargo 会在编到一半时报一句莫名其妙的 IO 错误;内存不够 OOM
 # killer 会直接杀掉 rustc,日志里只留一个 "signal: 9"。
 free_gb=$(ssh "$SERVER" "df -BG --output=avail / | tail -1 | tr -dc '0-9'")
-if [ "${free_gb:-0}" -lt 20 ]; then
-  bad "根分区可用空间 ${free_gb}G,不够。"
+# 镜像已经在了就是重部署:增量编译不需要从零那 20G,5G 够放新层
+if [ -n "$(ssh "$SERVER" "docker image ls -q deploy-muster-server 2>/dev/null")" ]; then
+  need_gb=5
+else
+  need_gb=20
+fi
+if [ "${free_gb:-0}" -lt "$need_gb" ]; then
+  bad "根分区可用空间 ${free_gb}G,不够(这次需要 ${need_gb}G)。"
   die "编译整个 Rust 工作区 + Docker 镜像 + whisper 模型要 20G 以上。
   **EC2 默认根卷只有 8G**——在控制台把 EBS 卷扩到 30G,然后:
     sudo growpart /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1
@@ -273,7 +279,7 @@ fi
 
 step "完成"
 cat <<EOF
-  网页参会端   https://$DOMAIN
+  网页参会端   https://$DOMAIN/web
   桌面壳       侧栏填 https://$DOMAIN
 
   ---- 还差两步,否则登进去是空的、任务也跑不了 ----

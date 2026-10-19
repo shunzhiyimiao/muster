@@ -17,7 +17,10 @@ RUN corepack enable && pnpm install --frozen-lockfile
 COPY apps/web/ ./
 RUN pnpm build && cp index.html dist/index.html
 
-FROM rust:1-slim AS build
+# 构建与运行必须是同一代 glibc。rust:1-slim 已经漂到 trixie(glibc 2.41),而运行时
+# 镜像是 bookworm(glibc 2.36):在 trixie 上编出来的二进制会带 GLIBC_2.39 的弱符号,
+# 到 bookworm 里一启动就警告甚至起不来。两边都钉死 bookworm。
+FROM rust:1-slim-bookworm AS build
 WORKDIR /s
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -26,6 +29,12 @@ COPY muster-route muster-route
 COPY muster-audit muster-audit
 COPY muster-eval muster-eval
 COPY muster-runner muster-runner
+# workspace 的**每个成员都要 COPY 进来**,哪怕 server 不依赖它:cargo 解析 workspace
+# 时要读每个成员的 Cargo.toml,少一个就直接 "No such file or directory"。
+# 这份清单要和根 Cargo.toml 的 members 一致。
+COPY muster-skill muster-skill
+COPY muster-workflow muster-workflow
+COPY muster-roster muster-roster
 COPY muster-gateway muster-gateway
 COPY muster-prompt muster-prompt
 COPY muster-identity muster-identity
@@ -40,8 +49,9 @@ RUN cargo build --release -p muster-server --bins --examples \
  && strip target/release/muster-server target/release/examples/bootstrap target/release/examples/admin
 
 FROM debian:bookworm-slim
-# sqlx 走 rustls,不需要 libpq;根证书仍要,否则出站 TLS 一律失败
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+# sqlx 走 rustls,不需要 libpq;根证书仍要,否则出站 TLS 一律失败。
+# curl 也要:muster-admin 是 shell 出 curl 发请求的,没它容器内一条管理命令都跑不了。
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 # 不用 root 跑。唯一要写的地方是自己的审计链——
 # **它必须在卷上**:写进容器层的话,每次重启都从空文件开一条新链,

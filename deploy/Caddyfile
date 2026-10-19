@@ -17,6 +17,9 @@
 {$MUSTER_DOMAIN} {
 	encode zstd gzip
 
+	# 网页参会端挂在 /web。根路径是 404,第一次打开域名的人会以为部署失败——跳过去。
+	redir / /web 302
+
 	# 反代到应用。Caddy 会带上 X-Forwarded-For,
 	# **服务端要设 MUSTER_TRUST_PROXY=1 才会信它**——
 	# 不设的话限流看到的全是 Caddy 容器的 IP,等于没限。
