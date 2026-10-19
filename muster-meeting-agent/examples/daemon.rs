@@ -37,6 +37,8 @@
 //!   但 CPU 与内存是共享的。
 //! - 令牌 12 小时过期:对账遇到 401 会自动重登;**已经在会里的任务**用的是入会时的令牌,
 //!   一场超过 12 小时的会,它回传纪要会开始失败。
+//! - 连不上房间的会议会**退避重试**(30 秒起翻倍,上限 10 分钟),不会每轮对账都去撞;
+//!   但它不会放弃——那场会仍然"请了 Agent",直到有人结束它或请它离开。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -64,6 +66,23 @@ struct Served {
     /// 叫停信号:退出房间、做散会提炼、任务结束
     stop: Arc<tokio::sync::Notify>,
     stop_requested: Option<std::time::Instant>,
+    started_at: std::time::Instant,
+}
+
+/// 一场会的任务起来不到这么久就结束了,算"没服务成"(多半是连不上房间),要退避。
+const QUICK_EXIT: Duration = Duration::from_secs(60);
+/// 退避上限。
+const MAX_BACKOFF: Duration = Duration::from_secs(600);
+
+/// 连不上的会议的退避记录:下次允许重试的时刻、连续失败次数。
+///
+/// 没有它的话,一场连不上房间的会(服务端下发的 LiveKit 地址这台机器到不了,是最常见的
+/// 原因)会在每一轮对账里被重新认领:每次认领都是一次入会票、一条 meeting.join 审计——
+/// 实测一场 8 月的旧会议 11 天刷了两千多条。退避不改变结论,只是别每分钟都去撞。
+#[derive(Default)]
+struct Cooldown {
+    until: Option<std::time::Instant>,
+    failures: u32,
 }
 
 struct Cfg {
@@ -150,6 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(subscribe_pushes(http.clone(), cfg.clone(), wake.clone()));
 
     let mut joined: HashMap<String, Served> = HashMap::new();
+    let mut cooldown: HashMap<String, Cooldown> = HashMap::new();
     loop {
         let wanted = match wanted_meetings(&http, &cfg).await {
             Ok(v) => v,
@@ -176,11 +196,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let wanted_ids: HashSet<String> =
             wanted.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect();
 
+        // 不再被请的会议,退避记录也清掉
+        cooldown.retain(|id, _| wanted_ids.contains(id));
+
         // 对账:自己退出的清句柄;不再被请的(散会 / 被请离)叫停——退出房间、做散会提炼;
         // 叫停太久还没收尾完的才 abort
         joined.retain(|id, s| {
             if s.handle.is_finished() {
-                tracing::info!(meeting = %id, "已退出该会议");
+                if s.started_at.elapsed() < QUICK_EXIT && s.stop_requested.is_none() {
+                    // 起来就退 = 没服务成。退避,免得每轮对账都去撞一次
+                    let c = cooldown.entry(id.clone()).or_default();
+                    c.failures += 1;
+                    let wait = (POLL * 2u32.saturating_pow(c.failures.min(8))).min(MAX_BACKOFF);
+                    c.until = Some(std::time::Instant::now() + wait);
+                    tracing::warn!(
+                        meeting = %id, failures = c.failures, retry_in_s = wait.as_secs(),
+                        "这场会起来就退了(多半是连不上房间,看上面的错误),先退避"
+                    );
+                } else {
+                    cooldown.remove(id);
+                    tracing::info!(meeting = %id, "已退出该会议");
+                }
                 return false;
             }
             if !wanted_ids.contains(id) {
@@ -206,6 +242,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if id.is_empty() || joined.contains_key(&id) {
                 continue;
             }
+            if let Some(until) = cooldown.get(&id).and_then(|c| c.until) {
+                if until > std::time::Instant::now() {
+                    continue;
+                }
+            }
             let title = m["title"].as_str().unwrap_or("").to_string();
             let channel = m["channel_id"].as_str().unwrap_or("").to_string();
             tracing::info!(meeting = %id, %title, "被请去开会");
@@ -218,6 +259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     handle: tokio::spawn(async move { serve_meeting(c, id2, channel, title, stop2).await }),
                     stop,
                     stop_requested: None,
+                    started_at: std::time::Instant::now(),
                 },
             );
         }
