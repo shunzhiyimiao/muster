@@ -208,6 +208,10 @@ async function joinMeeting(m) {
       pub.track?.detach().forEach((e) => e.remove());
       syncStage();
     })
+    // 浏览器的自动播放限制:入会后几秒远端音轨才到,这时 play() 可能被拦,表现是
+    // "点了开麦才听得见别人"(开麦拿到录音权限,浏览器顺带放开了播放)。LiveKit 把这件事
+    // 暴露成 canPlaybackAudio;被拦就亮一个按钮,让人亲手点一下 startAudio()
+    .on(RoomEvent.AudioPlaybackStatusChanged, syncAudioGate)
     .on(RoomEvent.ActiveSpeakersChanged, syncSpeaking)
     .on(RoomEvent.TrackMuted, syncStage)
     .on(RoomEvent.TrackUnmuted, syncStage)
@@ -217,6 +221,9 @@ async function joinMeeting(m) {
   try {
     await room.connect(info.url, info.token);
     syncStage();
+    // 还在"点了加入"这个手势的链条里,先试着解锁播放;不行就靠上面的闸
+    room.startAudio().catch(() => {});
+    syncAudioGate();
   } catch (e) {
     // **信令失败和媒体失败是两回事,报错要分开说。**
     // 之前统一归咎于 node_ip,结果信令层的问题被指到媒体配置上,查错了方向。
@@ -241,6 +248,20 @@ async function pushCaptionLang() {
   if (!state.meeting) return;
   await api(`/meetings/${state.meeting.id}/captions`, { method: "POST", body: JSON.stringify({ lang: caps.lang }) });
 }
+
+/** 播放被浏览器拦住时亮出「开启声音」;放开了就藏起来。 */
+function syncAudioGate() {
+  const blocked = !!state.room && !state.room.canPlaybackAudio;
+  $("soundBtn").hidden = !blocked;
+}
+$("soundBtn").onclick = async () => {
+  try {
+    await state.room?.startAudio();
+  } catch (e) {
+    toast(`浏览器仍不允许播放:${e}`, true);
+  }
+  syncAudioGate();
+};
 
 /** 字幕:最近 10 秒的两句,按我选的语言。 */
 function renderCaptions() {
