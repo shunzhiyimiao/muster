@@ -136,16 +136,28 @@ fn cors() -> CorsLayer {
     }
 }
 
-/// `Ok(None)` = 可以放开(只监听回环);`Ok(Some(白名单))` = 按名单;
+/// 桌面壳(Tauri 2)WebView 的来源:macOS / Linux 是 `tauri://localhost`,Windows 是 `http(s)://tauri.localhost`。
+/// 它直接在 WebView 里开 `EventSource` 订阅推送,浏览器按 CORS 校验响应头——来源不在名单里就在
+/// 响应头一到时掐断连接,表现是"登录正常、频道正常,就是收不到任何推送"(muster.top 2026-10-29 踩到)。
+/// 这些来源是固定的、不是网站能伪造的 URL,所以配了名单时一律附带放行。
+pub const DESKTOP_ORIGINS: [&str; 3] = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"];
+
+/// `Ok(None)` = 可以放开(只监听回环);`Ok(Some(白名单))` = 按名单(外加桌面壳的来源);
 /// `Err` = 对外监听却没给名单,**不许启动**。
 pub fn cors_mode(origins: Option<&str>, bind: &str) -> Result<Option<Vec<String>>, String> {
-    let list: Vec<String> = origins
+    let mut list: Vec<String> = origins
         .unwrap_or("")
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
     if !list.is_empty() {
+        // 桌面壳是第一方客户端,配了名单也一律带上;不然它"连上了却收不到推送"
+        for o in DESKTOP_ORIGINS {
+            if !list.iter().any(|x| x == o) {
+                list.push(o.to_string());
+            }
+        }
         return Ok(Some(list));
     }
     // 只看主机部分:回环地址上没有"别的网站"能碰到它
@@ -192,7 +204,7 @@ async fn health() -> axum::Json<serde_json::Value> {
 
 #[cfg(test)]
 mod cors_tests {
-    use super::cors_mode;
+    use super::{cors_mode, DESKTOP_ORIGINS};
 
     /// 对外监听却没给白名单 ⇒ **不许启动**。
     ///
@@ -219,14 +231,17 @@ mod cors_tests {
 
     #[test]
     fn allowlist_is_parsed_and_trimmed() {
-        assert_eq!(
-            cors_mode(Some("https://a.example.com, https://b.example.com"), "0.0.0.0:8787"),
-            Ok(Some(vec!["https://a.example.com".into(), "https://b.example.com".into()]))
-        );
-        // 给了名单,回环也照名单来——显式配置优先于推断
-        assert_eq!(
-            cors_mode(Some("https://a.example.com"), "127.0.0.1:8787"),
-            Ok(Some(vec!["https://a.example.com".into()]))
-        );
+        let desktop: Vec<String> = DESKTOP_ORIGINS.iter().map(|s| s.to_string()).collect();
+        let mut want = vec!["https://a.example.com".to_string(), "https://b.example.com".to_string()];
+        want.extend(desktop.clone());
+        assert_eq!(cors_mode(Some("https://a.example.com, https://b.example.com"), "0.0.0.0:8787"), Ok(Some(want)));
+        // 给了名单,回环也照名单来——显式配置优先于推断;桌面壳的来源总在名单里
+        let mut want = vec!["https://a.example.com".to_string()];
+        want.extend(desktop.clone());
+        assert_eq!(cors_mode(Some("https://a.example.com"), "127.0.0.1:8787"), Ok(Some(want)));
+        // 名单里已经写了桌面壳来源的,不重复
+        let got = cors_mode(Some("https://a.example.com,tauri://localhost"), "0.0.0.0:8787").unwrap().unwrap();
+        assert_eq!(got.iter().filter(|o| *o == "tauri://localhost").count(), 1);
+        assert_eq!(got.len(), 1 + DESKTOP_ORIGINS.len());
     }
 }

@@ -43,7 +43,10 @@ services:
       DATABASE_URL: postgres://muster:${POSTGRES_PASSWORD:?需要 POSTGRES_PASSWORD}@postgres:5432/muster
       MUSTER_JWT_SECRET: ${MUSTER_JWT_SECRET:?需要 MUSTER_JWT_SECRET(≥32 字符)}
       # 对外监听却不设这个,服务端会**拒绝启动**(见 routes.rs 的 cors_mode)
-      MUSTER_ALLOWED_ORIGINS: https://${MUSTER_DOMAIN}
+      # 网页端的来源是站点本身。桌面壳(Tauri 2)的 WebView 以 tauri://localhost(macOS / Linux)或
+      # http(s)://tauri.localhost(Windows)为来源直接开 EventSource 订阅推送;服务端代码里已默认放行这三个,
+      # 这里再写一遍是让看 compose 的人知道有这回事(2026-10-29 线上踩到:不放行就"连上了却收不到推送")
+      MUSTER_ALLOWED_ORIGINS: https://${MUSTER_DOMAIN},tauri://localhost,http://tauri.localhost,https://tauri.localhost
       # 站在 Caddy 后面,才该信 X-Forwarded-For。直连时信它等于把限流的键
       # 交给攻击者控制——每次换一个假 IP 就永远限不到
       MUSTER_TRUST_PROXY: "1"
