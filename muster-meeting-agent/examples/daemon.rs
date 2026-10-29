@@ -285,7 +285,37 @@ async fn subscribe_pushes(http: reqwest::Client, cfg: Arc<Cfg>, wake: Arc<tokio:
     use futures::StreamExt;
     let mut backoff = Duration::from_secs(1);
     loop {
-        let url = format!("{}/events?token={}", cfg.server, cfg.token.read().await);
+        // 先换一张一次性订阅票(块 1):登录令牌不进 URL
+        let tok = cfg.token.read().await.clone();
+        let ticket = match http
+            .post(format!("{}/events/ticket", cfg.server))
+            .bearer_auth(&tok)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v["ticket"].as_str().map(String::from)),
+            Ok(r) => {
+                if r.status() == reqwest::StatusCode::UNAUTHORIZED {
+                    wake.notify_one(); // 令牌过期:叫主循环去重登
+                }
+                tracing::warn!(status = %r.status(), "换订阅票被拒,{}s 后重试", backoff.as_secs());
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "换订阅票失败,{}s 后重试", backoff.as_secs());
+                None
+            }
+        };
+        let Some(ticket) = ticket else {
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(30));
+            continue;
+        };
+        let url = format!("{}/events?ticket={ticket}", cfg.server);
         let resp = match http.get(&url).send().await {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => {

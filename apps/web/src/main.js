@@ -397,11 +397,39 @@ function addLine(speaker, text, ts, lang = "zh", originId = null, id = 0, histor
 const escapeHtml = (s) =>
   s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
-/** SSE:断线重连与 Last-Event-ID 是浏览器白送的,不自己写补拉。 */
-function openStream() {
+/** SSE。凭据是一次性订阅票:浏览器自动重连会带着用过的票撞 401,
+ *  所以断了自己换票再连,并把最后收到的消息号带上,服务端据此补发漏掉的消息。 */
+let streamGen = 0;
+let streamLastId = null;
+let streamDelay = 1000;
+async function openStream() {
   state.es?.close();
-  const es = new EventSource(`${state.base}/events?token=${encodeURIComponent(state.token)}`);
+  state.es = null;
+  const gen = ++streamGen;
+  let ticket;
+  try {
+    ticket = (await api("/events/ticket", { method: "POST", body: "{}" })).ticket;
+  } catch (e) {
+    if (gen !== streamGen) return;
+    setTimeout(openStream, streamDelay);
+    streamDelay = Math.min(streamDelay * 2, 30000);
+    return;
+  }
+  if (gen !== streamGen) return;
+  const qs = `ticket=${encodeURIComponent(ticket)}` + (streamLastId ? `&last_event_id=${encodeURIComponent(streamLastId)}` : "");
+  const es = new EventSource(`${state.base}/events?${qs}`);
+  es.onopen = () => {
+    streamDelay = 1000;
+  };
+  es.onerror = () => {
+    if (gen !== streamGen) return;
+    es.close();
+    setTimeout(openStream, streamDelay);
+    streamDelay = Math.min(streamDelay * 2, 30000);
+  };
   es.onmessage = (e) => {
+    // 只记消息的序号(推送类事件的 id 是 0,带上它会让服务端从头补发)
+    if (Number(e.lastEventId) > 0) streamLastId = e.lastEventId;
     try {
       const ev = JSON.parse(e.data);
       if (ev.type === "transcript" && ev.meeting_id === state.meeting?.id) {

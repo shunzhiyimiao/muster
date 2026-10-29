@@ -178,16 +178,46 @@ export default function App() {
     channels: teamChannels.filter((c) => c.team_id === tid),
   })).filter((t) => t.channels.length > 0);
 
-  /* C2:实时通道。一条 SSE 复用所有频道,**断线重连与 Last-Event-ID 由
-     EventSource 自带**——这正是从 WebSocket 换过来的理由,不必自己写补拉。 */
+  /* C2:实时通道。一条 SSE 复用所有频道。凭据是一次性订阅票(块 1):
+     浏览器自动重连会带着用过的票撞 401,所以断线后自己换票再连,
+     并把最后收到的消息号带上,服务端据此补发漏掉的消息(补拉仍是服务端的,不自己写)。 */
   useEffect(() => {
     if (!remote?.connected || !remote.base) return;
     let es: EventSource | null = null;
     let stop = false;
-    api.remoteToken().then((tok) => {
-      if (!tok || stop) return;
-      es = new EventSource(api.eventsUrl(remote.base!, tok));
+    let lastId: string | null = null;
+    let delay = 1000;
+    const reconnect = () => {
+      if (stop) return;
+      setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
+    const connect = async () => {
+      if (stop) return;
+      let ticket: string | null = null;
+      try {
+        ticket = await api.remoteEventsTicket();
+      } catch {
+        ticket = null;
+      }
+      if (stop) return;
+      if (!ticket) {
+        reconnect();
+        return;
+      }
+      es = new EventSource(api.eventsUrl(remote.base!, ticket, lastId));
+      es.onopen = () => {
+        delay = 1000;
+      };
+      es.onerror = () => {
+        // 票已用过,这个 EventSource 不会再成功:关掉,换票重连
+        es?.close();
+        es = null;
+        reconnect();
+      };
       es.onmessage = (e) => {
+        // 只记消息的序号(推送类事件的 id 是 0,带上它会让服务端从头补发)
+        if (Number(e.lastEventId) > 0) lastId = e.lastEventId;
         try {
           const ev = JSON.parse(e.data);
           if (ev.type === "message") {
@@ -221,8 +251,8 @@ export default function App() {
           /* 单条解析失败不该拖垮整条流 */
         }
       };
-      // onerror 不用手动重连:EventSource 会自己退避重试并带上 Last-Event-ID
-    });
+    };
+    void connect();
     return () => {
       stop = true;
       es?.close();

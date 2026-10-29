@@ -216,6 +216,13 @@ impl Remote {
         Ok(())
     }
 
+    /// 换一张一次性订阅票(60 秒、只能用一次)。前端拿它开 EventSource——
+    /// 登录令牌不再进 URL,也就不进访问日志和浏览器历史。
+    pub async fn events_ticket(&self) -> Result<String, String> {
+        let v: serde_json::Value = self.post_json("/events/ticket", &serde_json::json!({})).await?;
+        v["ticket"].as_str().map(String::from).ok_or_else(|| "服务端没有发票".into())
+    }
+
     /// 给自己选字幕语言(`source` = 看原文)。Agent 据此决定翻成哪些语言。
     pub async fn set_caption_lang(&self, meeting_id: &str, lang: &str) -> Result<(), String> {
         let _: serde_json::Value = self

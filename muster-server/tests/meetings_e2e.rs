@@ -173,10 +173,20 @@ fn token(id: &str) -> String {
 }
 
 /// 订阅 SSE,把每条事件解析成 JSON 送进通道。连接建立(拿到响应头)后才返回——
-/// 从那一刻起的事件都收得到。
+/// 从那一刻起的事件都收得到。走一次性订阅票(块 1),不走 ?token= 兼容路径。
 async fn subscribe(base: &str, tok: &str) -> mpsc::UnboundedReceiver<Value> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let resp = reqwest::get(format!("{base}/events?token={tok}")).await.expect("订阅失败");
+    let t: Value = reqwest::Client::new()
+        .post(format!("{base}/events/ticket"))
+        .bearer_auth(tok)
+        .send()
+        .await
+        .expect("换票失败")
+        .json()
+        .await
+        .expect("票不是 JSON");
+    let ticket = t["ticket"].as_str().expect("没有票").to_string();
+    let resp = reqwest::get(format!("{base}/events?ticket={ticket}")).await.expect("订阅失败");
     assert!(resp.status().is_success(), "SSE 握手应成功:{}", resp.status());
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();

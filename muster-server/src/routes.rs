@@ -32,10 +32,14 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
 
     let chan_routes = Router::new()
         .route("/channels/:cid/messages", get(message::list).post(message::post))
-        // C2:实时通道只有 SSE 这一条。WebSocket 的 /ws 已删——两条实时通道
-        // 并存久了,就会有人只修其中一条。
-        .route("/events", get(events::handler))
         .with_state(with_hub);
+
+    // C2:实时通道只有 SSE 这一条。WebSocket 的 /ws 已删——两条实时通道
+    // 并存久了,就会有人只修其中一条。订阅凭据是一次性票(见 events.rs)。
+    let events_routes = Router::new()
+        .route("/events/ticket", post(events::ticket))
+        .route("/events", get(events::handler))
+        .with_state((db.clone(), hub.clone(), events::Tickets::new()));
 
     // 会议:每个改变状态的接口都先落服务端审计链再动库(见 meeting.rs 模块文档)
     let meeting_routes = Router::new()
@@ -74,6 +78,7 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/app.js", get(web_app_js))
         .merge(auth_routes)
         .merge(chan_routes)
+        .merge(events_routes)
         .merge(meeting_routes)
         .merge(action_routes)
         .layer(axum::Extension(std::sync::Arc::new(LoginLimiter::new())))

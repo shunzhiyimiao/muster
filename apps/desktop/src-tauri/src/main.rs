@@ -4371,9 +4371,16 @@ async fn remote_restore(state: State<'_, AppState>) -> Result<RemoteStatus, Stri
     }
 }
 
-/// 实时通道所需的令牌(C2)。前端拿它自己开 `EventSource`——
-/// **浏览器的自动重连与 `Last-Event-ID` 是白送的**,经 Tauri 命令中转
-/// 反而要把那套逻辑重写一遍。
+/// 实时通道的一次性订阅票(块 1):前端每次连 `EventSource` 前换一张。
+/// 票 60 秒内只能用一次,所以重连不能靠浏览器自动带旧 URL,前端自己换票再连。
+#[tauri::command]
+async fn remote_events_ticket(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let Some(r) = remote_of(&state) else { return Ok(None) };
+    r.events_ticket().await.map(Some)
+}
+
+/// 登录令牌(C2 旧路径)。只有回放录像这类 `<video>` 场景还在用它拼 URL;
+/// 实时通道已改用 [`remote_events_ticket`]。
 #[tauri::command]
 fn remote_token(state: State<'_, AppState>) -> Result<Option<String>, String> {
     let guard = state.0.lock().unwrap();
@@ -4752,6 +4759,7 @@ fn main() {
             remote_action_items,
             remote_transcript,
             remote_meeting_leave,
+            remote_events_ticket,
             remote_caption_lang,
             remote_summaries,
             remote_recordings,

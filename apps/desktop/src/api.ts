@@ -478,6 +478,8 @@ export const api = {
     invoke<RemoteStatus>("remote_login", { base, id, password }),
   remoteLogout: () => invoke<void>("remote_logout"),
   remoteToken: () => invoke<string | null>("remote_token"),
+  /** 一次性订阅票:每次连 EventSource 前换一张(60 秒、只能用一次) */
+  remoteEventsTicket: () => invoke<string | null>("remote_events_ticket"),
   remoteMeetings: (channelId: string) => invoke<RemoteMeeting[]>("remote_meetings", { channelId }),
   remoteMeetingStart: (channelId: string, title: string) =>
     invoke<RemoteMeeting>("remote_meeting_start", { channelId, title }),
@@ -515,10 +517,12 @@ export const api = {
   /** 组织的频道(登录后);个人频道不在其中——它不上服务端 */
   remoteChannels: () => invoke<Channel[]>("remote_channels"),
   remoteHistory: (channelId: string) => invoke<StoredMsg[]>("remote_history", { channelId }),
-  /** C2:实时通道地址。SSE 的 EventSource 由前端直连服务端,不经 Tauri 命令
-      ——浏览器的自动重连与 Last-Event-ID 是白送的,绕一圈反而要自己重写 */
-  eventsUrl: (base: string, token: string) =>
-    `${base.replace(/\/$/, "")}/events?token=${encodeURIComponent(token)}`,
+  /** C2:实时通道地址。SSE 的 EventSource 由前端直连服务端,不经 Tauri 命令。
+      凭据是一次性票,所以不能靠浏览器自动重连(它会带着用过的票撞 401):
+      断了自己换票再连,并把最后收到的事件号带上,服务端据此补发漏掉的消息 */
+  eventsUrl: (base: string, ticket: string, lastEventId?: string | null) =>
+    `${base.replace(/\/$/, "")}/events?ticket=${encodeURIComponent(ticket)}` +
+    (lastEventId ? `&last_event_id=${encodeURIComponent(lastEventId)}` : ""),
   transcriptStats: () => invoke<TranscriptStats>("transcript_stats"),
   /** kind: all | channel | run | older_than_days */
   transcriptExport: (kind: string, value?: string) =>
