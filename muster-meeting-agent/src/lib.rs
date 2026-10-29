@@ -67,7 +67,7 @@ pub use mention::MentionRules;
 pub use node::{classify_error, Breakers, NodeKey, NodeRecord};
 pub use gate::{EnergyGate, SpeechGate};
 pub use pipeline::{Pipeline, Transcribed, TranscriptSink};
-pub use sink::HttpSink;
+pub use sink::{HttpSink, SinkEvent};
 pub use summary::{Summarizer, SummaryOutcome};
 pub use translate::{lang_name_zh, Translation, Translator};
 pub use wav::pcm16_to_wav;

@@ -23,6 +23,15 @@ use serde::{Deserialize, Serialize};
 use crate::chunk::Utterance;
 use crate::pipeline::TranscriptSink;
 
+/// 落点的动静,给 daemon 的熔断与心跳用:成功回传了(进度)/ 失败了(按类计数)。
+#[derive(Debug, Clone, PartialEq)]
+pub enum SinkEvent {
+    /// 成功回传一行,`at_ms` 是服务端给的时间
+    Progress { at_ms: i64 },
+    /// 一次失败,`kind` 是 [`crate::node::classify_error`] 的分类
+    Failure { kind: String },
+}
+
 pub struct HttpSink {
     client: reqwest::Client,
     base: String,
@@ -30,6 +39,9 @@ pub struct HttpSink {
     meeting_id: String,
     /// 原文语言(转写提示语言),原文行都带它。
     lang: String,
+    /// 节点会话以哪张工牌行事(X-Muster-Badge);口令登录的老路径不带。
+    badge: Option<String>,
+    events: Option<tokio::sync::mpsc::UnboundedSender<SinkEvent>>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +57,8 @@ struct Body<'a> {
 struct Posted {
     #[serde(default)]
     id: Option<i64>,
+    #[serde(default)]
+    ts_ms: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -61,6 +75,34 @@ impl HttpSink {
             token: token.into(),
             meeting_id: meeting_id.into(),
             lang: "zh".into(),
+            badge: None,
+            events: None,
+        }
+    }
+
+    /// 以这张工牌行事(节点会话必须带;见服务端 auth.rs 的 Identity 提取器)。
+    pub fn with_badge(mut self, badge: Option<String>) -> Self {
+        self.badge = badge;
+        self
+    }
+
+    /// 把成功 / 失败报给 daemon(熔断与心跳进度)。
+    pub fn with_events(mut self, tx: tokio::sync::mpsc::UnboundedSender<SinkEvent>) -> Self {
+        self.events = Some(tx);
+        self
+    }
+
+    fn emit(&self, ev: SinkEvent) {
+        if let Some(tx) = &self.events {
+            let _ = tx.send(ev);
+        }
+    }
+
+    fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let rb = rb.bearer_auth(&self.token);
+        match &self.badge {
+            Some(b) => rb.header("X-Muster-Badge", b),
+            None => rb,
         }
     }
 
@@ -89,7 +131,7 @@ impl HttpSink {
     /// 在场的人要的翻译语言(服务端按各人的字幕偏好去重)。拿不到就当没人要。
     pub async fn caption_langs(&self) -> Vec<String> {
         let url = format!("{}/meetings/{}/captions", self.base, self.meeting_id);
-        match self.client.get(&url).bearer_auth(&self.token).send().await {
+        match self.auth(self.client.get(&url)).send().await {
             Ok(r) if r.status().is_success() => r.json::<Captions>().await.map(|c| c.langs).unwrap_or_default(),
             Ok(r) => {
                 tracing::warn!(status = %r.status(), "查字幕语言被拒");
@@ -106,7 +148,7 @@ impl HttpSink {
     pub async fn post_summary(&self, kind: &str, text: &str, model: Option<&str>) -> bool {
         let url = format!("{}/meetings/{}/summary", self.base, self.meeting_id);
         let body = serde_json::json!({ "kind": kind, "text": text, "model": model });
-        match self.client.post(&url).bearer_auth(&self.token).json(&body).send().await {
+        match self.auth(self.client.post(&url)).json(&body).send().await {
             Ok(r) if r.status().is_success() => true,
             Ok(r) => {
                 tracing::warn!(status = %r.status(), "回顾提交被拒");
@@ -123,7 +165,7 @@ impl HttpSink {
     pub async fn post_channel_message(&self, channel_id: &str, body: &str) -> bool {
         let url = format!("{}/channels/{}/messages", self.base, channel_id);
         let b = serde_json::json!({ "body": body, "role": "agent" });
-        match self.client.post(&url).bearer_auth(&self.token).json(&b).send().await {
+        match self.auth(self.client.post(&url)).json(&b).send().await {
             Ok(r) if r.status().is_success() => true,
             Ok(r) => {
                 tracing::warn!(status = %r.status(), channel = channel_id, "频道消息被拒");
@@ -139,7 +181,7 @@ impl HttpSink {
     /// 提交一条行动项**提案**。注意是提案——确认归人,见服务端 action.rs。
     pub async fn propose_action(&self, item: &crate::actions::ActionItem) -> bool {
         let url = format!("{}/meetings/{}/action-items", self.base, self.meeting_id);
-        match self.client.post(&url).bearer_auth(&self.token).json(item).send().await {
+        match self.auth(self.client.post(&url)).json(item).send().await {
             Ok(r) if r.status().is_success() => true,
             Ok(r) => {
                 tracing::warn!(status = %r.status(), "行动项提交被拒");
@@ -156,22 +198,26 @@ impl HttpSink {
     async fn post(&self, speaker: &str, text: &str, lang: &str, origin_id: Option<i64>) -> Option<i64> {
         let url = format!("{}/meetings/{}/transcript", self.base, self.meeting_id);
         let r = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.token)
+            .auth(self.client.post(&url))
             .json(&Body { speaker_id: speaker, text, lang, origin_id })
             .send()
             .await;
         match r {
-            Ok(resp) if resp.status().is_success() => resp.json::<Posted>().await.ok().and_then(|p| p.id),
+            Ok(resp) if resp.status().is_success() => {
+                let p = resp.json::<Posted>().await.unwrap_or_default();
+                self.emit(SinkEvent::Progress { at_ms: p.ts_ms.unwrap_or(0) });
+                p.id
+            }
             // 回传失败只记日志、不重试、不阻塞:会议在继续,后面的话还要转。
             // 代价是这句丢了——已登记在 crate 文档的诚实边界里。
             Ok(resp) => {
                 tracing::warn!(status = %resp.status(), "转写回传被拒");
+                self.emit(SinkEvent::Failure { kind: crate::node::classify_error(&format!("HTTP {}", resp.status())) .into() });
                 None
             }
             Err(e) => {
                 tracing::warn!(error = %e, "转写回传失败");
+                self.emit(SinkEvent::Failure { kind: crate::node::classify_error(&format!("connect {e}")).into() });
                 None
             }
         }
@@ -196,6 +242,8 @@ impl TranscriptSink for HttpSink {
 
     async fn on_refused(&self, u: &Utterance, reason: &str) {
         tracing::warn!(speaker = %u.speaker, reason, "这一句未能转写");
+        // 转写失败按类计数:连着三次同一类,daemon 会熔断这场会等人来看
+        self.emit(SinkEvent::Failure { kind: crate::node::classify_error(&format!("转写 {reason}")).into() });
         // 以系统说明进纪要:留白会被读成"没人说话"
         self.say(
             "系统",
