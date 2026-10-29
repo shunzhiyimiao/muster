@@ -13,17 +13,37 @@
 #
 # LiveKit 的客户端 SDK 要的是一个主机,不是路径前缀。给它一个子域最省事,
 # 也让媒体面和应用面在证书、日志、限流上彼此独立。
+#
+# ## 根路径是官网,应用在 /web
+#
+# `site/` 里的静态文件(首页、图标)直接由 Caddy 给;compose 把仓库的 site/ 挂到
+# /srv/site(只读)。**只有 site/ 里真有的文件才走这条路**,其余一切(/web、/health、
+# 接口、SSE)照旧反代到应用——接口路径永远不会被一个同名静态文件挡住,
+# 因为 site/ 里不放那些名字。site/ 里没有 index.html 时根路径退回 302 到 /web,
+# 不会给人一个 404 让人以为部署失败。
 
 {$MUSTER_DOMAIN} {
 	encode zstd gzip
 
-	# 网页参会端挂在 /web。根路径是 404,第一次打开域名的人会以为部署失败——跳过去。
-	redir / /web 302
+	# 官网:site/ 里存在的文件(/ → index.html)
+	@site file {
+		root /srv/site
+		try_files {path} {path}/index.html
+	}
+	handle @site {
+		root * /srv/site
+		file_server
+	}
 
-	# 反代到应用。Caddy 会带上 X-Forwarded-For,
-	# **服务端要设 MUSTER_TRUST_PROXY=1 才会信它**——
-	# 不设的话限流看到的全是 Caddy 容器的 IP,等于没限。
-	reverse_proxy muster-server:8787
+	handle {
+		# 没有首页时根路径仍跳到应用,不留 404
+		redir / /web 302
+
+		# 反代到应用。Caddy 会带上 X-Forwarded-For,
+		# **服务端要设 MUSTER_TRUST_PROXY=1 才会信它**——
+		# 不设的话限流看到的全是 Caddy 容器的 IP,等于没限。
+		reverse_proxy muster-server:8787
+	}
 
 	header {
 		# 一年,且允许被预加载。上了公网就别留降级到 http 的口子

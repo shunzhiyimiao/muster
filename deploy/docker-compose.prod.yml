@@ -26,6 +26,8 @@ services:
       MUSTER_DOMAIN: ${MUSTER_DOMAIN:?需要 MUSTER_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 官网静态文件(首页、图标),根路径直接由 Caddy 给;只读
+      - ../site:/srv/site:ro
       - caddy_data:/data # 证书在这。**删掉它就要重新签发**,会撞 Let's Encrypt 限频
       - caddy_config:/config
     depends_on: [muster-server, livekit]
