@@ -41,7 +41,9 @@
 `meeting.start`(标题只留哈希,带密级) / `meeting.join`(入会票给了什么:能否开麦、能否录) /
 `meeting.leave` / `meeting.end`(时长与行数) / `meeting.transcript`(**每行纪要只记哈希**,
 正文在 PostgreSQL 正文侧;翻译行带 `lang`) / `meeting.level.raise`(只升不降) / `meeting.agent`(请 Agent 进会 = 音频开始被转写) /
-`meeting.summary`(总结只留哈希) / `meeting.record.start` / `meeting.record.stop`(录像**文件**的哈希,restricted 到不了这一步)。
+`meeting.summary`(总结只留哈希) / `meeting.record.start` / `meeting.record.stop`(录像**文件**的哈希,restricted 到不了这一步) /
+节点两条(2026-10-29,块 2):`node.enroll`(入网批准:公钥哈希 + 批准人)/ `node.breaker`(节点对某场会议熔断);
+工牌分配到节点与值班工牌变更复用 `badge.update`。
 
 v1.x 预留(占位注释在 `lib.rs`,零成本):`capsule.forge/verify/adopt`、
 `session.stream.start`、`stream.viewer.join`、`session.stream.stop`、

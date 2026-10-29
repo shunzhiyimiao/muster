@@ -506,6 +506,16 @@ pub enum EventBody {
         content_hash: Option<ContentHash>,
     },
 
+    /// 一台机器入网成为节点(docs/节点与工牌-公用私有值班.md)。记公钥哈希与批准人——
+    /// 节点此后的会话都靠这把公钥验签,"谁批准了哪把钥匙"必须可查。
+    #[serde(rename = "node.enroll")]
+    NodeEnroll { node_id: String, name: String, pubkey_hash: ContentHash, approved_by: Actor },
+
+    /// 节点对某场会议熔断:连续若干次以同一类错误失败后停止认领,等人重试。
+    /// 停下来是治理动作,不是故障的静默吞没——所以要留痕。
+    #[serde(rename = "node.breaker")]
+    NodeBreaker { node_id: String, meeting_id: String, error_kind: String, failures: u32 },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -556,6 +566,8 @@ impl EventBody {
             EventBody::MeetingSummary { .. } => "meeting.summary",
             EventBody::MeetingRecordStart { .. } => "meeting.record.start",
             EventBody::MeetingRecordStop { .. } => "meeting.record.stop",
+            EventBody::NodeEnroll { .. } => "node.enroll",
+            EventBody::NodeBreaker { .. } => "node.breaker",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }
