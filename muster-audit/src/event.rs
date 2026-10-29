@@ -516,6 +516,15 @@ pub enum EventBody {
     #[serde(rename = "node.breaker")]
     NodeBreaker { node_id: String, meeting_id: String, error_kind: String, failures: u32 },
 
+    /// 派发单指派给某人(docs/节点与工牌:派活是请求,不是命令——接受与否归本人)。
+    /// 指派本身留痕:谁把什么派给了谁。正文(行动项文本)不进链。
+    #[serde(rename = "dispatch.assign")]
+    DispatchAssign { item_id: String, assignee: String, assigned_by: Actor },
+
+    /// 派发单超时未处理,已过期回收(不自动转派,由人重新指派)。
+    #[serde(rename = "dispatch.expire")]
+    DispatchExpire { item_id: String, assignee: Option<String> },
+
     /// 主权演习开始/结束。演习报告以 SQL 为准(见 queries::drill_report),
     /// `drill.end` 可冗余存一份快照供 UI 直读,但不是 source of truth。
     #[serde(rename = "drill.start")]
@@ -568,6 +577,8 @@ impl EventBody {
             EventBody::MeetingRecordStop { .. } => "meeting.record.stop",
             EventBody::NodeEnroll { .. } => "node.enroll",
             EventBody::NodeBreaker { .. } => "node.breaker",
+            EventBody::DispatchAssign { .. } => "dispatch.assign",
+            EventBody::DispatchExpire { .. } => "dispatch.expire",
             EventBody::DrillStart { .. } => "drill.start",
             EventBody::DrillEnd { .. } => "drill.end",
         }

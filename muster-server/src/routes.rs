@@ -83,8 +83,13 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
             get(action::list).post(action::propose),
         )
         .route("/action-items/:aid/decide", post(action::decide))
+        .route("/action-items/:aid/assign", post(action::assign))
         .route("/action-items/:aid/run", post(action::link_run))
+        // 本人的待处理派发单(块 3)
+        .route("/me/inbox", get(action::inbox))
         .with_state((db.clone(), hub.clone(), audit.clone()));
+    // 72 小时没人处理的派发单过期回收(不自动转派)
+    action::spawn_expiry_sweeper(db.clone(), hub.clone(), audit.clone());
 
     Router::new()
         .route("/health", get(health))

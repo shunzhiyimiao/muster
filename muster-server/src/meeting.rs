@@ -90,10 +90,13 @@ pub struct MeetingOut {
     /// 最近一次「请 Agent」的时刻。节点的熔断只认比它晚的请求(人再点一次 = 重试)。
     #[serde(default)]
     pub agent_requested_ms: Option<i64>,
+    /// 主持人(建会的人)。行动项没解析出负责人时由他指派。
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 /// 列表查询共用的列:录制状态由 meeting_recording 派生,不另存一份会漂的字段。
-const MEETING_COLS: &str = "id, channel_id, title, level, room, started_ms, ended_ms, wants_agent, agent_requested_ms,
+const MEETING_COLS: &str = "id, channel_id, title, level, room, started_ms, ended_ms, wants_agent, agent_requested_ms, host,
     EXISTS(SELECT 1 FROM meeting_recording r WHERE r.meeting_id = meeting.id
            AND r.status IN ('starting','active','stopping')) AS recording_active";
 
@@ -271,7 +274,7 @@ pub async fn start(
         .await?;
 
     sqlx::query(
-        "INSERT INTO meeting(id, channel_id, title, level, started_ms, room) VALUES($1,$2,$3,$4,$5,$6)",
+        "INSERT INTO meeting(id, channel_id, title, level, started_ms, room, host) VALUES($1,$2,$3,$4,$5,$6,$7)",
     )
     .bind(mid)
     .bind(&cid)
@@ -279,6 +282,7 @@ pub async fn start(
     .bind(&level)
     .bind(started)
     .bind(&room)
+    .bind(&id.account_id)
     .execute(&db.pool)
     .await?;
 
@@ -294,6 +298,7 @@ pub async fn start(
         wants_agent: false,
         recording_active: false,
         agent_requested_ms: None,
+        host: Some(id.account_id),
     }))
 }
 

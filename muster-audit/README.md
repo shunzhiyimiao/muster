@@ -43,7 +43,8 @@
 正文在 PostgreSQL 正文侧;翻译行带 `lang`) / `meeting.level.raise`(只升不降) / `meeting.agent`(请 Agent 进会 = 音频开始被转写) /
 `meeting.summary`(总结只留哈希) / `meeting.record.start` / `meeting.record.stop`(录像**文件**的哈希,restricted 到不了这一步) /
 节点两条(2026-10-29,块 2):`node.enroll`(入网批准:公钥哈希 + 批准人)/ `node.breaker`(节点对某场会议熔断);
-工牌分配到节点与值班工牌变更复用 `badge.update`。
+工牌分配到节点与值班工牌变更复用 `badge.update`;派发单两条(块 3):`dispatch.assign`(指派给谁)/ `dispatch.expire`(超时回收),
+接受 / 驳回仍是 `approval.decision`。
 
 v1.x 预留(占位注释在 `lib.rs`,零成本):`capsule.forge/verify/adopt`、
 `session.stream.start`、`stream.viewer.join`、`session.stream.stop`、
