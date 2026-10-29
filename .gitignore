@@ -9,3 +9,6 @@ deploy/.env
 
 # 会议录像是正文,不进仓库(开发环境里 Egress 写到这里)
 deploy/recordings/
+
+# 用户做首页的工作目录,成品已拷进 site/;留在这里只是方便改,不入库
+muster-homepage/
