@@ -390,6 +390,21 @@ export default function App() {
     setView("pchat");
     setNotice("");
   };
+  // 服务端重启、网络抖一下,恢复探活失败就会退回单机模式;盘上的会话还在,过一会儿再探一次,
+  // 探通了自己接回去——不然每次部署服务端都要人重新登录一遍(2026-10-29 部署时踩到)
+  useEffect(() => {
+    if (remote?.connected) return;
+    const t = setInterval(() => {
+      api.remoteRestore().then((r) => {
+        if (!r.connected) return;
+        setRemote(r);
+        api.remoteChannels().then(setRemoteChans).catch(() => setRemoteChans([]));
+        setNotice(`已重新连上 ${r.base}(${r.display_name})`);
+      }).catch(() => {});
+    }, 20_000);
+    return () => clearInterval(t);
+  }, [remote?.connected]);
+
   // 待我处理:连上就拉,行动项一有动静就重拉
   useEffect(() => {
     if (!remote?.connected) {
