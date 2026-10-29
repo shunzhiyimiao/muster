@@ -200,12 +200,17 @@ DC="$SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.ym
 
 if ssh "$SERVER" "cd $REMOTE_DIR && $DC ps -q postgres 2>/dev/null | grep -q ."; then
   step "重部署前"
+  # 只看最近 12 小时开的:ended_ms 为空但开了几天的那种不是会议,是没人点散会的一行
+  # (机器重启过 LiveKit 房间早没了)。它该由有权限的人去点散会、进审计链,而不是挡住部署。
   live=$(ssh "$SERVER" "cd $REMOTE_DIR && $DC exec -T postgres psql -U muster -d muster -At \
-    -c 'SELECT count(*) FROM meeting WHERE ended_ms IS NULL' 2>/dev/null" || true)
+    -c 'SELECT count(*) FROM meeting WHERE ended_ms IS NULL AND started_ms > (EXTRACT(EPOCH FROM now())*1000 - 12*3600*1000)::bigint' 2>/dev/null" || true)
   if [ "${live:-0}" != "0" ]; then
     die "线上有 ${live} 场进行中的会议。别在开会时部署——等散会再跑。"
   fi
   ok "没有进行中的会议"
+  stale=$(ssh "$SERVER" "cd $REMOTE_DIR && $DC exec -T postgres psql -U muster -d muster -At \
+    -c 'SELECT count(*) FROM meeting WHERE ended_ms IS NULL' 2>/dev/null" || true)
+  [ "${stale:-0}" = "0" ] || echo "  (另有 ${stale} 场开了超过 12 小时还没点散会的,部署后请主持人在客户端点一下「结束」)"
   BACKUP_DIR="${REMOTE_DIR}-backups"
   ssh "$SERVER" "$SUDO mkdir -p $BACKUP_DIR && $SUDO chown \$(id -u):\$(id -g) $BACKUP_DIR \
     && cd $REMOTE_DIR && $DC exec -T postgres pg_dump -U muster muster | gzip > $BACKUP_DIR/pg-\$(date +%Y%m%d-%H%M%S).sql.gz" \
