@@ -32,7 +32,11 @@ FROM debian:bookworm-slim
 # libglib2.0-0:预编译的 libwebrtc 动态链接 glib / gio / gobject,运行时镜像里没有就起不来
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
-RUN useradd -r -u 10002 agent
+# /node 是节点私钥所在(compose 把命名卷 node_home 挂在这里)。目录必须在镜像里**先建好并归 agent**:
+# 镜像里没有这个目录的话,Docker 会把新建的卷做成 root 所有,容器里的 agent 用户一写 node.key 就
+# Permission denied 反复重启——muster.top 上 2026-10-29 实际踩到的。有了它,空卷第一次挂上会继承属主
+RUN useradd -r -u 10002 agent && mkdir -p /node && chown agent:agent /node && chmod 700 /node
 COPY --from=build /s/target/release/examples/daemon /usr/local/bin/muster-daemon
 USER agent
+VOLUME /node
 ENTRYPOINT ["/usr/local/bin/muster-daemon"]

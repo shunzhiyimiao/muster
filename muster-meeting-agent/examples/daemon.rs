@@ -198,7 +198,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_node = explicit_home || node_home.join("node.key").exists() || !has_password;
 
     let (mode, token) = if use_node {
-        let (key, created) = NodeKey::load_or_create(&node_home)?;
+        // 裸的 "Permission denied" 没人看得懂。说清楚是哪个目录、最可能为什么
+        let (key, created) = NodeKey::load_or_create(&node_home).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "节点目录 {} 读写失败:{e}。容器里跑的话,多半是 MUSTER_NODE_HOME 挂的卷归 root 而进程是 agent 用户",
+                    node_home.display()
+                ),
+            )
+        })?;
         if created {
             println!("已生成节点密钥:{}(只把公钥交给服务端)", node_home.join("node.key").display());
         }
