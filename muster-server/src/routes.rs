@@ -9,7 +9,7 @@ use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::ratelimit::LoginLimiter;
-use crate::{action, events, meeting, message, org, provider, recording, ws, Db};
+use crate::{action, events, meeting, message, node, org, provider, recording, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
@@ -61,6 +61,21 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/recordings/:rid/file", get(recording::file))
         .with_state((db.clone(), hub.clone(), audit.clone()));
 
+    // 节点(块 2):入网、会话、设定值、心跳;工牌分配与值班工牌。入网不鉴权(按 IP 限流),
+    // 其余要么节点会话、要么管理员
+    let node_routes = Router::new()
+        .route("/nodes", get(node::list))
+        .route("/nodes/enroll", post(node::enroll))
+        .route("/nodes/enroll/poll", get(node::enroll_poll))
+        .route("/nodes/enroll/:user_code/approve", post(node::enroll_approve))
+        .route("/nodes/:id/challenge", post(node::challenge))
+        .route("/nodes/:id/session", post(node::session))
+        .route("/nodes/:id/desired", get(node::desired))
+        .route("/nodes/:id/heartbeat", post(node::heartbeat))
+        .route("/accounts/:aid/node", post(node::assign_badge))
+        .route("/org/duty", get(node::duty_get).post(node::duty_set))
+        .with_state((db.clone(), hub.clone(), audit.clone(), node::Challenges::new()));
+
     // 行动项:提案由 Agent 落,**确认必须由人**——见 action.rs 的模块文档
     let action_routes = Router::new()
         .route(
@@ -80,8 +95,11 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .merge(chan_routes)
         .merge(events_routes)
         .merge(meeting_routes)
+        .merge(node_routes)
         .merge(action_routes)
         .layer(axum::Extension(std::sync::Arc::new(LoginLimiter::new())))
+        // Identity 提取器核对"节点会话以哪张工牌行事"时要查库,从请求扩展里拿 Db
+        .layer(axum::Extension(db))
         .layer(cors())
 }
 

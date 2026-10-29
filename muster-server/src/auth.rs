@@ -23,6 +23,10 @@ use muster_identity::{Principal, PrincipalKind, Role, RoleBinding, Scope};
 use crate::{db::now_ms, Db, ServerError};
 
 const TOKEN_TTL_SECS: i64 = 12 * 3600;
+/// 节点会话比人的令牌短:节点随时能用自己的密钥再换一张,没必要让一张票活 12 小时。
+pub const NODE_TOKEN_TTL_SECS: i64 = 3600;
+/// 节点会话以哪张工牌行事。
+pub const BADGE_HEADER: &str = "x-muster-badge";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -49,6 +53,28 @@ pub fn validate_secret(v: Option<String>) -> Result<Vec<u8>, String> {
     Ok(s.into_bytes())
 }
 
+/// 解一张 JWT 的 claims(人的令牌与节点会话都走这里;分辨靠 `kind`)。
+pub fn decode_claims(token: &str) -> Result<Claims, ServerError> {
+    let key = secret().map_err(ServerError::Internal)?;
+    decode::<Claims>(token, &DecodingKey::from_secret(&key), &Validation::default())
+        .map(|d| d.claims)
+        .map_err(|e| ServerError::Unauthenticated(format!("令牌无效:{e}")))
+}
+
+/// 节点会话:`sub` 是 `node:<id>`,`kind` 是 `node`——它不是任何人的账号,
+/// [`Identity::from_token`] 会拒绝直接把它当账号用。
+pub fn issue_node_token(node_id: uuid::Uuid, name: &str) -> Result<String, ServerError> {
+    let key = secret().map_err(ServerError::Internal)?;
+    let claims = Claims {
+        sub: format!("node:{node_id}"),
+        name: name.to_string(),
+        kind: "node".into(),
+        exp: now_ms() / 1000 + NODE_TOKEN_TTL_SECS,
+    };
+    encode(&Header::default(), &claims, &EncodingKey::from_secret(&key))
+        .map_err(|e| ServerError::Internal(format!("签发失败:{e}")))
+}
+
 pub fn issue_token(account_id: &str, name: &str, kind: &str) -> Result<String, ServerError> {
     let key = secret().map_err(ServerError::Internal)?;
     let claims = Claims {
@@ -72,14 +98,18 @@ pub struct Identity {
 
 impl Identity {
     pub fn from_token(token: &str) -> Result<Self, ServerError> {
-        let key = secret().map_err(ServerError::Internal)?;
-        let data = decode::<Claims>(token, &DecodingKey::from_secret(&key), &Validation::default())
-            .map_err(|e| ServerError::Unauthenticated(format!("令牌无效:{e}")))?;
-        Ok(Self {
-            account_id: data.claims.sub,
-            display_name: data.claims.name,
-            kind: parse_kind(&data.claims.kind),
-        })
+        let claims = decode_claims(token)?;
+        if claims.kind == "node" {
+            // 节点会话不是账号。要以工牌行事,走带 X-Muster-Badge 的请求(见下面的提取器)
+            return Err(ServerError::Unauthenticated(
+                "节点会话不能直接当账号用:带 X-Muster-Badge 以托管的工牌行事".into(),
+            ));
+        }
+        Ok(Self::from_claims(claims))
+    }
+
+    fn from_claims(claims: Claims) -> Self {
+        Self { account_id: claims.sub, display_name: claims.name, kind: parse_kind(&claims.kind) }
     }
 
     /// 装配成权限内核认识的 Principal。角色绑定实时从库里读——
@@ -126,7 +156,33 @@ impl<S: Send + Sync> FromRequestParts<S> for Identity {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or_else(|| ServerError::Unauthenticated("缺少 Bearer 令牌".into()))?;
-        Identity::from_token(raw)
+        let claims = decode_claims(raw)?;
+        if claims.kind != "node" {
+            return Ok(Identity::from_claims(claims));
+        }
+        // 节点会话以工牌行事:工牌必须托管在这个节点上(docs/节点与工牌:节点只能代表它托管的工牌)
+        let badge = parts
+            .headers
+            .get(BADGE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| ServerError::Unauthenticated("节点会话要带 X-Muster-Badge 头说明以哪张工牌行事".into()))?
+            .to_string();
+        let node_id = claims
+            .sub
+            .strip_prefix("node:")
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .ok_or_else(|| ServerError::Unauthenticated("节点会话无效".into()))?;
+        let db = parts
+            .extensions
+            .get::<Db>()
+            .cloned()
+            .ok_or_else(|| ServerError::Internal("路由没有挂 Db 扩展,节点会话无法核对工牌".into()))?;
+        match crate::node::badge_hosted_by(&db, &badge, node_id).await? {
+            Some((id, display_name)) => Ok(Identity { account_id: id, display_name, kind: PrincipalKind::Agent }),
+            None => Err(ServerError::Forbidden(format!("节点只能代表它托管的工牌行事,{badge} 不在这个节点上"))),
+        }
     }
 }
 

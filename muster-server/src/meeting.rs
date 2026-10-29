@@ -87,10 +87,13 @@ pub struct MeetingOut {
     /// 是否正在录制。晚进来的人也必须看见"正在录制"——被录而不知情是会议产品最不能犯的错。
     #[serde(default)]
     pub recording_active: bool,
+    /// 最近一次「请 Agent」的时刻。节点的熔断只认比它晚的请求(人再点一次 = 重试)。
+    #[serde(default)]
+    pub agent_requested_ms: Option<i64>,
 }
 
 /// 列表查询共用的列:录制状态由 meeting_recording 派生,不另存一份会漂的字段。
-const MEETING_COLS: &str = "id, channel_id, title, level, room, started_ms, ended_ms, wants_agent,
+const MEETING_COLS: &str = "id, channel_id, title, level, room, started_ms, ended_ms, wants_agent, agent_requested_ms,
     EXISTS(SELECT 1 FROM meeting_recording r WHERE r.meeting_id = meeting.id
            AND r.status IN ('starting','active','stopping')) AS recording_active";
 
@@ -290,6 +293,7 @@ pub async fn start(
         ended_ms: None,
         wants_agent: false,
         recording_active: false,
+        agent_requested_ms: None,
     }))
 }
 
@@ -656,11 +660,21 @@ pub async fn set_wants_agent(
         ))
         .await?;
 
-    sqlx::query("UPDATE meeting SET wants_agent = $1 WHERE id = $2 AND ended_ms IS NULL")
-        .bind(w.want)
-        .bind(mid)
-        .execute(&db.pool)
-        .await?;
+    // 请 Agent 的时刻也记下来:节点的熔断只认比它晚的请求——人再点一次就是"重试"
+    sqlx::query(
+        "UPDATE meeting SET wants_agent = $1,
+                agent_requested_ms = CASE WHEN $1 THEN $3 ELSE agent_requested_ms END
+         WHERE id = $2 AND ended_ms IS NULL",
+    )
+    .bind(w.want)
+    .bind(mid)
+    .bind(now_ms())
+    .execute(&db.pool)
+    .await?;
+    if w.want {
+        // 服务端这边登记的熔断同步清掉;节点那边看到更新的 agent_requested_ms 自己解除
+        sqlx::query("DELETE FROM node_breaker WHERE meeting_id = $1").bind(mid).execute(&db.pool).await?;
+    }
 
     push_meeting(&hub, &row.channel_id, mid, "agent", &row.title, &row.level, w.want);
     Ok(Json(serde_json::json!({ "wants_agent": w.want })))

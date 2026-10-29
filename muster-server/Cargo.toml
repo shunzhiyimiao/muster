@@ -34,6 +34,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # 录像文件按 Range 流式回放
 tokio-util = { version = "0.7", features = ["io"] }
 sha2 = "0.10"
+# 节点会话:节点本地持 ed25519 私钥,服务端只存公钥、只验签
+ed25519-dalek = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

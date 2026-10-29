@@ -22,7 +22,7 @@ pub type OrgState = (Db, Audit);
 
 /// 把一次权限变更记进链。用 `badge.update`:它的语义就是"某人的能力集变了",
 /// 人和 Agent 一视同仁。**正文(具体授了什么)只留哈希**,与铁律三一致。
-async fn record_grant_change(
+pub(crate) async fn record_grant_change(
     audit: &Audit,
     changed_by: &Identity,
     subject: &str,
@@ -348,6 +348,10 @@ pub struct AccountOut {
     pub kind: String,
     pub disabled: bool,
     pub created_ms: i64,
+    /// 工牌住在哪个节点(只有 kind=agent 的账号会有)
+    pub node_id: Option<uuid::Uuid>,
+    /// 节点 90 秒内有心跳。没分配节点的工牌、人的账号都是 null
+    pub node_online: Option<bool>,
 }
 
 /// 列出账号。**看不见就管不了**——此前连"现在有哪些账号"都问不出来。
@@ -356,9 +360,14 @@ pub async fn list_accounts(
     id: Identity,
 ) -> Result<Json<Vec<AccountOut>>> {
     require(&db, &id, &Action::ManageMembers, &Scope::Org).await?;
+    // 工牌带上节点在不在线:心跳超时的节点,其上的工牌在这里显示不可用
     let rows = sqlx::query_as::<_, AccountOut>(
-        "SELECT id, display_name, kind, disabled, created_ms FROM account ORDER BY id",
+        "SELECT a.id, a.display_name, a.kind, a.disabled, a.created_ms, a.node_id,
+                CASE WHEN a.node_id IS NULL THEN NULL
+                     ELSE (n.status = 'approved' AND n.last_seen_ms IS NOT NULL AND n.last_seen_ms > $1) END AS node_online
+         FROM account a LEFT JOIN node n ON n.id = a.node_id ORDER BY a.id",
     )
+    .bind(now_ms() - crate::node::HEARTBEAT_TIMEOUT_MS)
     .fetch_all(&db.pool)
     .await?;
     Ok(Json(rows))

@@ -64,6 +64,7 @@ pub mod events;
 pub mod livekit;
 pub mod meeting;
 pub mod message;
+pub mod node;
 pub mod org;
 pub mod provider;
 pub mod ratelimit;

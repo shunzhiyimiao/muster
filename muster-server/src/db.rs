@@ -17,6 +17,7 @@ impl Db {
         let pool = PgPoolOptions::new().max_connections(16).connect(url).await?;
         sqlx::raw_sql(include_str!("../migrations/0001_init.sql")).execute(&pool).await?;
         sqlx::raw_sql(include_str!("../migrations/0002_idempotency.sql")).execute(&pool).await?;
+        sqlx::raw_sql(include_str!("../migrations/0003_nodes.sql")).execute(&pool).await?;
         Ok(Self { pool })
     }
 
