@@ -87,7 +87,7 @@ fi
 # killer 会直接杀掉 rustc,日志里只留一个 "signal: 9"。
 free_gb=$(ssh "$SERVER" "df -BG --output=avail / | tail -1 | tr -dc '0-9'")
 # 镜像已经在了就是重部署:增量编译不需要从零那 20G,5G 够放新层
-if [ -n "$(ssh "$SERVER" "docker image ls -q deploy-muster-server 2>/dev/null")" ]; then
+if [ -n "$(ssh "$SERVER" "$SUDO docker image ls -q deploy-muster-server 2>/dev/null")" ]; then
   need_gb=5
 else
   need_gb=20
