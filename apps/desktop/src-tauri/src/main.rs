@@ -4569,9 +4569,28 @@ async fn remote_decide_action(
     state: State<'_, AppState>,
     id: String,
     confirm: bool,
+    note: Option<String>,
 ) -> Result<remote::ActionItem, String> {
     let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
-    r.decide_action(&id, confirm).await
+    r.decide_action(&id, confirm, note.as_deref()).await
+}
+
+/// 主持人指派派发单的负责人。
+#[tauri::command]
+async fn remote_assign_action(
+    state: State<'_, AppState>,
+    id: String,
+    assignee: String,
+) -> Result<remote::ActionItem, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.assign_action(&id, &assignee).await
+}
+
+/// 待我处理:派到我这儿、还没接受 / 驳回的派发单。
+#[tauri::command]
+async fn remote_inbox(state: State<'_, AppState>) -> Result<Vec<remote::InboxItem>, String> {
+    let Some(r) = remote_of(&state) else { return Ok(vec![]) };
+    r.inbox().await
 }
 
 /// 团队频道的消息从服务端拉;**个人频道永不走这条路**(见 remote.rs 模块文档)。
@@ -4769,6 +4788,8 @@ fn main() {
             remote_recording_stop,
             remote_recording_url,
             remote_decide_action,
+            remote_assign_action,
+            remote_inbox,
             remote_meeting_end,
             remote_meeting_agent,
             approvals_pending,

@@ -202,6 +202,8 @@ export interface RemoteStatus {
 export interface RemoteMeeting {
   id: string;
   channel_id: string;
+  /** 主持人(建会的人) */
+  host?: string | null;
   title: string;
   level: string;
   room: string;
@@ -253,10 +255,30 @@ export interface ActionItem {
   owner_hint: string | null;
   /** 出处原话——人要能核对"它是不是听岔了" */
   source_quote: string | null;
-  status: "proposed" | "confirmed" | "rejected";
+  /** proposed / accepted / rejected / expired / done(老的 confirmed 也认) */
+  status: "proposed" | "accepted" | "confirmed" | "rejected" | "expired" | "done";
   decided_by: string | null;
   run_id: string | null;
   created_ms: number;
+  /** 被派到的人;空 = 等主持人指派 */
+  assignee?: string | null;
+  accepted_mode?: string | null;
+  sensitivity?: string | null;
+  reject_reason?: string | null;
+  expires_ms?: number | null;
+}
+/** 收件箱里的一条派发单 */
+export interface InboxItem {
+  id: string;
+  meeting_id: string;
+  meeting_title: string;
+  channel_id: string;
+  text: string;
+  owner_hint: string | null;
+  source_quote: string | null;
+  sensitivity: string | null;
+  created_ms: number;
+  expires_ms: number | null;
 }
 
 export interface ForkResult {
@@ -506,8 +528,13 @@ export const api = {
   remoteRecordingStop: (meetingId: string) => invoke<Recording>("remote_recording_stop", { meetingId }),
   remoteRecordingUrl: (recordingId: string) => invoke<string>("remote_recording_url", { recordingId }),
   /** 批准 / 驳回。**判定在服务端**:它要 CreateTask 权限,且不许 Agent 裁决自己提的。 */
-  remoteDecideAction: (id: string, confirm: boolean) =>
-    invoke<ActionItem>("remote_decide_action", { id, confirm }),
+  /** 接受 / 驳回:只有被派到的本人能做;驳回要带理由 */
+  remoteDecideAction: (id: string, confirm: boolean, note?: string) =>
+    invoke<ActionItem>("remote_decide_action", { id, confirm, note: note ?? null }),
+  /** 主持人指派负责人 */
+  remoteAssignAction: (id: string, assignee: string) => invoke<ActionItem>("remote_assign_action", { id, assignee }),
+  /** 待我处理 */
+  remoteInbox: () => invoke<InboxItem[]>("remote_inbox"),
   remoteMeetingEnd: (meetingId: string) => invoke<void>("remote_meeting_end", { meetingId }),
   /** 离会:服务端记 meeting.leave。失败也照样离开——离开不能被服务端卡住 */
   remoteMeetingLeave: (meetingId: string) => invoke<void>("remote_meeting_leave", { meetingId }),

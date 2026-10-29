@@ -151,6 +151,7 @@ function mediaErrorZh(e: unknown, what: string): string {
 
 export function MeetingRoom({
   meeting,
+  me,
   transcript,
   actions,
   ended,
@@ -158,6 +159,8 @@ export function MeetingRoom({
   onLeave,
 }: {
   meeting: RemoteMeeting;
+  /** 我的账号 id:派发单只有被派到的本人能接受 / 驳回,主持人才能指派 */
+  me?: string | null;
   /** 纪要行:进会时由上层补过历史,之后由 SSE 增量推来 */
   transcript: TranscriptLine[];
   /** 行动项:由 SSE 推来(提出 / 裁决)。这里进会再拉一次全量,两者按 id 合并 */
@@ -184,6 +187,10 @@ export function MeetingRoom({
   const [agentBusy, setAgentBusy] = useState(false);
   const [pulled, setPulled] = useState<ActionItem[]>([]);
   const [taskErr, setTaskErr] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [assigning, setAssigning] = useState<string | null>(null);
+  const [assignee, setAssignee] = useState("");
   const [devOpen, setDevOpen] = useState(false);
   const [devices, setDevices] = useState<Devices>({ mics: [], speakers: [], cams: [] });
   const [active, setActive] = useState<{ mic?: string; speaker?: string; cam?: string }>({});
@@ -411,14 +418,33 @@ export function MeetingRoom({
 
   const decide = async (id: string, confirm: boolean) => {
     setTaskErr(null);
+    if (!confirm && !reason.trim()) {
+      setTaskErr("驳回要写理由");
+      return;
+    }
     try {
-      const updated = await api.remoteDecideAction(id, confirm);
+      const updated = await api.remoteDecideAction(id, confirm, confirm ? undefined : reason.trim());
       setPulled((v) => (v.some((t) => t.id === id) ? v.map((t) => (t.id === id ? updated : t)) : [...v, updated]));
+      setRejecting(null);
+      setReason("");
     } catch (e) {
-      // 多半是没有 CreateTask 权限。**照服务端说的显示**,不自己编理由
+      // 多半是"不是被派到的本人"。**照服务端说的显示**,不自己编理由
       setTaskErr(String(e));
     }
   };
+  const assign = async (id: string) => {
+    setTaskErr(null);
+    if (!assignee.trim()) return;
+    try {
+      const updated = await api.remoteAssignAction(id, assignee.trim());
+      setPulled((v) => (v.some((t) => t.id === id) ? v.map((t) => (t.id === id ? updated : t)) : [...v, updated]));
+      setAssigning(null);
+      setAssignee("");
+    } catch (e) {
+      setTaskErr(String(e));
+    }
+  };
+  const isHost = !!me && meeting.host === me;
 
   /** 权限预检:能问就先问,免得点了开麦等半天才弹系统拒绝。
    *  WKWebView 可能不支持 permissions.query——那就跳过预检,交给 getUserMedia 报错。 */
@@ -847,6 +873,8 @@ export function MeetingRoom({
           <div className="mt-2.5 flex flex-col gap-2">
             {tasks.map((t) => {
               const pending = t.status === "proposed";
+              const mine = !!me && t.assignee === me;
+              const statusZh: Record<string, string> = { accepted: "已接受", confirmed: "已批准", rejected: "已驳回", expired: "已过期", done: "已完成" };
               return (
                 <div
                   key={t.id}
@@ -865,31 +893,65 @@ export function MeetingRoom({
                       原话:{t.source_quote}
                     </div>
                   )}
-                  <div className="flex items-center gap-1.5 mt-2">
-                    {pending ? (
+                  {/* 派给谁:只有被派到的本人能接受 / 驳回;没指派的由主持人指派 */}
+                  <div className="text-[10.5px] mt-1" style={{ color: t.assignee ? T.sub : T.red }}>
+                    {t.assignee ? `派给 ${t.assignee}${mine ? "(你)" : ""}` : "还没指派负责人"}
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    {pending && mine && rejecting !== t.id && (
                       <>
                         <button
                           onClick={() => decide(t.id, true)}
                           className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1 rounded-lg"
                           style={{ background: T.green, color: "#fff" }}
                         >
-                          <Check size={11} /> 批准
+                          <Check size={11} /> 接受,我来做
                         </button>
                         <button
-                          onClick={() => decide(t.id, false)}
+                          onClick={() => { setRejecting(t.id); setReason(""); }}
                           className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1 rounded-lg"
                           style={{ background: T.soft, color: T.sub }}
                         >
                           <X size={11} /> 驳回
                         </button>
                       </>
-                    ) : (
+                    )}
+                    {pending && mine && rejecting === t.id && (
+                      <div className="w-full flex items-center gap-1.5">
+                        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="驳回理由(必填)"
+                          className="flex-1 px-2.5 py-1 rounded-lg text-[11px] outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
+                        <button onClick={() => decide(t.id, false)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.red, color: "#fff" }}>确认驳回</button>
+                        <button onClick={() => setRejecting(null)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>取消</button>
+                      </div>
+                    )}
+                    {pending && !mine && t.assignee && (
+                      <span className="text-[10.5px]" style={{ color: T.faint }}>等 {t.assignee} 处理——派活是请求,别人不能替他点</span>
+                    )}
+                    {pending && !t.assignee && isHost && assigning !== t.id && (
+                      <button onClick={() => { setAssigning(t.id); setAssignee(t.owner_hint ?? ""); }}
+                        className="text-[11px] font-semibold px-3 py-1 rounded-lg" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+                        指派负责人
+                      </button>
+                    )}
+                    {pending && !t.assignee && isHost && assigning === t.id && (
+                      <div className="w-full flex items-center gap-1.5">
+                        <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="账号 id,例如 alice"
+                          className="flex-1 px-2.5 py-1 rounded-lg text-[11px] outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
+                        <button onClick={() => assign(t.id)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.indigo, color: "#fff" }}>指派</button>
+                        <button onClick={() => setAssigning(null)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>取消</button>
+                      </div>
+                    )}
+                    {pending && !t.assignee && !isHost && (
+                      <span className="text-[10.5px]" style={{ color: T.faint }}>等主持人指派</span>
+                    )}
+                    {!pending && (
                       <span
                         className="text-[10.5px] font-semibold"
-                        style={{ color: t.status === "confirmed" ? T.green : T.faint }}
+                        style={{ color: t.status === "accepted" || t.status === "confirmed" || t.status === "done" ? T.green : T.faint }}
                       >
-                        {t.status === "confirmed" ? "已批准" : "已驳回"}
+                        {statusZh[t.status] ?? t.status}
                         {t.decided_by ? ` · ${t.decided_by}` : ""}
+                        {t.reject_reason ? ` · ${t.reject_reason}` : ""}
                       </span>
                     )}
                   </div>
@@ -1219,8 +1281,9 @@ export function MeetingDetail({
                 {tasks.map((t) => (
                   <div key={t.id} className="rounded-xl px-3 py-2" style={{ border: `1px solid ${T.line}`, opacity: t.status === "rejected" ? 0.55 : 1 }}>
                     <div className="text-[12px] leading-relaxed">{t.text}{t.owner_hint && <span style={{ color: T.sub }}> — {t.owner_hint}</span>}</div>
-                    <div className="text-[10.5px] mt-1 font-semibold" style={{ color: t.status === "confirmed" ? T.green : t.status === "rejected" ? T.faint : T.red }}>
-                      {t.status === "confirmed" ? "已批准" : t.status === "rejected" ? "已驳回" : "待批"}{t.decided_by ? ` · ${t.decided_by}` : ""}
+                    <div className="text-[10.5px] mt-1 font-semibold" style={{ color: t.status === "accepted" || t.status === "confirmed" || t.status === "done" ? T.green : t.status === "proposed" ? T.red : T.faint }}>
+                      {({ accepted: "已接受", confirmed: "已批准", done: "已完成", rejected: "已驳回", expired: "已过期", proposed: "待处理" } as Record<string, string>)[t.status] ?? t.status}
+                      {t.assignee ? ` · 派给 ${t.assignee}` : ""}{t.decided_by ? ` · ${t.decided_by}` : ""}{t.reject_reason ? ` · ${t.reject_reason}` : ""}
                     </div>
                   </div>
                 ))}

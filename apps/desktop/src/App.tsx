@@ -4,13 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bell, Bot, Brain, BookOpen, Calendar, Cast, ChevronDown, Eye, EyeOff, Hash, Home,
   LayoutDashboard, Library, LineChart, Link2, Lock, MessageSquare, Network, Puzzle, Search,
-  Pencil, Plus, Repeat, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X,
-} from "lucide-react";
+  Pencil, Plus, Repeat, Settings, Shield, ShieldAlert, Sparkles, StopCircle, Terminal, Trash2, User, Users, Video, X, Inbox } from "lucide-react";
 import { T } from "./theme";
 import { AlertBanner, BellMenu } from "./views/Alerts";
 import { workflowAlerts, WorkflowAlert } from "./views/alertModel";
 import {
-  api, ActionItem, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats,
+  api, ActionItem, AgentStats, AuditRow, Bootstrap, ChainStatus, Channel, DrillReportOut, HomeStats, InboxItem,
   CapsuleOut, ForgeableRun, PendingApprovalOut, RemoteMeeting, RemoteStatus, RosterEntryOut, RosterOut, SkillsOut, WorkflowsOut,
   Sensitivity, TeamCount, ThreadInfo, WhoAmI, fmtBytes, fmtTime,
 } from "./api";
@@ -20,6 +19,7 @@ import { ConsoleHome, AuditCenter } from "./views/Console";
 import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingOffline, CapsView } from "./views/Team";
 import { MeetingDetail, MeetingRoom, toLine, type RecordingState, type TranscriptLine } from "./views/Meeting";
+import { InboxView } from "./views/Inbox";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
 import { SkillsView } from "./views/Skills";
@@ -83,6 +83,9 @@ export default function App() {
   const [recStates, setRecStates] = useState<Record<string, RecordingState>>({});
   /* 会议详情页(回顾 / 录像 / 纪要);null = 大厅或会议室 */
   const [meetingDetail, setMeetingDetail] = useState<RemoteMeeting | null>(null);
+  /* 待我处理:派到我这儿的派发单(块 3)。连上服务端拉一次,行动项有变化就重拉 */
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [inboxVersion, setInboxVersion] = useState(0);
   /* 连上服务器后仍要能看演示形态——否则想给人演示时反而找不到它 */
   const [approvals, setApprovals] = useState<PendingApprovalOut[]>([]);
   const [capsules, setCapsules] = useState<CapsuleOut[]>([]);
@@ -239,9 +242,10 @@ export default function App() {
             setRecStates((r) => ({ ...r, [ev.meeting_id as string]: { state: String(ev.state), by: String(ev.by ?? "") } }));
             if (ev.state === "ready" || ev.state === "failed") setMeetingsVersion((n) => n + 1);
           } else if (ev.type === "action_item") {
-            // 行动项被提出 / 被裁决:按 id 合并,不再轮询
+            // 行动项被提出 / 指派 / 裁决:按 id 合并,不再轮询;收件箱也重拉
             const a = ev as ActionItem & { type: string };
             setActionFeed((v) => (v.some((x) => x.id === a.id) ? v.map((x) => (x.id === a.id ? a : x)) : [...v, a]));
+            setInboxVersion((n) => n + 1);
           } else if (ev.type === "meeting") {
             // 会议开始 / 结束 / 请了 Agent / 密级抬升:大厅与侧栏徽标重拉;结束的记下来给会议室页
             setMeetingsVersion((n) => n + 1);
@@ -386,6 +390,17 @@ export default function App() {
     setView("pchat");
     setNotice("");
   };
+  // 待我处理:连上就拉,行动项一有动静就重拉
+  useEffect(() => {
+    if (!remote?.connected) {
+      setInbox([]);
+      return;
+    }
+    let stop = false;
+    api.remoteInbox().then((v) => { if (!stop) setInbox(v); }).catch(() => {});
+    return () => { stop = true; };
+  }, [remote?.connected, inboxVersion]);
+
   // 进行中的会议 = 每个远端频道各问一次服务端。频道不多,够用;等服务端有 /meetings/live 再换
   useEffect(() => {
     if (!remote?.connected || remoteChans.length === 0) {
@@ -559,6 +574,12 @@ export default function App() {
               <ConnBar remote={remote} onClick={() => setLoginOpen(true)} />
               <SideSec>我的</SideSec>
               <SideItem icon={<Home size={16} />} label="首页" active={view === "phome"} onClick={() => { setView("phome"); setNotice(""); }} />
+              {remote?.connected && (
+                <SideItem icon={<Inbox size={16} />} label="待我处理" active={view === "inbox"} onClick={() => { setView("inbox"); setNotice(""); setInboxVersion((n) => n + 1); }}
+                  extra={inbox.length > 0 ? (
+                    <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md" style={{ background: view === "inbox" ? "rgba(255,255,255,.22)" : T.redSoft, color: view === "inbox" ? "#fff" : T.red }}>{inbox.length}</span>
+                  ) : undefined} />
+              )}
               <SideItem icon={<Bot size={16} />} label="Agent 档案" active={view === "agent"} onClick={() => { setView("agent"); setNotice(""); refreshAll(); }}
                 extra={<span className="ml-auto text-[10px]" style={{ color: view === "agent" ? "#DCDCFE" : T.faint }}>{roster?.agents.find((a) => a.badge === roster.default_badge)?.name ?? "小七"}</span>} />
               {/* 对话列表。形态照团队的 #频道:同一件事(左边一行 = 一段对话)
@@ -759,6 +780,9 @@ export default function App() {
               roster={roster} badge={agentBadge} onPick={(b) => { setAgentBadge(b); api.agentStats(b).then(setAgent).catch(() => {}); }} />}
             {view === "skills" && <SkillsView data={skills} onRefresh={refreshAll} />}
             {view === "workflows" && <WorkflowsView data={workflows} onRefresh={refreshAll} live={liveWorkflowRuns} />}
+            {view === "inbox" && (
+              <InboxView items={inbox} onChanged={() => setInboxVersion((n) => n + 1)} />
+            )}
             {view === "pchat" && personalChannel && (
               <div className="px-7 pt-1 pb-6 flex gap-4" style={{ height: "calc(100% - 8px)" }}>
                 <Card className="flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -799,6 +823,7 @@ export default function App() {
               ) : meeting ? (
                 <MeetingRoom
                   meeting={meeting}
+                  me={remote?.account_id ?? null}
                   transcript={transcript}
                   actions={actionFeed.filter((a) => a.meeting_id === meeting.id)}
                   ended={endedIds.has(meeting.id)}

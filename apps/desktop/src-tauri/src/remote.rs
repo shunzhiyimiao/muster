@@ -68,6 +68,9 @@ pub struct RemoteMessage {
 pub struct RemoteMeeting {
     pub id: String,
     pub channel_id: String,
+    /// 主持人(建会的人);老会议可能没有
+    #[serde(default)]
+    pub host: Option<String>,
     pub title: String,
     pub level: String,
     pub room: String,
@@ -280,9 +283,20 @@ impl Remote {
     }
 
     /// 批准或驳回一条行动项。服务端会验 CreateTask 权限,并把裁决写进审计链。
-    pub async fn decide_action(&self, id: &str, confirm: bool) -> Result<ActionItem, String> {
-        self.post_json(&format!("/action-items/{id}/decide"), &serde_json::json!({ "confirm": confirm }))
+    /// 接受 / 驳回一条派发单。只有被派到的本人能做;驳回要带理由(服务端拒绝没理由的驳回)。
+    pub async fn decide_action(&self, id: &str, confirm: bool, note: Option<&str>) -> Result<ActionItem, String> {
+        self.post_json(&format!("/action-items/{id}/decide"), &serde_json::json!({ "confirm": confirm, "note": note }))
             .await
+    }
+
+    /// 主持人(或组织管理员)把一条没解析出负责人的派发单指给某人。
+    pub async fn assign_action(&self, id: &str, assignee: &str) -> Result<ActionItem, String> {
+        self.post_json(&format!("/action-items/{id}/assign"), &serde_json::json!({ "assignee": assignee })).await
+    }
+
+    /// 派到我这儿、还没处理的。
+    pub async fn inbox(&self) -> Result<Vec<InboxItem>, String> {
+        self.get("/me/inbox").await
     }
 
     /// 拉某频道的消息。`after_seq` 为 `None` 时从头拉。
@@ -386,11 +400,37 @@ pub struct ActionItem {
     pub owner_hint: Option<String>,
     /// 出处原话——人要能核对"它是不是听岔了"。
     pub source_quote: Option<String>,
-    /// proposed / confirmed / rejected
+    /// proposed / accepted / rejected / expired / done(老的 confirmed 也认)
     pub status: String,
     pub decided_by: Option<String>,
     pub run_id: Option<String>,
     pub created_ms: i64,
+    /// 被派到的人;空 = 等主持人指派
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub accepted_mode: Option<String>,
+    #[serde(default)]
+    pub sensitivity: Option<String>,
+    #[serde(default)]
+    pub reject_reason: Option<String>,
+    #[serde(default)]
+    pub expires_ms: Option<i64>,
+}
+
+/// 收件箱里的一条派发单(带来源会议)。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct InboxItem {
+    pub id: String,
+    pub meeting_id: String,
+    pub meeting_title: String,
+    pub channel_id: String,
+    pub text: String,
+    pub owner_hint: Option<String>,
+    pub source_quote: Option<String>,
+    pub sensitivity: Option<String>,
+    pub created_ms: i64,
+    pub expires_ms: Option<i64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
