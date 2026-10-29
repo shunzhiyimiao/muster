@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muster 团队协作平台</title>
+<meta name="description" content="可完全本地部署的 AI 原生团队协作平台。人、Agent、频道、任务、审批与审计在同一个平台上，整套部署在你自己的网络里。">
+<meta property="og:title" content="Muster 团队协作平台">
+<meta property="og:description" content="AI 入编。数据不出门。可完全本地部署的 AI 原生团队协作平台。">
+<meta property="og:image" content="/muster-icon.png">
+<meta name="theme-color" content="#000000">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/muster-icon.png">
+<style>
+body{margin:0;background:#000000;color:#1D1D1F;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei","Noto Sans SC","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#1D1D1F;text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
+
+/* ---------- 开场:八格集结成图标 ---------- */
+.intro{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;clip-path:inset(0 0 0 0)}
+.intro-out{animation:introOut 1s cubic-bezier(.76,0,.24,1) forwards;pointer-events:none}
+@keyframes introOut{to{clip-path:inset(0 0 100% 0);visibility:hidden}}
+.ihx{transform-box:fill-box;transform-origin:center;animation:hexIn 1s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--d,0s)}
+@keyframes hexIn{from{opacity:0;transform:translate(var(--fx,0px),var(--fy,0px)) rotate(var(--fr,0deg)) scale(.35)}to{opacity:1;transform:none}}
+.intro-l{display:inline-block;animation:lUp .8s cubic-bezier(.2,.8,.2,1) both}
+@keyframes lUp{from{transform:translateY(110%)}to{transform:none}}
+.intro-sub{animation:fadeUp .7s ease 1.75s both}
+
+/* ---------- 进场 ---------- */
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.h-in{animation:fadeUp 1s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--d,0s)}
+/* 开场停着等用户下滑:Hero 的入场先暂停在起点,幕布一动再一起播 */
+.intro-wait .h-in{animation-play-state:paused}
+.intro-go .h-in{animation-delay:calc(var(--d,0s) + .45s)}
+
+/* ---------- 循环 ---------- */
+.mq-track{display:flex;width:max-content;animation:mq 40s linear infinite}
+.mq-fast{animation-duration:26s}
+.mq-slow{animation-duration:70s}
+@keyframes mq{to{transform:translate3d(-50%,0,0)}}
+.cue{transform-origin:top center;animation:cue 2.2s cubic-bezier(.7,0,.2,1) infinite}
+@keyframes cue{0%{transform:scaleY(0);opacity:1}50%{transform:scaleY(1);opacity:1}100%{transform:scaleY(1);opacity:0}}
+.dot{animation:dot 1.2s ease-in-out infinite}
+@keyframes dot{0%,80%,100%{opacity:.25;transform:none}40%{opacity:1;transform:translateY(-3px)}}
+.scan{animation:scan 1.1s linear infinite}
+@keyframes scan{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+.wave{transform-origin:center;animation:wave 1.1s ease-in-out infinite}
+@keyframes wave{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+.tl1{animation:tl1 9s ease infinite}.tl2{animation:tl2 9s ease infinite}.tl3{animation:tl3 9s ease infinite}
+@keyframes tl1{0%{opacity:0;transform:translateY(6px)}6%,86%{opacity:1;transform:none}94%,100%{opacity:0}}
+@keyframes tl2{0%,16%{opacity:0;transform:translateY(6px)}22%,86%{opacity:1;transform:none}94%,100%{opacity:0}}
+@keyframes tl3{0%,34%{opacity:0;transform:translateY(6px)}40%,86%{opacity:1;transform:none}94%,100%{opacity:0}}
+.rfill{transform-origin:left center;animation:rfill 9s cubic-bezier(.7,0,.2,1) infinite}
+@keyframes rfill{0%{transform:scaleX(0)}10%,22%{transform:scaleX(.001)}32%,44%{transform:scaleX(.333)}54%,66%{transform:scaleX(.666)}76%,92%{transform:scaleX(1)}100%{transform:scaleX(1);opacity:0}}
+.rn1{animation:rn1 9s infinite}.rn2{animation:rn2 9s infinite}.rn3{animation:rn3 9s infinite}.rn4{animation:rn4 9s infinite}
+@keyframes rn1{0%,4%{background:#111113;color:#A1A1A6;border-color:#424245}8%,94%{background:#F5F5F7;color:#000;border-color:#F5F5F7}100%{background:#111113;color:#A1A1A6;border-color:#424245}}
+@keyframes rn2{0%,30%{background:#111113;color:#A1A1A6;border-color:#424245}34%,94%{background:#F5F5F7;color:#000;border-color:#F5F5F7}100%{background:#111113;color:#A1A1A6;border-color:#424245}}
+@keyframes rn3{0%,52%{background:#111113;color:#A1A1A6;border-color:#424245}56%,94%{background:#F5F5F7;color:#000;border-color:#F5F5F7}100%{background:#111113;color:#A1A1A6;border-color:#424245}}
+@keyframes rn4{0%,74%{background:#111113;color:#A1A1A6;border-color:#424245}78%,94%{background:#F5F5F7;color:#000;border-color:#F5F5F7}100%{background:#111113;color:#A1A1A6;border-color:#424245}}
+.cloud{animation:cloud 9s infinite}
+@keyframes cloud{0%,74%{opacity:1}80%,94%{opacity:.35}100%{opacity:1}}
+.strike{transform-origin:left center;animation:strike 9s cubic-bezier(.7,0,.2,1) infinite}
+@keyframes strike{0%,76%{transform:scaleX(0)}84%,94%{transform:scaleX(1)}100%{transform:scaleX(1);opacity:0}}
+.deny{animation:deny 9s infinite}
+@keyframes deny{0%,80%{opacity:0}86%,94%{opacity:1}100%{opacity:0}}
+.typing{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:bottom;width:0;animation:type 8s steps(45,end) infinite}
+@keyframes type{0%,4%{width:0}46%,88%{width:45ch}100%{width:0}}
+.caret{animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.spin{animation:spin 18s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- 悬停 ---------- */
+.lift{transition:transform .55s cubic-bezier(.2,.8,.2,1),box-shadow .55s cubic-bezier(.2,.8,.2,1)}
+.lift:hover{transform:translateY(-6px);box-shadow:0 30px 60px -36px rgba(0,0,0,.45)}
+.roll{display:inline-grid;overflow:hidden;line-height:1.25}
+.roll>span{grid-area:1/1;transition:transform .55s cubic-bezier(.7,0,.2,1)}
+.roll>span+span{transform:translateY(115%)}
+a:hover .roll>span:first-child{transform:translateY(-115%)}
+a:hover .roll>span+span{transform:none}
+.arw{display:inline-block;transition:transform .45s cubic-bezier(.2,.8,.2,1)}
+a:hover .arw{transform:translateX(5px)}
+
+/* ---------- 滚动驱动(支持才启用;不支持的浏览器直接显示终态) ---------- */
+@supports (animation-timeline: view()){
+  .rv{animation:rvUp linear both;animation-timeline:view();animation-range:entry 0% entry 100%}
+  @keyframes rvUp{from{opacity:0;transform:translateY(56px)}to{opacity:1;transform:none}}
+  .ln{display:block;overflow:clip;view-timeline-name:--ln}
+  .ln>span{display:block;animation:lnUp linear both;animation-timeline:--ln;animation-range:entry 10% entry 100%}
+  @keyframes lnUp{from{transform:translateY(108%)}to{transform:none}}
+  .tilt{animation:tilt linear both;animation-timeline:view();animation-range:entry 0% cover 42%}
+  @keyframes tilt{from{transform:perspective(1800px) rotateX(24deg) scale(.86);opacity:.3}to{transform:none;opacity:1}}
+  .hdr{animation:hdr linear both;animation-timeline:scroll(root);animation-range:0 360px}
+  @keyframes hdr{from{background-color:rgba(0,0,0,0);border-bottom-color:rgba(255,255,255,0)}to{background-color:rgba(22,22,23,.82);border-bottom-color:rgba(255,255,255,.1)}}
+  .par{animation:par linear both;animation-timeline:scroll(root);animation-range:0 760px}
+  @keyframes par{to{transform:translateY(140px) scale(.9);opacity:.15}}
+  .hive{view-timeline-name:--hive}
+  .hxv{transform-box:fill-box;transform-origin:center;animation:hexIn linear both;animation-timeline:--hive;animation-range:entry var(--a,0%) entry var(--b,70%)}
+}
+/* 手机上导航只留品牌、登录和主按钮 */
+@media (max-width: 680px){.navlink{display:none}}
+
+/* ---------- 关动效:系统设置 或 画板开关 ---------- */
+@media (prefers-reduced-motion: reduce){
+  .mroot *,.mroot *::before,.mroot *::after{animation:none!important;transition-duration:0s!important}
+  .intro{display:none!important}
+  .typing{width:45ch}
+}
+.nomo *,.nomo *::before,.nomo *::after{animation:none!important;transition-duration:0s!important}
+.nomo .typing{width:45ch}
+
+/* 占位符的默认值 = 无脚本时的终态;页面脚本会在 #mroot 上覆盖 */
+.mroot{--m1o:1;--m1t:none;--ro:1;--rt:none;--rco:0;--rdo:1;--tyo:0;--m2o:1;--m2t:none;--apo:0;--oko:1;--okt:none;
+  --f0:rgba(29,29,31,0);--f1:#1D1D1F;--f2:rgba(29,29,31,0);--f3:rgba(29,29,31,0);--f4:rgba(29,29,31,0);--f5:rgba(29,29,31,0);--f6:rgba(29,29,31,0);--f7:rgba(29,29,31,0);
+  --t0:#6E6E73;--t1:#FFFFFF;--t2:#6E6E73;--t3:#6E6E73;--t4:#6E6E73;--t5:#6E6E73;--t6:#6E6E73;--t7:#6E6E73}
+</style>
+<noscript><style>.intro{display:none}.intro-wait .h-in{animation:none}</style></noscript>
+</head>
+<body>
+
+<div id="mroot" class="mroot intro-wait" style="width: 100%; min-height: 100%; box-sizing: border-box; overflow-x: clip; background: #FFFFFF; color: #1D1D1F; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Noto Sans SC', 'Helvetica Neue', sans-serif; font-size: 17px; line-height: 1.6">
+
+  <!-- ============ 开场:八格从四面飞来,集结成图标 ============ -->
+    <div id="intro" class="intro" style="background: #000000; color: #F5F5F7">
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 30px">
+        <svg aria-hidden="true" width="200" height="193" viewBox="-112 -125 570 550" fill="none" stroke="#F5F5F7" stroke-width="45" stroke-linejoin="round" style="overflow: visible">
+          <path class="ihx" style="--fx: -520px; --fy: -340px; --fr: -120deg; --d: .05s" d="M0,-100L86.6,-50L86.6,50L0,100L-86.6,50L-86.6,-50Z"></path>
+          <path class="ihx" style="--fx: 40px; --fy: -560px; --fr: 90deg; --d: .15s" d="M173.2,-100L259.8,-50L259.8,50L173.2,100L86.6,50L86.6,-50Z"></path>
+          <path class="ihx" style="--fx: 560px; --fy: -300px; --fr: 150deg; --d: .1s" d="M346.4,-100L433,-50L433,50L346.4,100L259.8,50L259.8,-50Z"></path>
+          <path class="ihx" style="--fx: -640px; --fy: 20px; --fr: 60deg; --d: .3s" d="M86.6,50L173.2,100L173.2,200L86.6,250L0,200L0,100Z"></path>
+          <path class="ihx" style="--fx: 640px; --fy: -20px; --fr: -60deg; --d: .25s" d="M259.8,50L346.4,100L346.4,200L259.8,250L173.2,200L173.2,100Z"></path>
+          <path class="ihx" style="--fx: -540px; --fy: 380px; --fr: 120deg; --d: .2s" d="M0,200L86.6,250L86.6,350L0,400L-86.6,350L-86.6,250Z"></path>
+          <path class="ihx" style="--fx: -40px; --fy: 580px; --fr: -90deg; --d: .35s" d="M173.2,200L259.8,250L259.8,350L173.2,400L86.6,350L86.6,250Z"></path>
+          <path class="ihx" style="--fx: 520px; --fy: 360px; --fr: -150deg; --d: .4s" d="M346.4,200L433,250L433,350L346.4,400L259.8,350L259.8,250Z"></path>
+        </svg>
+        <div role="img" aria-label="MUSTER" style="display: flex; overflow: hidden; font-family: Inter, -apple-system, sans-serif; font-weight: 800; font-size: clamp(40px, 6vw, 72px); line-height: 1; letter-spacing: 0.04em; padding-bottom: 0.06em">
+          <span class="intro-l" style="animation-delay: 1.10s">M</span>
+          <span class="intro-l" style="animation-delay: 1.16s">U</span>
+          <span class="intro-l" style="animation-delay: 1.22s">S</span>
+          <span class="intro-l" style="animation-delay: 1.28s">T</span>
+          <span class="intro-l" style="animation-delay: 1.34s">E</span>
+          <span class="intro-l" style="animation-delay: 1.40s">R</span>
+        </div>
+        <div class="intro-sub" style="font-size: 15px; letter-spacing: 0.4em; color: #A1A1A6">团队协作平台</div>
+      </div>
+      <!-- 开场停在这里:点任意位置进入(整层就是一个按钮,键盘回车也行);下滑同样进入 -->
+      <button type="button" id="enter" aria-label="进入首页" style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding: 0 0 28px; border: 0; background: none; color: #86868B; font-family: inherit; cursor: pointer">
+        <span class="intro-sub" style="display: flex; flex-direction: column; align-items: center; gap: 10px; font-size: 12px; letter-spacing: 0.3em; animation-delay: 2.1s">
+          <span>点击或下滑进入</span>
+          <span aria-hidden="true" style="position: relative; width: 1px; height: 44px; background: rgba(255,255,255,0.14); overflow: hidden"><span class="cue" style="position: absolute; inset: 0; background: #F5F5F7"></span></span>
+        </span>
+      </button>
+    </div>
+
+  <!-- ============ 光标:一枚六边形(仅精确指针设备) ============ -->
+  <div data-cursor="1" aria-hidden="true" style="position: fixed; left: 0; top: 0; z-index: 70; width: 30px; height: 30px; mix-blend-mode: difference; pointer-events: none; opacity: 0; transition: opacity .3s; transform: translate3d(-200px, -200px, 0)">
+    <svg width="30" height="30" viewBox="-12 -12 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+  </div>
+
+  <!-- ============ 导航 ============ -->
+  <header class="hdr" style="position: sticky; top: 0; z-index: 40; background: rgba(22,22,23,0.82); border-bottom: 1px solid rgba(255,255,255,0.1); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px)">
+    <nav aria-label="全局导航" style="max-width: 1100px; margin: 0 auto; padding: 0 22px; box-sizing: border-box; min-height: 52px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 28px; font-size: 13px">
+      <a href="#top" style="margin-right: auto; display: inline-flex; align-items: center; gap: 10px; color: #F5F5F7; text-decoration: none">
+        <svg aria-hidden="true" width="22" height="21" viewBox="-112 -125 570 550" fill="none" stroke="#F5F5F7" stroke-width="45" stroke-linejoin="round"><path d="M0,-100L86.6,-50L86.6,50L0,100L-86.6,50L-86.6,-50Z M173.2,-100L259.8,-50L259.8,50L173.2,100L86.6,50L86.6,-50Z M346.4,-100L433,-50L433,50L346.4,100L259.8,50L259.8,-50Z M86.6,50L173.2,100L173.2,200L86.6,250L0,200L0,100Z M259.8,50L346.4,100L346.4,200L259.8,250L173.2,200L173.2,100Z M0,200L86.6,250L86.6,350L0,400L-86.6,350L-86.6,250Z M173.2,200L259.8,250L259.8,350L173.2,400L86.6,350L86.6,250Z M346.4,200L433,250L433,350L346.4,400L259.8,350L259.8,250Z"></path></svg>
+        <span style="font-size: 17px; font-weight: 600; letter-spacing: -0.01em">Muster</span>
+      </a>
+      <a href="#channel" class="navlink" style="color: #E8E8ED">频道</a>
+      <a href="#guarantees" class="navlink" style="color: #E8E8ED">保证</a>
+      <a href="#routing" class="navlink" style="color: #E8E8ED">密级路由</a>
+      <a href="#features" class="navlink" style="color: #E8E8ED">功能</a>
+      <a href="#deploy" class="navlink" style="color: #E8E8ED">部署</a>
+      <a href="/web" style="color: #E8E8ED">登录</a>
+      <a href="#deploy" style="display: inline-flex; align-items: center; min-height: 44px; text-decoration: none"><span style="display: inline-flex; align-items: center; height: 28px; padding: 0 14px; border-radius: 980px; background: #F5F5F7; color: #1D1D1F; font-size: 12px; font-weight: 600"><span class="roll"><span>自托管</span><span aria-hidden="true">自托管</span></span></span></a>
+    </nav>
+  </header>
+
+  <!-- ============ Hero:图标即平台 ============ -->
+  <section id="top" style="position: relative; margin-top: -53px; padding: 140px 22px 130px; box-sizing: border-box; background: #000000; color: #F5F5F7; text-align: center; overflow: hidden">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; gap: 34px">
+
+      <div class="par" style="display: flex; justify-content: center">
+        <!-- 字谜:MUSTER 横贯,纵向词轮流在第三个字母处与它交叉 -->
+        <div role="img" aria-label="字谜动画:MUSTER 横向,HUMAN、ROUTE、TASK、NOTE、AGENT、WORK 依次纵向与它交叉" id="xw" class="h-in" style="--d: .05s; --c: clamp(40px, 8.2vw, 96px); position: relative; width: calc(var(--c) * 6); height: calc(var(--c) * 5); font-family: Inter, -apple-system, sans-serif; font-weight: 800; letter-spacing: -0.01em">
+          </div>
+      </div>
+
+      <!-- 当前词的释义 -->
+      <div id="caps" class="h-in" style="--d: .25s; display: grid; justify-items: center; min-height: 64px">
+      </div>
+
+      <h1 class="h-in" style="--d: .4s; margin: 8px 0 0; font-size: clamp(40px, 5.6vw, 72px); line-height: 1.08; font-weight: 700; letter-spacing: -0.015em; color: #F5F5F7"><span style="white-space: nowrap">AI 入编。</span><span style="white-space: nowrap; color: #86868B">数据不出门。</span></h1>
+      <p class="h-in" style="--d: .52s; margin: 0; max-width: 30em; font-size: clamp(18px, 2vw, 22px); line-height: 1.5; color: #A1A1A6">人、Agent、频道、任务、审批与审计，在同一个平台上。整套部署在你自己的网络里。</p>
+      <div class="h-in" style="--d: .64s; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px 30px">
+        <a href="#deploy" style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 26px; box-sizing: border-box; border-radius: 980px; background: #F5F5F7; color: #000000; font-size: 17px; font-weight: 500; text-decoration: none"><span class="roll"><span>了解部署</span><span aria-hidden="true">了解部署</span></span></a>
+        <a href="https://github.com/shunzhiyimiao/muster" style="display: inline-flex; align-items: center; gap: 6px; min-height: 48px; font-size: 17px; color: #F5F5F7">查看源码 <span class="arw">›</span></a>
+      </div>
+    </div>
+    <div aria-hidden="true" class="h-in" style="--d: .9s; position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; font-size: 11px; letter-spacing: 0.3em; color: #86868B">
+      <span>向下滚动</span>
+      <span style="position: relative; width: 1px; height: 44px; background: rgba(255,255,255,0.14); overflow: hidden"><span class="cue" style="position: absolute; inset: 0; background: #F5F5F7"></span></span>
+    </div>
+  </section>
+
+  <!-- ============ 跑马灯 ============ -->
+  <div aria-hidden="true" style="background: #F5F5F7; color: #1D1D1F; overflow: hidden; padding: 18px 0; font-size: 22px; font-weight: 600; white-space: nowrap; border-bottom: 1px solid #E5E5EA">
+    <div class="mq-track">
+      <div style="display: flex; align-items: center; gap: 32px; padding-right: 32px">
+        <span>本地优先</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>密级路由</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>审计哈希链</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>会议纪要</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>字幕翻译</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>Agent 编制</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>工作流</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>审批</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>主权演习</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+      </div>
+      <div style="display: flex; align-items: center; gap: 32px; padding-right: 32px">
+        <span>本地优先</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>密级路由</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>审计哈希链</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>会议纪要</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>字幕翻译</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>Agent 编制</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>工作流</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>审批</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        <span>主权演习</span><svg width="16" height="16" viewBox="-12 -12 24 24" fill="none" stroke="#1D1D1F" stroke-width="3.2" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ [01] 频道 ============ -->
+  <section id="channel" style="background: #FFFFFF; padding: 130px 22px 0; box-sizing: border-box; overflow: hidden">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; gap: 18px; text-align: center">
+      <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #6E6E73">[ 01 ]  频道</p>
+      <h2 style="margin: 0; font-size: clamp(38px, 5.4vw, 64px); line-height: 1.12; font-weight: 700; letter-spacing: -0.012em">
+        <span class="ln"><span>一个频道。</span></span>
+        <span class="ln"><span>人和 Agent 一起干活。</span></span>
+      </h2>
+      <p class="rv" style="margin: 0; max-width: 32em; font-size: 21px; line-height: 1.5; color: #6E6E73">@ 一下就是派活。路由、执行、审批，全在这条消息流里发生，每一步都进审计。圆形头像是人，六边形是 Agent。</p>
+    </div>
+
+    <div class="tilt" role="img" aria-label="界面示意:李在频道里 @小七 派活,系统按密级路由到本地模型,小七交回改动等待批准,随后获批" style="max-width: 1000px; margin: 64px auto 0; box-sizing: border-box; border-radius: 16px 16px 0 0; border: 1px solid #D2D2D7; border-bottom: none; background: #FFFFFF; box-shadow: 0 40px 100px -50px rgba(0,0,0,0.45); text-align: left; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; background: #ECECEE; border-bottom: 1px solid #D2D2D7">
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57"></span>
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E"></span>
+        <span style="width: 12px; height: 12px; border-radius: 50%; background: #28C840"></span>
+        <span style="flex: 1; display: flex; justify-content: center; align-items: center; gap: 7px; margin-right: 52px; font-size: 13px; font-weight: 500; color: #6E6E73">
+          <svg aria-hidden="true" width="14" height="14" viewBox="-112 -125 570 550" fill="none" stroke="#6E6E73" stroke-width="50" stroke-linejoin="round"><path d="M0,-100L86.6,-50L86.6,50L0,100L-86.6,50L-86.6,-50Z M173.2,-100L259.8,-50L259.8,50L173.2,100L86.6,50L86.6,-50Z M346.4,-100L433,-50L433,50L346.4,100L259.8,50L259.8,-50Z M86.6,50L173.2,100L173.2,200L86.6,250L0,200L0,100Z M259.8,50L346.4,100L346.4,200L259.8,250L173.2,200L173.2,100Z M0,200L86.6,250L86.6,350L0,400L-86.6,350L-86.6,250Z M173.2,200L259.8,250L259.8,350L173.2,400L86.6,350L86.6,250Z M346.4,200L433,250L433,350L346.4,400L259.8,350L259.8,250Z"></path></svg>
+          Muster
+        </span>
+      </div>
+      <div style="display: flex; flex-wrap: wrap">
+        <div style="flex: 1 1 210px; max-width: 100%; box-sizing: border-box; padding: 18px 12px; background: #F5F5F7; border-right: 1px solid #E5E5EA; display: flex; flex-direction: column; gap: 4px; font-size: 14px">
+          <span style="padding: 0 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: #6E6E73">平台组</span>
+          <span style="padding: 7px 10px; border-radius: 8px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.06); font-weight: 600"># 主频道</span>
+          <span style="padding: 7px 10px; display: flex; justify-content: space-between; gap: 8px"><span># payments-core</span><span style="font-size: 11px; color: #6E6E73">敏感</span></span>
+          <span style="padding: 7px 10px">会议室</span>
+          <span style="padding: 16px 10px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: #6E6E73">AGENT</span>
+          <span style="padding: 7px 10px; display: flex; align-items: center; gap: 8px"><span style="width: 18px; height: 20px; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); background: #1D1D1F; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: #FFFFFF">七</span>小七<span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11px; color: #6E6E73">A-007</span><span style="margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: #28A745"></span></span>
+        </div>
+        <div style="flex: 999 1 520px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 14px 22px; border-bottom: 1px solid #E5E5EA">
+            <span style="font-size: 15px; font-weight: 600"># 主频道</span>
+            <span style="font-size: 11px; padding: 2px 8px; border-radius: 980px; background: #F5F5F7; color: #6E6E73">内部</span>
+          </div>
+          <div style="padding: 22px; display: flex; flex-direction: column; gap: 20px; font-size: 15px; line-height: 1.55; min-height: 330px">
+            <!-- 人 -->
+            <div style="display: flex; gap: 12px; opacity: var(--m1o); transform: var(--m1t); transition: opacity .5s ease, transform .6s cubic-bezier(.2,.8,.2,1)">
+              <span style="flex: 0 0 36px; height: 36px; border-radius: 50%; background: #E8E8ED; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600">李</span>
+              <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                <span style="font-size: 13px"><strong style="font-weight: 600">李</strong><span style="color: #6E6E73; margin-left: 8px">10:42</span></span>
+                <span><span style="padding: 1px 5px; border-radius: 5px; background: #E8E8ED; font-weight: 600">@小七</span> 看一下 payments-core 的重试逻辑，给个修改方案。</span>
+              </div>
+            </div>
+            <!-- 路由 -->
+            <div style="align-self: center; display: grid; max-width: 100%; opacity: var(--ro); transform: var(--rt); transition: opacity .5s ease, transform .6s cubic-bezier(.2,.8,.2,1)">
+              <div style="grid-area: 1 / 1; position: relative; overflow: hidden; padding: 6px 14px; border-radius: 980px; background: #F5F5F7; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: #6E6E73; text-align: center; opacity: var(--rco); transition: opacity .35s">
+                <span>route.decide · 计算有效密级…</span>
+                <span class="scan" style="position: absolute; top: 0; bottom: 0; left: 0; width: 40%; background: rgba(0,0,0,0.06)"></span>
+              </div>
+              <div style="grid-area: 1 / 1; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 10px; padding: 6px 14px; border-radius: 980px; background: #F5F5F7; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: #6E6E73; opacity: var(--rdo); transition: opacity .35s">
+                <span>route.decide</span><span>·</span><span style="color: #1D1D1F">敏感</span><span>·</span><span style="color: #1D1D1F">本地 qwen3:8b</span><span>·</span><span>云端已排除</span>
+              </div>
+            </div>
+            <!-- Agent -->
+            <div style="display: grid">
+              <div style="grid-area: 1 / 1; display: flex; gap: 12px; align-items: center; opacity: var(--tyo); transition: opacity .3s">
+                <span style="flex: 0 0 34px; height: 38px; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); background: #1D1D1F; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #FFFFFF">七</span>
+                <span style="display: inline-flex; gap: 5px; padding: 12px 14px; border-radius: 14px; background: #F5F5F7">
+                  <span class="dot" style="width: 6px; height: 6px; border-radius: 50%; background: #6E6E73"></span>
+                  <span class="dot" style="width: 6px; height: 6px; border-radius: 50%; background: #6E6E73; animation-delay: .15s"></span>
+                  <span class="dot" style="width: 6px; height: 6px; border-radius: 50%; background: #6E6E73; animation-delay: .3s"></span>
+                </span>
+              </div>
+              <div style="grid-area: 1 / 1; display: flex; gap: 12px; opacity: var(--m2o); transform: var(--m2t); transition: opacity .5s ease, transform .6s cubic-bezier(.2,.8,.2,1)">
+                <span style="flex: 0 0 34px; height: 38px; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); background: #1D1D1F; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #FFFFFF">七</span>
+                <div style="display: flex; flex-direction: column; gap: 10px; min-width: 0; flex: 1">
+                  <span style="font-size: 13px"><strong style="font-weight: 600">小七</strong><span style="margin-left: 8px; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #F5F5F7; color: #6E6E73">Agent · A-007</span><span style="color: #6E6E73; margin-left: 8px">10:44</span></span>
+                  <span>在独立工作区里改完了：3 个文件，测试通过。合入主分支之前需要你批准。</span>
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 16px; border-radius: 12px; border: 1px solid #E5E5EA">
+                    <div style="flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                      <span style="font-size: 13px; font-weight: 600">待审批 · 合入 payments-core</span>
+                      <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: #6E6E73">+42 −17 · 能力哈希 7c1e…f04a</span>
+                    </div>
+                    <div style="display: grid">
+                      <div style="grid-area: 1 / 1; display: flex; gap: 8px; opacity: var(--apo); transition: opacity .35s">
+                        <span style="display: inline-flex; align-items: center; height: 30px; padding: 0 14px; border-radius: 980px; background: #F5F5F7; font-size: 13px">查看 diff</span>
+                        <span style="display: inline-flex; align-items: center; height: 30px; padding: 0 14px; border-radius: 980px; background: #1D1D1F; font-size: 13px; color: #FFFFFF">批准</span>
+                      </div>
+                      <div style="grid-area: 1 / 1; justify-self: end; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border-radius: 980px; background: #E3F4E8; color: #1D6B36; font-size: 13px; font-weight: 600; opacity: var(--oko); transform: var(--okt); transition: opacity .4s, transform .5s cubic-bezier(.2,.8,.2,1)">
+                        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5l3 3 6-7"></path></svg>
+                        已批准 · 已合入
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style="margin: 0 22px 22px; padding: 11px 16px; border-radius: 10px; border: 1px solid #D2D2D7; font-size: 14px; color: #6E6E73">给 # 主频道 发消息</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ [02] 三条保证 ============ -->
+  <section id="guarantees" style="background: #F5F5F7; padding: 130px 22px; box-sizing: border-box">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px">
+      <div style="text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px">
+        <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #6E6E73">[ 02 ]  保证</p>
+        <h2 style="margin: 0; font-size: clamp(38px, 5.4vw, 64px); line-height: 1.12; font-weight: 700; letter-spacing: -0.012em">
+          <span class="ln"><span>不是承诺。</span></span>
+          <span class="ln"><span>是代码。</span></span>
+        </h2>
+        <p class="rv" style="margin: 0; max-width: 32em; font-size: 21px; line-height: 1.5; color: #6E6E73">三条保证，各自对应一个写不出违反它的数据结构。</p>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 20px">
+        <article class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 40px 34px; border-radius: 28px; background: #FFFFFF; display: flex; flex-direction: column; gap: 12px">
+          <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: #6E6E73">[ A ]</span>
+          <h3 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700">密级只升不降。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">接触过更敏感的材料，整段会话就按那个级别对待。会话棘轮里，压根没有"降低"这个接口。</p>
+        </article>
+        <article class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 40px 34px; border-radius: 28px; background: #FFFFFF; display: flex; flex-direction: column; gap: 12px">
+          <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: #6E6E73">[ B ]</span>
+          <h3 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700">绝不悄悄上云。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">本地模型不可用时，任务不会顶到云端。它会被明确拒绝，并留下一条记录。</p>
+        </article>
+        <article class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 40px 34px; border-radius: 28px; background: #FFFFFF; display: flex; flex-direction: column; gap: 12px">
+          <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: #6E6E73">[ C ]</span>
+          <h3 style="margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700">每个数字都能查。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">谁调了哪个模型、外发了多少字节、谁批准了什么——都是一条 SQL 从审计链里查出来的。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ [03] 密级路由 ============ -->
+  <section id="routing" style="background: #000000; color: #F5F5F7; padding: 150px 22px; box-sizing: border-box">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 72px">
+      <div style="display: flex; flex-direction: column; gap: 20px">
+        <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #86868B">[ 03 ]  密级路由</p>
+        <h2 style="margin: 0; font-size: clamp(42px, 6.4vw, 84px); line-height: 1.06; font-weight: 700; letter-spacing: -0.015em; color: #F5F5F7">
+          <span class="ln"><span>你的数据，</span></span>
+          <span class="ln"><span>留在你的网络里。</span></span>
+        </h2>
+        <p class="rv" style="margin: 0; max-width: 34em; font-size: 21px; line-height: 1.55; color: #A1A1A6">模型用哪个，不由谁随手一选。每个频道、每个仓库、每场会议都带着密级，系统取其中最高的那个，只把任务派给允许的通道。</p>
+      </div>
+
+      <div class="rv" role="img" aria-label="密级棘轮示意:密级从公开依次升到受限,升到受限时云端通道被排除" style="display: flex; flex-direction: column; gap: 28px; padding: 40px; border-radius: 28px; background: #111113; border: 1px solid #2C2C2E">
+        <div style="position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: center">
+          <div aria-hidden="true" style="position: absolute; left: 12.5%; right: 12.5%; top: 50%; height: 2px; margin-top: -1px; background: #2C2C2E">
+            <div class="rfill" style="position: absolute; inset: 0; background: #F5F5F7"></div>
+          </div>
+          <span class="rn1" style="position: relative; justify-self: center; display: flex; flex-direction: column; align-items: center; padding: 10px 18px; border-radius: 18px; border: 1px solid #424245; background: #111113; color: #A1A1A6; font-size: 17px; font-weight: 600; line-height: 1.3">公开<span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 400; opacity: .7">public</span></span>
+          <span class="rn2" style="position: relative; justify-self: center; display: flex; flex-direction: column; align-items: center; padding: 10px 18px; border-radius: 18px; border: 1px solid #424245; background: #111113; color: #A1A1A6; font-size: 17px; font-weight: 600; line-height: 1.3">内部<span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 400; opacity: .7">internal</span></span>
+          <span class="rn3" style="position: relative; justify-self: center; display: flex; flex-direction: column; align-items: center; padding: 10px 18px; border-radius: 18px; border: 1px solid #424245; background: #111113; color: #A1A1A6; font-size: 17px; font-weight: 600; line-height: 1.3">敏感<span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 400; opacity: .7">confidential</span></span>
+          <span class="rn4" style="position: relative; justify-self: center; display: flex; flex-direction: column; align-items: center; padding: 10px 18px; border-radius: 18px; border: 1px solid #424245; background: #111113; color: #A1A1A6; font-size: 17px; font-weight: 600; line-height: 1.3">受限<span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 400; opacity: .7">restricted</span></span>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 14px">
+          <div style="flex: 1 1 300px; min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-radius: 14px; border: 1px solid #2D5A3D; background: #0E1A12">
+            <span style="font-size: 16px">本地 · Ollama <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: #A1A1A6">qwen3:8b</span></span>
+            <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: #5FD07F">✓ 可落</span>
+          </div>
+          <div class="cloud" style="flex: 1 1 300px; min-width: 0; position: relative; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-radius: 14px; border: 1px solid #2C2C2E">
+            <span style="position: relative; font-size: 16px">云端 · Kimi K3<span class="strike" style="position: absolute; left: -4px; right: -4px; top: 52%; height: 2px; background: #FF6B5E"></span></span>
+            <span class="deny" style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: #FF6B5E">✗ 已排除</span>
+          </div>
+        </div>
+        <p style="margin: 0; text-align: center; font-size: 14px; color: #86868B">箭头只有一个方向。受限级的任务只落本地，受限级的会议不许录制。</p>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 48px 40px">
+        <div class="rv" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding-top: 22px; border-top: 1px solid #333336">
+          <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; color: #86868B">[ 1 ]</span>
+          <h3 style="margin: 0; font-size: 24px; font-weight: 700; color: #F5F5F7">打标签</h3>
+          <p style="margin: 0; font-size: 17px; color: #A1A1A6">频道、仓库、手动标记、会话锁，各自有一个密级。</p>
+        </div>
+        <div class="rv" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding-top: 22px; border-top: 1px solid #333336">
+          <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; color: #86868B">[ 2 ]</span>
+          <h3 style="margin: 0; font-size: 24px; font-weight: 700; color: #F5F5F7">取最高</h3>
+          <p style="margin: 0; font-size: 17px; color: #A1A1A6">有效密级取四者之中的最大值，在会话里只升不降。</p>
+        </div>
+        <div class="rv" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding-top: 22px; border-top: 1px solid #333336">
+          <span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; color: #86868B">[ 3 ]</span>
+          <h3 style="margin: 0; font-size: 24px; font-weight: 700; color: #F5F5F7">只落允许的通道</h3>
+          <p style="margin: 0; font-size: 17px; color: #A1A1A6">落不下，就拒绝。降落带只接受本地模型，"本地挂了改走云端"这条路根本不存在。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ [04] 编制 ============ -->
+  <section id="features" style="background: #FFFFFF; padding: 130px 22px; box-sizing: border-box">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px">
+      <div style="text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px">
+        <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #6E6E73">[ 04 ]  编制</p>
+        <h2 style="margin: 0; font-size: clamp(38px, 5.4vw, 64px); line-height: 1.12; font-weight: 700; letter-spacing: -0.012em">
+          <span class="ln"><span>八个格子，</span></span>
+          <span class="ln"><span>就是整个平台。</span></span>
+        </h2>
+        <p class="rv" style="margin: 0; max-width: 32em; font-size: 21px; line-height: 1.5; color: #6E6E73">图标里的每一格，都是平台上的一块。Agent 和人一样在编制里：有岗位、有权限上限，被 @、被派活、被审批。</p>
+      </div>
+
+      <!-- 图标即平台:八格逐一点亮 -->
+      <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 48px 72px; padding: 56px 40px; box-sizing: border-box; border-radius: 28px; border: 1px solid #E5E5EA">
+        <svg class="hive" role="img" aria-label="Muster 图标的八个格子:人、Agent、频道、任务、审批、审计、路由、会议,依次点亮" style="flex: 0 1 380px; width: 100%; max-width: 380px; height: auto; overflow: visible" viewBox="-112 -125 570 550" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', sans-serif" font-weight="600" text-anchor="middle" dominant-baseline="central">
+          <g class="hxv" style="--fx: -420px; --fy: -260px; --fr: -120deg; --a: 0%; --b: 60%">
+            <polygon points="0,-100 86.6,-50 86.6,50 0,100 -86.6,50 -86.6,-50" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f0); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="0" y="2" font-size="36" style="fill: var(--t0); transition: fill .6s">人</text>
+          </g>
+          <g class="hxv" style="--fx: 30px; --fy: -440px; --fr: 90deg; --a: 6%; --b: 66%">
+            <polygon points="173.2,-100 259.8,-50 259.8,50 173.2,100 86.6,50 86.6,-50" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f1); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="173.2" y="2" font-size="32" style="fill: var(--t1); transition: fill .6s">Agent</text>
+          </g>
+          <g class="hxv" style="--fx: 440px; --fy: -240px; --fr: 150deg; --a: 3%; --b: 63%">
+            <polygon points="346.4,-100 433,-50 433,50 346.4,100 259.8,50 259.8,-50" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f2); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="346.4" y="2" font-size="36" style="fill: var(--t2); transition: fill .6s">频道</text>
+          </g>
+          <g class="hxv" style="--fx: -520px; --fy: 10px; --fr: 60deg; --a: 12%; --b: 72%">
+            <polygon points="86.6,50 173.2,100 173.2,200 86.6,250 0,200 0,100" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f3); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="86.6" y="152" font-size="36" style="fill: var(--t3); transition: fill .6s">任务</text>
+          </g>
+          <g class="hxv" style="--fx: 520px; --fy: -10px; --fr: -60deg; --a: 10%; --b: 70%">
+            <polygon points="259.8,50 346.4,100 346.4,200 259.8,250 173.2,200 173.2,100" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f4); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="259.8" y="152" font-size="36" style="fill: var(--t4); transition: fill .6s">审批</text>
+          </g>
+          <g class="hxv" style="--fx: -440px; --fy: 300px; --fr: 120deg; --a: 8%; --b: 68%">
+            <polygon points="0,200 86.6,250 86.6,350 0,400 -86.6,350 -86.6,250" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f5); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="0" y="302" font-size="36" style="fill: var(--t5); transition: fill .6s">审计</text>
+          </g>
+          <g class="hxv" style="--fx: -30px; --fy: 460px; --fr: -90deg; --a: 14%; --b: 74%">
+            <polygon points="173.2,200 259.8,250 259.8,350 173.2,400 86.6,350 86.6,250" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f6); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="173.2" y="302" font-size="36" style="fill: var(--t6); transition: fill .6s">路由</text>
+          </g>
+          <g class="hxv" style="--fx: 420px; --fy: 280px; --fr: -150deg; --a: 16%; --b: 76%">
+            <polygon points="346.4,200 433,250 433,350 346.4,400 259.8,350 259.8,250" stroke="#1D1D1F" stroke-width="45" stroke-linejoin="round" style="fill: var(--f7); transition: fill .6s cubic-bezier(.2,.8,.2,1)"></polygon>
+            <text x="346.4" y="302" font-size="36" style="fill: var(--t7); transition: fill .6s">会议</text>
+          </g>
+        </svg>
+        <div style="flex: 1 1 320px; min-width: 0; max-width: 440px; display: flex; flex-direction: column; gap: 28px">
+          <div id="hcaps" style="display: grid; min-height: 120px">
+          </div>
+          <div id="legend" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; border-top: 1px solid #E5E5EA">
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 20px">
+
+        <article class="rv lift" style="flex: 2 1 540px; min-width: 0; box-sizing: border-box; padding: 40px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 24px">
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <span style="font-size: 15px; font-weight: 600; color: #6E6E73">会议室</span>
+            <h3 style="margin: 0; font-size: 32px; line-height: 1.2; font-weight: 700">开会时，它在听。</h3>
+            <p style="margin: 0; font-size: 17px; color: #6E6E73">实时纪要，按各人所选语言的字幕，散会回顾，录制回放。转写只走本地模型。</p>
+          </div>
+          <div aria-hidden="true" style="display: flex; align-items: center; gap: 4px; height: 40px">
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: 0s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .12s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .32s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .06s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .44s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .2s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .52s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .1s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .36s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .6s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .16s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .4s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .02s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .28s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .48s"></span>
+            <span class="wave" style="width: 4px; height: 100%; border-radius: 2px; background: #1D1D1F; animation-delay: .24s"></span>
+            <span style="margin-left: 10px; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #6E6E73">本地转写中</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 18px 20px; border-radius: 16px; background: #FFFFFF; font-size: 15px; min-height: 118px">
+            <div class="tl1" style="display: flex; gap: 12px"><span style="flex: 0 0 auto; font-weight: 600">李</span><span>这周把重试逻辑定下来，周五前上线。</span></div>
+            <div class="tl2" style="display: flex; gap: 12px"><span style="flex: 0 0 auto; font-weight: 600">王</span><span>我来补压测。</span></div>
+            <div class="tl3" style="display: flex; gap: 12px; padding-top: 10px; border-top: 1px solid #E5E5EA"><span style="flex: 0 0 auto; font-weight: 600">小七</span><span style="color: #6E6E73">记下两项行动：重试逻辑 · 李；压测 · 王。散会后等你们确认。</span></div>
+          </div>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 14px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">Agent 编制</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">岗位卡，写清能做什么。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">技能、命令白名单、出网白名单、密级上限。能力一变，就进审计。</p>
+          <div aria-hidden="true" style="display: flex; align-items: center; gap: 12px; margin-top: auto; padding: 12px 14px; border-radius: 14px; background: #FFFFFF">
+            <span style="flex: 0 0 34px; height: 38px; clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%); background: #1D1D1F; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #FFFFFF">七</span>
+            <span style="display: flex; flex-direction: column; line-height: 1.35"><strong style="font-size: 14px; font-weight: 600">小七 · A-007</strong><span style="font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: #6E6E73">密级上限 敏感 · 隔离可写</span></span>
+          </div>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">团队频道</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">人和 Agent，同一个频道。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">消息开头 @ 谁，就是派给谁。频道可以引入多张工牌。</p>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">工作流</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">定时跑，自动合。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">可版本化、可审批。抓取只许白名单主机，每次都记账。</p>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">审批</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">批的是那一刻的它。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">审批请求带着 Agent 当时的能力哈希。之后它变了，你看得出来。</p>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">技能</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">写一次，两边能用。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">SKILL.md 与 Codex 同一约定、同一份文件。</p>
+        </article>
+
+        <article class="rv lift" style="flex: 2 1 540px; min-width: 0; box-sizing: border-box; padding: 40px 0 36px; border-radius: 28px; background: #1D1D1F; color: #F5F5F7; display: flex; flex-direction: column; gap: 24px; overflow: hidden">
+          <div style="padding: 0 40px; display: flex; flex-direction: column; gap: 8px">
+            <span style="font-size: 15px; font-weight: 600; color: #A1A1A6">审计中心</span>
+            <h3 style="margin: 0; font-size: 32px; line-height: 1.2; font-weight: 700; color: #F5F5F7">先记账，再动库。</h3>
+            <p style="margin: 0; max-width: 30em; font-size: 17px; color: #A1A1A6">每条事件带着上一条的哈希。只存哈希，不存正文。链断了，服务就拒绝启动。</p>
+          </div>
+          <div aria-hidden="true" style="overflow: hidden">
+            <div class="mq-track mq-slow">
+              <div style="display: flex; align-items: center; gap: 10px; padding-right: 10px; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px">
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">route.decide<br><span style="color: #86868B">#a3f9c1</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">model.call<br><span style="color: #86868B">#7c1e04</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">tool.egress<br><span style="color: #86868B">#f04a9e</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">approval.request<br><span style="color: #86868B">#2b81d7</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">badge.update<br><span style="color: #86868B">#c5e330</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">meeting.end<br><span style="color: #86868B">#0e6f12</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px; padding-right: 10px; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px">
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">route.decide<br><span style="color: #86868B">#a3f9c1</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">model.call<br><span style="color: #86868B">#7c1e04</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">tool.egress<br><span style="color: #86868B">#f04a9e</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">approval.request<br><span style="color: #86868B">#2b81d7</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">badge.update<br><span style="color: #86868B">#c5e330</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+                <span style="padding: 10px 14px; border-radius: 10px; border: 1px solid #3A3A3C; color: #E8E8ED">meeting.end<br><span style="color: #86868B">#0e6f12</span></span><span style="width: 18px; height: 1px; background: #636366"></span>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">Runner 执行器</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">每个任务，一个独立工作区。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">主仓零污染，产出就是一份 diff。出网默认全拒，每次连接都记一笔。</p>
+        </article>
+
+        <article class="rv lift" style="flex: 1 1 260px; min-width: 0; box-sizing: border-box; padding: 40px 32px; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600; color: #6E6E73">主权演习</span>
+          <h3 style="margin: 0; font-size: 26px; line-height: 1.25; font-weight: 700">拔掉云，看看还剩什么。</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">哪些任务照常、哪些被拦下，报告里每个数字都来自审计表。</p>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ [05] 数字 ============ -->
+  <section data-count-root="1" style="background: #F5F5F7; padding: 130px 22px; box-sizing: border-box">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px">
+      <p class="rv" style="margin: 0; text-align: center; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #6E6E73">[ 05 ]  数字</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 56px 40px; text-align: center">
+        <div class="rv" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+          <span style="font-family: Inter, -apple-system, sans-serif; font-size: clamp(56px, 7.4vw, 92px); line-height: 1; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums"><span id="n1">13,500</span></span>
+          <span style="font-size: 17px; color: #6E6E73">组权限组合，<br>五条不变量逐一穷举验证。</span>
+        </div>
+        <div class="rv" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+          <span style="font-family: Inter, -apple-system, sans-serif; font-size: clamp(56px, 7.4vw, 92px); line-height: 1; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums"><span id="n2">20</span></span>
+          <span style="font-size: 17px; color: #6E6E73">个固定样本的工具调用评测。<br>提示词一改，就重跑。</span>
+        </div>
+        <div class="rv" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 10px">
+          <span style="font-family: Inter, -apple-system, sans-serif; font-size: clamp(56px, 7.4vw, 92px); line-height: 1; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums"><span id="n3">0</span><span style="font-size: 0.36em; font-weight: 700; margin-left: 6px; letter-spacing: 0">字节</span></span>
+          <span style="font-size: 17px; color: #6E6E73">演习模式下的云端外发。<sup style="font-size: 11px">1</sup></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ [06] 部署 ============ -->
+  <section id="deploy" style="background: #FFFFFF; padding: 130px 22px; box-sizing: border-box">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px">
+      <div style="text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px">
+        <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #6E6E73">[ 06 ]  部署</p>
+        <h2 style="margin: 0; font-size: clamp(38px, 5.4vw, 64px); line-height: 1.12; font-weight: 700; letter-spacing: -0.012em">
+          <span class="ln"><span>哪种部署适合你？</span></span>
+        </h2>
+        <p class="rv" style="margin: 0; max-width: 32em; font-size: 21px; line-height: 1.5; color: #6E6E73">三种形态，同一套代码。运行时都不依赖公网。</p>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 20px">
+        <article class="rv" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 40px 30px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px">
+          <svg aria-hidden="true" width="56" height="56" viewBox="0 0 56 56" fill="none" stroke="#1D1D1F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="12" width="40" height="26" rx="3"></rect><path d="M4 44h48"></path></svg>
+          <h3 style="margin: 0; font-size: 28px; font-weight: 700">个人本地版</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73; min-height: 3.2em">一台电脑，装好就能用。</p>
+          <div style="width: 100%; display: flex; flex-direction: column; font-size: 15px">
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA">SQLite</span>
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA">本机 Runner</span>
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA">本地模型</span>
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA; color: #6E6E73">个人开发者 · 技术验证</span>
+          </div>
+        </article>
+        <article class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 40px 30px; text-align: center; border-radius: 28px; background: #F5F5F7; display: flex; flex-direction: column; align-items: center; gap: 16px">
+          <svg aria-hidden="true" width="56" height="56" viewBox="0 0 56 56" fill="none" stroke="#1D1D1F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="12" y="8" width="32" height="12" rx="2"></rect><rect x="12" y="24" width="32" height="12" rx="2"></rect><path d="M28 36v8"></path><path d="M14 48h28"></path><circle cx="18" cy="14" r="1"></circle><circle cx="18" cy="30" r="1"></circle></svg>
+          <h3 style="margin: 0; font-size: 28px; font-weight: 700">企业内网版</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73; min-height: 3.2em">一个团队，一套服务，<br>Docker Compose 一次拉起。</p>
+          <div style="width: 100%; display: flex; flex-direction: column; font-size: 15px">
+            <span style="padding: 14px 0; border-top: 1px solid #D2D2D7">PostgreSQL</span>
+            <span style="padding: 14px 0; border-top: 1px solid #D2D2D7">集中或各人机器上的 Runner</span>
+            <span style="padding: 14px 0; border-top: 1px solid #D2D2D7">内网模型服务</span>
+            <span style="padding: 14px 0; border-top: 1px solid #D2D2D7; color: #6E6E73">研发团队 · 金融 · 制造 · 医疗</span>
+          </div>
+        </article>
+        <article class="rv" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 40px 30px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px">
+          <svg aria-hidden="true" width="56" height="56" viewBox="0 0 56 56" fill="none" stroke="#1D1D1F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="24" width="28" height="22" rx="3"></rect><path d="M20 24v-6a8 8 0 0 1 16 0v6"></path><path d="M28 33v5"></path></svg>
+          <h3 style="margin: 0; font-size: 28px; font-weight: 700">隔离网版</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73; min-height: 3.2em">与公网物理隔离，<br>依赖全部预先带入。</p>
+          <div style="width: 100%; display: flex; flex-direction: column; font-size: 15px">
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA">PostgreSQL</span>
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA">集中 Runner</span>
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA">预置本地模型与转写</span>
+            <span style="padding: 14px 0; border-top: 1px solid #E5E5EA; color: #6E6E73">受监管行业 · 内网隔离单位</span>
+          </div>
+        </article>
+      </div>
+      <div class="rv" style="display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 48px 24px; border-radius: 28px; background: #1D1D1F; color: #F5F5F7; text-align: center">
+        <span style="font-size: 21px; font-weight: 600">有自己的域名？一条命令上线。</span>
+        <span style="max-width: 34em; font-size: 17px; color: #A1A1A6">预检 DNS 与端口，安装 Docker，拉起全套服务，自动签发 HTTPS 证书，创建第一个管理员。</span>
+        <code style="max-width: 100%; box-sizing: border-box; overflow-x: auto; white-space: nowrap; margin-top: 8px; padding: 16px 22px; border-radius: 14px; background: #000000; border: 1px solid #2C2C2E; color: #F5F5F7; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 15px; text-align: left"><span style="color: #86868B">$ </span><span class="typing">./deploy/to-server.sh ubuntu@&lt;IP&gt; your.domain</span><span class="caret" style="display: inline-block; width: 9px; height: 1.15em; margin-left: 2px; vertical-align: text-bottom; background: #F5F5F7"></span></code>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ [07] Codex ============ -->
+  <section id="codex" style="background: #F5F5F7; padding: 130px 22px; box-sizing: border-box">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 48px">
+      <div style="text-align: center; display: flex; flex-direction: column; align-items: center; gap: 16px">
+        <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #6E6E73">[ 07 ]  Codex</p>
+        <h2 style="margin: 0; font-size: clamp(38px, 5.4vw, 64px); line-height: 1.12; font-weight: 700; letter-spacing: -0.012em">
+          <span class="ln"><span>你写好的技能，</span></span>
+          <span class="ln"><span>原样可用。</span></span>
+        </h2>
+        <p class="rv" style="margin: 0; max-width: 32em; font-size: 21px; line-height: 1.5; color: #6E6E73">Muster 自带运行时，不依赖 Codex 执行。它借用三样约定，好让你已有的积累直接搬进来。</p>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 20px">
+        <div class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 34px 30px; border-radius: 28px; background: #FFFFFF; display: flex; flex-direction: column; gap: 8px">
+          <h3 style="margin: 0; font-size: 21px; font-weight: 700">SKILL.md</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">仓库里的 .agents/skills/ 与 Codex 共用同一份文件。</p>
+        </div>
+        <div class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 34px 30px; border-radius: 28px; background: #FFFFFF; display: flex; flex-direction: column; gap: 8px">
+          <h3 style="margin: 0; font-size: 21px; font-weight: 700">Responses 协议</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">经模型网关，Codex 能用上任何 chat 系模型——同样过密级路由、同样进审计。</p>
+        </div>
+        <div class="rv lift" style="flex: 1 1 300px; min-width: 0; box-sizing: border-box; padding: 34px 30px; border-radius: 28px; background: #FFFFFF; display: flex; flex-direction: column; gap: 8px">
+          <h3 style="margin: 0; font-size: 21px; font-weight: 700">AGENTS.md</h3>
+          <p style="margin: 0; font-size: 17px; color: #6E6E73">按同一规则读取，常驻系统提示词，哈希进每次运行的记录。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 结尾:大字跑马灯 ============ -->
+  <section style="background: #000000; color: #F5F5F7; padding: 120px 0 130px; box-sizing: border-box; overflow: hidden">
+    <div aria-hidden="true" style="overflow: hidden; font-family: Inter, -apple-system, 'PingFang SC', sans-serif; font-weight: 800; font-size: clamp(64px, 11vw, 168px); line-height: 1.05; letter-spacing: -0.02em; white-space: nowrap">
+      <div class="mq-track mq-fast">
+        <div style="display: flex; align-items: center; gap: 0.35em; padding-right: 0.35em">
+          <span>开源</span><svg width="0.6em" height="0.6em" viewBox="-12 -12 24 24" fill="none" stroke="#F5F5F7" stroke-width="3.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+          <span>自托管</span><svg width="0.6em" height="0.6em" viewBox="-12 -12 24 24" fill="none" stroke="#F5F5F7" stroke-width="3.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+          <span>你说了算</span><svg width="0.6em" height="0.6em" viewBox="-12 -12 24 24" fill="none" stroke="#F5F5F7" stroke-width="3.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.35em; padding-right: 0.35em">
+          <span>开源</span><svg width="0.6em" height="0.6em" viewBox="-12 -12 24 24" fill="none" stroke="#F5F5F7" stroke-width="3.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+          <span>自托管</span><svg width="0.6em" height="0.6em" viewBox="-12 -12 24 24" fill="none" stroke="#F5F5F7" stroke-width="3.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+          <span>你说了算</span><svg width="0.6em" height="0.6em" viewBox="-12 -12 24 24" fill="none" stroke="#F5F5F7" stroke-width="3.6" stroke-linejoin="round"><path d="M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z"></path></svg>
+        </div>
+      </div>
+    </div>
+    <div style="max-width: 760px; margin: 64px auto 0; padding: 0 22px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 22px; text-align: center">
+      <svg aria-hidden="true" class="rv" width="64" height="62" viewBox="-112 -125 570 550" fill="none" stroke="#F5F5F7" stroke-width="45" stroke-linejoin="round"><path d="M0,-100L86.6,-50L86.6,50L0,100L-86.6,50L-86.6,-50Z M173.2,-100L259.8,-50L259.8,50L173.2,100L86.6,50L86.6,-50Z M346.4,-100L433,-50L433,50L346.4,100L259.8,50L259.8,-50Z M86.6,50L173.2,100L173.2,200L86.6,250L0,200L0,100Z M259.8,50L346.4,100L346.4,200L259.8,250L173.2,200L173.2,100Z M0,200L86.6,250L86.6,350L0,400L-86.6,350L-86.6,250Z M173.2,200L259.8,250L259.8,350L173.2,400L86.6,350L86.6,250Z M346.4,200L433,250L433,350L346.4,400L259.8,350L259.8,250Z"></path></svg>
+      <p class="rv" style="margin: 0; font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 14px; letter-spacing: 0.08em; color: #86868B">[ 08 ]  开始</p>
+      <h2 class="rv" style="margin: 0; font-size: clamp(32px, 4vw, 48px); line-height: 1.15; font-weight: 700; color: #F5F5F7">开源。自托管。你说了算。</h2>
+      <p class="rv" style="margin: 0; max-width: 30em; font-size: 19px; line-height: 1.5; color: #A1A1A6">AGPL-3.0 授权。自托管与内部修改不受任何限制。</p>
+      <div class="rv" style="display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px 30px; margin-top: 6px">
+        <a href="https://github.com/shunzhiyimiao/muster" style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 26px; box-sizing: border-box; border-radius: 980px; background: #F5F5F7; color: #000000; font-size: 17px; font-weight: 500; text-decoration: none"><span class="roll"><span>前往 GitHub</span><span aria-hidden="true">前往 GitHub</span></span></a>
+        <a href="https://github.com/shunzhiyimiao/muster/tree/main/docs" style="display: inline-flex; align-items: center; gap: 6px; min-height: 48px; font-size: 17px; color: #F5F5F7">阅读文档 <span class="arw">›</span></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 页脚 ============ -->
+  <footer style="background: #F5F5F7; padding: 20px 22px 28px; box-sizing: border-box; font-size: 12px; line-height: 1.5; color: #6E6E73">
+    <div style="max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px">
+      <ol style="margin: 0; padding: 0 0 16px 16px; border-bottom: 1px solid #D2D2D7; display: flex; flex-direction: column; gap: 8px">
+        <li>演习模式下云端外发按字节计量；无法计量的外发一律按违规记录，而不是按零记录。</li>
+        <li>界面中的对话、文件、哈希与数值均为演示内容。转写与应答实际由部署方配置的本地模型完成。</li>
+      </ol>
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px">
+        <span style="margin-right: auto; display: inline-flex; align-items: center; gap: 8px">
+          <svg aria-hidden="true" width="14" height="14" viewBox="-112 -125 570 550" fill="none" stroke="#6E6E73" stroke-width="50" stroke-linejoin="round"><path d="M0,-100L86.6,-50L86.6,50L0,100L-86.6,50L-86.6,-50Z M173.2,-100L259.8,-50L259.8,50L173.2,100L86.6,50L86.6,-50Z M346.4,-100L433,-50L433,50L346.4,100L259.8,50L259.8,-50Z M86.6,50L173.2,100L173.2,200L86.6,250L0,200L0,100Z M259.8,50L346.4,100L346.4,200L259.8,250L173.2,200L173.2,100Z M0,200L86.6,250L86.6,350L0,400L-86.6,350L-86.6,250Z M173.2,200L259.8,250L259.8,350L173.2,400L86.6,350L86.6,250Z M346.4,200L433,250L433,350L346.4,400L259.8,350L259.8,250Z"></path></svg>
+          Muster 团队协作平台 · AGPL-3.0-or-later
+        </span>
+        <a href="https://github.com/shunzhiyimiao/muster" style="color: #424245">GitHub</a>
+        <a href="https://github.com/shunzhiyimiao/muster/tree/main/docs" style="color: #424245">文档</a>
+        <a href="https://github.com/shunzhiyimiao/muster/blob/main/LICENSE" style="color: #424245">许可证</a>
+        <a href="https://github.com/shunzhiyimiao/muster/blob/main/THIRD-PARTY-NOTICES.md" style="color: #424245">第三方组件</a>
+      </div>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var root = document.getElementById('mroot');
+  var rm = false;
+  try { rm = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+  var moving = !rm;
+  function setV(k, v) { root.style.setProperty('--' + k, String(v)); }
+  function el(tag, css, text) {
+    var n = document.createElement(tag);
+    if (css) n.style.cssText = css;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  var MONO = "'SF Mono', ui-monospace, Menlo, Consolas, monospace";
+  var EASE = 'cubic-bezier(.2,.8,.2,1)';
+
+  /* ------------------------------------------------------------ 数据 */
+  var WORDS = [
+    { w: 'HUMAN', col: 0, zh: '人', cap: '人和 Agent，同一张编制。' },
+    { w: 'ROUTE', col: 1, zh: '路由', cap: '按密级，只落到允许的模型。' },
+    { w: 'TASK', col: 2, zh: '任务', cap: '每个任务，一个独立工作区。' },
+    { w: 'NOTE', col: 3, zh: '纪要', cap: '开会时它在听，散会给你回顾。' },
+    { w: 'AGENT', col: 4, zh: 'Agent', cap: '有工牌、有权限上限的同事。' },
+    { w: 'WORK', col: 5, zh: '工作流', cap: '定时跑，自动合，全程记账。' }
+  ];
+  var HIVE = [
+    { name: '人', cap: '人与 Agent，同一张编制。' },
+    { name: 'Agent', cap: '有工牌、有权限上限的同事。' },
+    { name: '频道', cap: '@ 一下，就是派活。' },
+    { name: '任务', cap: '每个任务，一个独立工作区。' },
+    { name: '审批', cap: '批的是那一刻的它。' },
+    { name: '审计', cap: '先记账，再动库。' },
+    { name: '路由', cap: '按密级，只落到允许的模型。' },
+    { name: '会议', cap: '开会时它在听，散会给你回顾。' }
+  ];
+
+  /* ------------------------------------------------------------ Hero 字谜 */
+  var xw = document.getElementById('xw');
+  var mt = [], groups = [];
+  'MUSTER'.split('').forEach(function (ch, i) {
+    var cell = el('div', 'position:absolute;top:calc(var(--c) * 2);left:calc(var(--c) * ' + i + ');width:var(--c);height:var(--c);padding:3px;box-sizing:border-box');
+    var inner = el('div', 'width:100%;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border-radius:calc(var(--c) * 0.16);border:2px solid #F5F5F7;background:rgba(245,245,247,0);color:#F5F5F7;font-size:calc(var(--c) * 0.58);line-height:1;transition:background .5s,color .5s', ch);
+    cell.appendChild(inner); xw.appendChild(cell); mt.push(inner);
+  });
+  WORDS.forEach(function (w) {
+    var col = el('div', 'position:absolute;top:0;left:calc(var(--c) * ' + w.col + ');width:var(--c);height:calc(var(--c) * 5)');
+    col.setAttribute('aria-hidden', 'true');
+    var letters = [];
+    w.w.split('').forEach(function (ch, i) {
+      if (i === 2) return;
+      var cell = el('div', 'position:absolute;left:0;top:calc(var(--c) * ' + i + ');width:var(--c);height:var(--c);padding:3px;box-sizing:border-box;opacity:0');
+      cell.appendChild(el('div', 'width:100%;height:100%;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border-radius:calc(var(--c) * 0.16);border:1.5px solid rgba(245,245,247,0.38);background:rgba(245,245,247,0.06);color:#F5F5F7;font-size:calc(var(--c) * 0.58);line-height:1', ch));
+      col.appendChild(cell);
+      letters.push({ n: cell, i: i });
+    });
+    xw.appendChild(col); groups.push(letters);
+  });
+
+  var capsBox = document.getElementById('caps');
+  var caps = WORDS.map(function (w, k) {
+    var d = el('div', 'grid-area:1 / 1;display:flex;flex-direction:column;align-items:center;gap:4px;opacity:0;transform:translateY(10px);transition:opacity .5s ease,transform .6s ' + EASE);
+    d.appendChild(el('span', 'font-family:' + MONO + ';font-size:13px;letter-spacing:0.08em;color:#86868B', '[ 0' + (k + 1) + ' / 06 ]  ' + w.w + ' · ' + w.zh));
+    d.appendChild(el('span', 'font-size:19px;color:#F5F5F7', w.cap));
+    capsBox.appendChild(d);
+    return d;
+  });
+
+  function showWord(wi) {
+    var a = WORDS[wi];
+    mt.forEach(function (n, i) {
+      var on = a.col === i;
+      n.style.background = on ? '#F5F5F7' : 'rgba(245,245,247,0)';
+      n.style.color = on ? '#000000' : '#F5F5F7';
+    });
+    groups.forEach(function (letters, k) {
+      var on = k === wi;
+      letters.forEach(function (l) {
+        var d = on ? (Math.abs(l.i - 2) * 90 + 80) + 'ms' : '0ms';
+        l.n.style.transition = 'opacity .55s ' + EASE + ' ' + d + ',transform .75s ' + EASE + ' ' + d;
+        l.n.style.opacity = on ? '1' : '0';
+        l.n.style.transform = on ? 'none' : 'translateY(' + (l.i < 2 ? -40 : 40) + '%) scale(.82)';
+      });
+    });
+    caps.forEach(function (c, k) {
+      var on = k === wi;
+      c.style.opacity = on ? '1' : '0';
+      c.style.transform = on ? 'none' : 'translateY(10px)';
+      c.setAttribute('aria-hidden', on ? 'false' : 'true');
+    });
+  }
+
+  /* ------------------------------------------------------------ [04] 八格 */
+  var hcBox = document.getElementById('hcaps');
+  var hcaps = HIVE.map(function (h, k) {
+    var d = el('div', 'grid-area:1 / 1;display:flex;flex-direction:column;gap:6px;opacity:0;transform:translateY(10px);transition:opacity .5s ease,transform .6s ' + EASE);
+    d.appendChild(el('span', 'font-family:' + MONO + ';font-size:13px;letter-spacing:0.08em;color:#6E6E73', '[ 0' + (k + 1) + ' / 08 ]'));
+    d.appendChild(el('span', 'font-size:40px;line-height:1.15;font-weight:700', h.name));
+    d.appendChild(el('span', 'font-size:19px;color:#6E6E73', h.cap));
+    hcBox.appendChild(d);
+    return d;
+  });
+  var lgBox = document.getElementById('legend');
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var legend = HIVE.map(function (h) {
+    var row = el('div', 'display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid #E5E5EA;font-size:16px;color:#6E6E73;font-weight:500;transition:color .4s');
+    var svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('width', '12'); svg.setAttribute('height', '12');
+    svg.setAttribute('viewBox', '-12 -12 24 24'); svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '3.2'); svg.setAttribute('stroke-linejoin', 'round');
+    svg.style.fill = 'none'; svg.style.transition = 'fill .4s';
+    var p = document.createElementNS(SVGNS, 'path');
+    p.setAttribute('d', 'M0,-10L8.7,-5L8.7,5L0,10L-8.7,5L-8.7,-5Z');
+    svg.appendChild(p); row.appendChild(svg); row.appendChild(el('span', null, h.name));
+    lgBox.appendChild(row);
+    return { row: row, svg: svg };
+  });
+
+  function showCell(hi) {
+    for (var k = 0; k < HIVE.length; k++) {
+      var on = k === hi;
+      setV('f' + k, on ? '#1D1D1F' : 'rgba(29,29,31,0)');
+      setV('t' + k, on ? '#FFFFFF' : '#6E6E73');
+      hcaps[k].style.opacity = on ? '1' : '0';
+      hcaps[k].style.transform = on ? 'none' : 'translateY(10px)';
+      hcaps[k].setAttribute('aria-hidden', on ? 'false' : 'true');
+      legend[k].row.style.color = on ? '#1D1D1F' : '#6E6E73';
+      legend[k].row.style.fontWeight = on ? '700' : '500';
+      legend[k].svg.style.fill = on ? '#1D1D1F' : 'none';
+    }
+  }
+
+  /* ------------------------------------------------------------ 频道对话 */
+  function showStep(step) {
+    function vis(c) { return c ? 1 : 0; }
+    function mv(c) { return c ? 'none' : 'translateY(12px)'; }
+    setV('m1o', vis(step >= 1)); setV('m1t', mv(step >= 1));
+    setV('ro', vis(step >= 2)); setV('rt', mv(step >= 2));
+    setV('rco', vis(step === 2)); setV('rdo', vis(step >= 3));
+    setV('tyo', vis(step === 3));
+    setV('m2o', vis(step >= 4)); setV('m2t', mv(step >= 4));
+    setV('apo', vis(step < 6)); setV('oko', vis(step >= 6)); setV('okt', step >= 6 ? 'none' : 'scale(.9)');
+  }
+
+  /* ------------------------------------------------------------ 数字 */
+  var n1 = document.getElementById('n1'), n2 = document.getElementById('n2'), n3 = document.getElementById('n3');
+  function showProg(p) {
+    var e = 1 - Math.pow(1 - p, 3);
+    n1.textContent = Math.round(13500 * e).toLocaleString('en-US');
+    n2.textContent = String(Math.round(20 * e));
+    n3.textContent = Math.round(4096 * (1 - e)).toLocaleString('en-US');
+  }
+
+  /* ------------------------------------------------------------ 启动 */
+  if (!moving) {
+    showWord(4); showCell(1); showStep(7); showProg(1);
+  } else {
+    var wi = 0, hi = 0, step = 0;
+    showWord(wi); showCell(hi); showStep(step);
+    setInterval(function () { wi = (wi + 1) % WORDS.length; showWord(wi); }, 2600);
+    setInterval(function () { hi = (hi + 1) % HIVE.length; showCell(hi); }, 2200);
+    setInterval(function () { step = (step + 1) % 9; showStep(step); }, 1400);
+
+    var statRoot = document.querySelector('[data-count-root]');
+    if (statRoot && 'IntersectionObserver' in window) {
+      showProg(0);
+      var io = new IntersectionObserver(function (es) {
+        for (var i = 0; i < es.length; i++) {
+          if (es[i].isIntersecting) {
+            io.disconnect();
+            var t0 = performance.now();
+            var f = function (t) { var p = Math.min(1, (t - t0) / 1700); showProg(p); if (p < 1) requestAnimationFrame(f); };
+            requestAnimationFrame(f);
+            break;
+          }
+        }
+      }, { threshold: 0.35 });
+      io.observe(statRoot);
+    }
+
+    // 光标:一枚六边形,只在精确指针设备上
+    var cur = document.querySelector('[data-cursor]');
+    var fine = false;
+    try { fine = window.matchMedia('(pointer: fine)').matches; } catch (e) {}
+    if (cur && fine) {
+      var x = -200, y = -200, tx = -200, ty = -200, sc = 1, ts = 1, rot = 0, tr = 0;
+      window.addEventListener('mousemove', function (e) {
+        tx = e.clientX; ty = e.clientY;
+        var t = e.target && e.target.closest ? e.target.closest('a,button,.lift') : null;
+        ts = t ? 2.2 : 1; tr = t ? 30 : 0;
+        cur.style.opacity = '1';
+      });
+      document.documentElement.addEventListener('mouseleave', function () { cur.style.opacity = '0'; });
+      (function loop() {
+        x += (tx - x) * 0.2; y += (ty - y) * 0.2; sc += (ts - sc) * 0.18; rot += (tr - rot) * 0.15;
+        cur.style.transform = 'translate3d(' + x + 'px,' + y + 'px,0) translate(-50%,-50%) rotate(' + rot.toFixed(2) + 'deg) scale(' + sc.toFixed(3) + ')';
+        requestAnimationFrame(loop);
+      })();
+    }
+  }
+
+  /* ------------------------------------------------------------ 开场:停住,下滑才进入 */
+  var intro = document.getElementById('intro');
+  var done = false;
+  function unbind() {
+    window.removeEventListener('wheel', onWheel);
+    window.removeEventListener('touchstart', onTouchStart);
+    window.removeEventListener('touchmove', onTouchMove);
+    window.removeEventListener('scroll', onScroll);
+  }
+  function enter() {
+    if (done) return;
+    done = true;
+    unbind();
+    root.classList.remove('intro-wait');
+    root.classList.add('intro-go');
+    if (intro) {
+      intro.classList.add('intro-out');
+      setTimeout(function () { if (intro.parentNode) intro.parentNode.removeChild(intro); }, 1100);
+    }
+  }
+  var y0 = null;
+  function onWheel(e) { e.preventDefault(); if (e.deltaY > 0) enter(); }
+  function onTouchStart(e) { y0 = e.touches && e.touches[0] ? e.touches[0].clientY : null; }
+  function onTouchMove(e) {
+    e.preventDefault();
+    if (y0 !== null && e.touches && e.touches[0] && y0 - e.touches[0].clientY > 24) enter();
+  }
+  function onScroll() { if (window.scrollY > 0) { window.scrollTo(0, 0); enter(); } }
+
+  if (!moving || !intro) {
+    if (intro && intro.parentNode) intro.parentNode.removeChild(intro);
+    root.classList.remove('intro-wait');
+  } else if (window.scrollY > 0 || location.hash) {
+    // 刷新后停在页面中间,或从带锚点的链接进来:不拦人
+    done = true;
+    intro.parentNode.removeChild(intro);
+    root.classList.remove('intro-wait');
+  } else {
+    window.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('scroll', onScroll, { passive: true });
+    document.getElementById('enter').addEventListener('click', enter);
+  }
+})();
+
+</script>
+</body>
+</html>
