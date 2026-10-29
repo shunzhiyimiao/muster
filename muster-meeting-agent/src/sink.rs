@@ -123,6 +123,13 @@ impl HttpSink {
         self.post(speaker, text, &lang, None).await;
     }
 
+    /// 同 [`say`](Self::say),但**不算进度**:被拒的那句留下的系统说明是在记录一次失败,
+    /// 把它算成"成功干活"会把熔断计数清零——实测就是这么漏掉的。
+    async fn say_note(&self, speaker: &str, text: &str) {
+        let lang = self.lang.clone();
+        self.post_inner(speaker, text, &lang, None, false).await;
+    }
+
     /// 落一条翻译行:`lang` 是译文语言,`origin_id` 指回原文行(原文没回传成功就为空)。
     pub async fn say_translation(&self, speaker: &str, text: &str, lang: &str, origin_id: Option<i64>) -> bool {
         self.post(speaker, text, lang, origin_id).await.is_some()
@@ -194,8 +201,12 @@ impl HttpSink {
         }
     }
 
-    /// 回传一行;成功返回服务端给的行号。
+    /// 回传一行;成功返回服务端给的行号。成功算一次进度(心跳里的"最近一次干活")。
     async fn post(&self, speaker: &str, text: &str, lang: &str, origin_id: Option<i64>) -> Option<i64> {
+        self.post_inner(speaker, text, lang, origin_id, true).await
+    }
+
+    async fn post_inner(&self, speaker: &str, text: &str, lang: &str, origin_id: Option<i64>, progress: bool) -> Option<i64> {
         let url = format!("{}/meetings/{}/transcript", self.base, self.meeting_id);
         let r = self
             .auth(self.client.post(&url))
@@ -205,7 +216,9 @@ impl HttpSink {
         match r {
             Ok(resp) if resp.status().is_success() => {
                 let p = resp.json::<Posted>().await.unwrap_or_default();
-                self.emit(SinkEvent::Progress { at_ms: p.ts_ms.unwrap_or(0) });
+                if progress {
+                    self.emit(SinkEvent::Progress { at_ms: p.ts_ms.unwrap_or(0) });
+                }
                 p.id
             }
             // 回传失败只记日志、不重试、不阻塞:会议在继续,后面的话还要转。
@@ -244,8 +257,8 @@ impl TranscriptSink for HttpSink {
         tracing::warn!(speaker = %u.speaker, reason, "这一句未能转写");
         // 转写失败按类计数:连着三次同一类,daemon 会熔断这场会等人来看
         self.emit(SinkEvent::Failure { kind: crate::node::classify_error(&format!("转写 {reason}")).into() });
-        // 以系统说明进纪要:留白会被读成"没人说话"
-        self.say(
+        // 以系统说明进纪要:留白会被读成"没人说话"。这条**不算进度**
+        self.say_note(
             "系统",
             &format!(
                 "[{}s 处 {} 的发言未能转写:{}]",

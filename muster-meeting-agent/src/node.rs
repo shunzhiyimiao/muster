@@ -201,12 +201,12 @@ impl Breakers {
         self.map.remove(meeting);
     }
 
-    /// 心跳里要上报的:所有跳闸中的会。
-    pub fn reports(&self) -> Vec<(String, String, u32)> {
+    /// 心跳里要上报的:所有跳闸中的会(会议、错误类、次数、跳闸时看到的请求时刻)。
+    pub fn reports(&self) -> Vec<(String, String, u32, Option<i64>)> {
         self.map
             .iter()
             .filter(|(_, s)| s.tripped)
-            .map(|(m, s)| (m.clone(), s.error_kind.clone(), s.failures))
+            .map(|(m, s)| (m.clone(), s.error_kind.clone(), s.failures, s.requested_ms))
             .collect()
     }
 
@@ -273,7 +273,7 @@ mod tests {
         assert!(!b.record_failure("m", "stt", Some(100)));
         assert!(b.record_failure("m", "stt", Some(100)), "第三次跳闸");
         assert!(b.is_tripped("m", Some(100)), "同一次请求之内仍熔断");
-        assert_eq!(b.reports(), vec![("m".to_string(), "stt".to_string(), 3)]);
+        assert_eq!(b.reports(), vec![("m".to_string(), "stt".to_string(), 3, Some(100))]);
         b.record_success("m");
         assert!(b.is_tripped("m", Some(100)), "成功也解不了闸,只有人能");
         assert!(!b.record_failure("m", "stt", Some(100)), "跳闸后不再重复跳");

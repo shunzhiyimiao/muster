@@ -282,13 +282,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let wanted_ids: HashSet<String> = wanted.iter().map(|m| m.id.clone()).collect();
 
-        // 不再被请的会议,退避与熔断记录也清掉
+        // 不再被请的会议,退避与熔断记录也清掉;人重试过的(请求时刻变新)熔断立刻解除——
+        // 哪怕那场会的任务还在收尾,也别让下一次心跳把过期的熔断再报上去
         cooldown.retain(|id, _| wanted_ids.contains(id));
         {
             let mut b = cfg.breakers.lock().unwrap();
-            let gone: Vec<String> = b.reports().into_iter().map(|(m, _, _)| m).filter(|m| !wanted_ids.contains(m)).collect();
+            let gone: Vec<String> = b.reports().into_iter().map(|(m, _, _, _)| m).filter(|m| !wanted_ids.contains(m)).collect();
             for m in gone {
                 b.forget(&m);
+            }
+            for m in &wanted {
+                b.is_tripped(&m.id, m.requested_ms);
             }
         }
 
@@ -534,7 +538,7 @@ async fn heartbeat_loop(http: reqwest::Client, cfg: Arc<Cfg>) {
             .unwrap()
             .reports()
             .into_iter()
-            .map(|(m, k, n)| serde_json::json!({ "meeting_id": m, "error_kind": k, "failures": n }))
+            .map(|(m, k, n, req)| serde_json::json!({ "meeting_id": m, "error_kind": k, "failures": n, "requested_ms": req }))
             .collect();
         let last = cfg.last_progress.load(Ordering::SeqCst);
         let body = serde_json::json!({
