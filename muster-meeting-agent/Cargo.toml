@@ -28,6 +28,9 @@ livekit = { git = "https://github.com/livekit/rust-sdks", rev = "00258d1e52e5633
 futures = { version = "0.3", optional = true }
 # stream:daemon 订服务端 SSE 用(推送到了立刻认领,不等轮询)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# 节点身份(块 2):本地生成 ed25519 密钥,只把公钥交给服务端;会话靠签 challenge 换
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [features]
 default = []
