@@ -56,7 +56,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # 不用 root 跑。唯一要写的地方是自己的审计链——
 # **它必须在卷上**:写进容器层的话,每次重启都从空文件开一条新链,
 # 而 append-only 哈希链的全部意义就是连续。断了的链证明不了任何事。
-RUN useradd -r -u 10001 muster && mkdir -p /data && chown muster:muster /data
+# -m:给 muster 建 home。useradd -r 默认不建,HOME=/home/muster 不存在而 /home 归 root,
+# 容器里跑 muster-admin login 写 ~/.muster/admin-token 就失败,后面每条命令都说「尚未登录」(线上踩到)
+RUN useradd -r -m -d /home/muster -u 10001 muster && mkdir -p /data && chown muster:muster /data
 VOLUME ["/data"]
 ENV MUSTER_SERVER_AUDIT_DB=/data/muster-server-audit.db
 COPY --from=build /s/target/release/muster-server /usr/local/bin/muster-server
