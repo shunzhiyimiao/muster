@@ -23,6 +23,10 @@
 //! muster-admin disable bob / enable bob
 //! muster-admin team-add platform 平台组
 //! muster-admin channel-add platform-main platform 主频道 internal
+//! muster-admin nodes                         # 列节点(待批准的带设备码)
+//! muster-admin node-approve K7PX-4MQ2        # 批准入网
+//! muster-admin badge-assign A-007 <节点id>   # 把工牌分配到节点
+//! muster-admin duty-set A-007 / duty         # 设 / 看值班工牌
 //! ```
 
 use std::process::exit;
@@ -268,6 +272,61 @@ fn main() {
             let v = call("GET", "/health", None, false);
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
         }
+        // ---- 节点(块 2):入网批准、工牌分配、值班
+        "nodes" => {
+            let v = call("GET", "/nodes", None, true);
+            let list = v.as_array().cloned().unwrap_or_default();
+            if list.is_empty() {
+                println!("(还没有节点。节点第一次启动会自己入网并打印设备码。)");
+            }
+            for n in list {
+                let badges: Vec<String> = n["badges"].as_array().map(|a| a.iter().filter_map(|b| b.as_str().map(String::from)).collect()).unwrap_or_default();
+                let breakers = n["breakers"].as_array().map(|a| a.len()).unwrap_or(0);
+                println!(
+                    "{} {:<10} {:<16} {} 工牌=[{}]{}{}",
+                    if n["online"] == true { "●" } else { "○" },
+                    n["status"].as_str().unwrap_or("?"),
+                    n["name"].as_str().unwrap_or("?"),
+                    n["id"].as_str().unwrap_or("?"),
+                    badges.join(","),
+                    n["user_code"].as_str().map(|c| format!(" 设备码={c}")).unwrap_or_default(),
+                    if breakers > 0 { format!(" 熔断×{breakers}") } else { String::new() },
+                );
+            }
+        }
+        "node-approve" => {
+            need(rest, 1, "node-approve <设备码>");
+            let v = call("POST", &format!("/nodes/enroll/{}/approve", rest[0]), Some(serde_json::json!({})), true);
+            println!("✓ 已批准节点 {}({})", v["name"].as_str().unwrap_or("?"), v["node_id"].as_str().unwrap_or("?"));
+            println!("  下一步:muster-admin badge-assign <工牌> {}", v["node_id"].as_str().unwrap_or("<节点id>"));
+        }
+        "badge-assign" => {
+            need(rest, 2, "badge-assign <工牌> <节点id|->(- 表示摘下)");
+            let node_id = if rest[1] == "-" { serde_json::Value::Null } else { serde_json::Value::String(rest[1].clone()) };
+            let v = call("POST", &format!("/accounts/{}/node", rest[0]), Some(serde_json::json!({ "node_id": node_id })), true);
+            println!("✓ 工牌 {} → 节点 {}", v["badge"].as_str().unwrap_or("?"), v["node_id"].as_str().unwrap_or("(无)"));
+        }
+        "duty-set" => {
+            need(rest, 1, "duty-set <工牌|->(- 表示取消值班)");
+            let badge = if rest[0] == "-" { serde_json::Value::Null } else { serde_json::Value::String(rest[0].clone()) };
+            let v = call("POST", "/org/duty", Some(serde_json::json!({ "badge": badge })), true);
+            match v["badge"].as_str() {
+                Some(b) => println!("✓ 值班工牌:{b}(节点 {})", v["node_id"].as_str().unwrap_or("?")),
+                None => println!("✓ 已取消值班工牌"),
+            }
+        }
+        "duty" => {
+            let v = call("GET", "/org/duty", None, true);
+            match v["badge"].as_str() {
+                Some(b) => println!(
+                    "值班工牌 {b} · 节点 {}({}){}",
+                    v["node_name"].as_str().unwrap_or("?"),
+                    v["node_id"].as_str().unwrap_or("?"),
+                    if v["node_online"] == true { " ● 在线" } else { " ○ 离线(90 秒没心跳)" }
+                ),
+                None => println!("(没有值班工牌。muster-admin duty-set <工牌>)"),
+            }
+        }
         _ => {
             eprintln!(
                 "muster-admin — 服务端管理\n\n\
@@ -283,6 +342,10 @@ fn main() {
                  revoke <账号> <角色> [作用域类型] [作用域id]\n\
                  teams? 用 team-add <id> <名称>\n\
                  channels / channel-add <id> <团队id> <名称> [密级]\n\n\
+                 nodes                          列节点(待批准的带设备码)\n\
+                 node-approve <设备码>          批准节点入网\n\
+                 badge-assign <工牌> <节点id|->  把工牌分配到节点 / 摘下\n\
+                 duty-set <工牌|-> · duty        设 / 看值班工牌\n\n\
                  providers                      列 provider 目录\n\
                  provider-add <id> <base_url> <模型> <local|cloud> [环境变量名] [--default]\n\
                  provider-rm <id>               停用一条\n\

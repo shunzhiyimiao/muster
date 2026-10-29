@@ -145,7 +145,16 @@ cat <<NEXT
     同一台机器再开一个 → 必须换会话文件,否则两个壳互相挤掉:
       MUSTER_SESSION_FILE=/tmp/muster-bob.json pnpm tauri dev
 
-  会议 Agent(先在桌面壳里发起会议,拿到会议 id 再跑):
+  会议 Agent 常驻服务(以组织节点身份,块 2):
+    source /tmp/muster-dev.env
+    export MUSTER_NODE_HOME=~/.muster/node MUSTER_STT_MODEL=Systran/faster-whisper-small
+    cargo run -p muster-meeting-agent --features livekit --example daemon
+    # 第一次会打印设备码,另开一个终端批准并把值班工牌分配过去:
+    cargo run -q -p muster-server --example admin -- node-approve <设备码>
+    cargo run -q -p muster-server --example admin -- badge-assign A-007 <节点id>
+    cargo run -q -p muster-server --example admin -- duty-set A-007
+
+  单场会议的 Agent(旧的一次性方式,先在桌面壳里发起会议,拿到会议 id 再跑):
     source /tmp/muster-dev.env
     export MUSTER_TOKEN=\$(cat /tmp/muster-agent-token)
     # 模型档位实测(本机 CPU,6.2s 中文音频,均已预热):

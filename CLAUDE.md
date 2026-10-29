@@ -19,8 +19,8 @@
 - muster-gateway：对外 Responses / 对内 chat，让 Codex 用上 chat 系模型；自带治理（2026-10-08 起）：每个请求先过密级路由（与 Runner 同一个 Router / OrgPolicy，restricted 只能落本地，落不下就以 SSE response.failed 拒绝）再落 route.decide / route.refuse 与 model.call 到网关自己的链（~/.muster/gateway-audit.db）；密级取 --sensitivity、请求头 X-Muster-Sensitivity、落盘棘轮三者之高
 - muster-prompt：A1 系统提示词唯一出处（改它必须重跑 A7 评测）
 - muster-identity：P2 权限语义内核；can() 判定纯函数按 §4.4 顺序，五不变量穷举验证（13,500 组）
-- muster-meeting-agent：会议 Agent（LiveKit Rust SDK 在 `livekit` feature 后面，默认不编）；常驻 daemon 订服务端 SSE 认领会议、本地 whisper 转写、@ 应答、会中派活、散会提炼；字幕翻译（按在场者各自选的语言，经 muster_route）与散会回顾（固定结构，落 /summary 并发频道消息）也在这边做，服务端只收文本
-- muster-server：P2/P3 服务端（Axum + PostgreSQL）；权限判定复用 muster-identity 不另写一份；会议接口（建/入/离/散/纪要含翻译行/密级/请 Agent/字幕语言/总结/录制）每条先落服务端自己的审计链再动库，正文只留哈希，录像文件哈希入链；录制靠自托管 LiveKit Egress（deploy compose 的 redis + egress，recording.rs 直打 Twirp JSON），restricted 禁录、人人可见、散会自动停、Range 回放；e2e 在 tests/meetings_e2e.rs（需 DATABASE_URL）；
+- muster-meeting-agent：会议 Agent（LiveKit Rust SDK 在 `livekit` feature 后面，默认不编）；常驻 daemon **以组织节点身份跑**（node.rs：本机 ed25519 密钥入网、签 challenge 换会话、以值班工牌行事，同类错误连续 3 次熔断等人重试，口令登录只剩过渡路径）、订服务端 SSE 认领会议、本地 whisper 转写、@ 应答、会中派活、散会提炼；字幕翻译（按在场者各自选的语言，经 muster_route）与散会回顾（固定结构，落 /summary 并发频道消息）也在这边做，服务端只收文本
+- muster-server：P2/P3 服务端（Axum + PostgreSQL）；权限判定复用 muster-identity 不另写一份；会议接口（建/入/离/散/纪要含翻译行/密级/请 Agent/字幕语言/总结/录制）每条先落服务端自己的审计链再动库，正文只留哈希，录像文件哈希入链；节点（node.rs，迁移 0003）：设备码入网、节点会话只能以托管的工牌行事（X-Muster-Badge）、设定值与心跳、值班工牌（节点须有本地转写能力）；录制靠自托管 LiveKit Egress（deploy compose 的 redis + egress，recording.rs 直打 Twirp JSON），restricted 禁录、人人可见、散会自动停、Range 回放；e2e 在 tests/meetings_e2e.rs（需 DATABASE_URL）；
   服务端不持有源码、不做全局审计链（节点各自留链，组织侧靠锚定——尚未实现）；
   依赖用 deploy/docker-compose.yml 一条命令拉起
 - apps/desktop：智能协作平台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）

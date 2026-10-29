@@ -157,21 +157,23 @@ services:
     environment:
       WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
 
-  # 会议 Agent 常驻服务。按钮只在服务端记"意愿"(meeting.wants_agent),
-  # 是这个进程经 SSE 认领、进会、转写、@应答、散会提炼——它不在,点了按钮也没人来。
-  # 模型密钥从 .env 进这个容器:落在服务器上的是 daemon 节点的密钥,服务端仍一个都不存。
-  agent:
+  # 组织节点:会议 Agent 常驻服务以**节点身份**跑在这里(块 2)。按钮只在服务端记"意愿"
+  # (meeting.wants_agent),是这个进程经 SSE 认领、进会、转写、@应答、散会提炼——
+  # 它不在,点了按钮也没人来。第一次启动会生成节点密钥(存在 node_home 卷里)并入网、
+  # 打印设备码;管理员 muster-admin node-approve <设备码> 批准,再把值班工牌分配过来。
+  # 服务器上落着的是节点的密钥和模型密钥(.env),不是任何人的口令;服务端仍一个都不存。
+  node:
     build:
       context: ..
       dockerfile: Dockerfile.agent
     restart: unless-stopped
     environment:
       MUSTER_SERVER: http://muster-server:8787
+      MUSTER_NODE_HOME: /node
+      MUSTER_NODE_NAME: ${MUSTER_NODE_NAME:-server-node}
       # 入会票里的 LiveKit 地址是给外面的人的(wss://livekit.<域名>,经 Caddy);
       # 同一个 compose 网络里直接走容器名,不绕公网、不碰 DNS 与证书、不靠 NAT 回环
       MUSTER_LIVEKIT_URL: ws://livekit:7880
-      MUSTER_ACCOUNT: ${MUSTER_AGENT_ACCOUNT:?需要 MUSTER_AGENT_ACCOUNT(kind=agent 的账号)}
-      MUSTER_PASSWORD: ${MUSTER_AGENT_PASSWORD:?需要 MUSTER_AGENT_PASSWORD}
       MUSTER_STT_URL: http://whisper:8000/v1
       MUSTER_STT_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
       MUSTER_STT_LANG: ${MUSTER_STT_LANG:-zh}
@@ -181,6 +183,9 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       RUST_LOG: ${RUST_LOG_AGENT:-info}
+    volumes:
+      # 节点私钥。**丢了就要重新入网**(服务端存的是旧公钥);不进镜像、不进仓库
+      - node_home:/node
     depends_on:
       - muster-server
       - whisper
@@ -190,5 +195,6 @@ volumes:
   pgdata:
   audit:
   recordings:
+  node_home:
   caddy_data:
   caddy_config:
