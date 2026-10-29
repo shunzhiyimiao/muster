@@ -1198,7 +1198,9 @@ async fn record_msg_as(
 ) -> Result<(), String> {
     match remote {
         Some(r) if !remote::is_personal(channel_id) => {
-            r.send(channel_id, text, role, run_id).await.map(|_| ())
+            // 幂等键:这条消息的身份。将来在这层加重试时沿用同一个键,服务端就不会落两条
+            let key = uuid::Uuid::new_v4().to_string();
+            r.send(channel_id, text, role, run_id, &key).await.map(|_| ())
         }
         _ => {
             store.lock().unwrap().insert_in_as(thread_id, channel_id, role, text, run_id, status, badge);

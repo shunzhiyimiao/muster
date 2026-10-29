@@ -29,9 +29,13 @@
 //! - **无 Transactional Outbox**:消息落库与 SSE 广播不在同一事务里,
 //!   崩溃窗口内可能「落了库没广播」。补拉能纠正它,但补拉也还没做。
 //! - ~~无断线补拉~~ 已由 SSE 的 `Last-Event-ID` + 全局 `stream_seq` 解决(C2)。
-//!   仍缺的是**幂等**:同一条消息重复 POST 会落两次(客户端重试时会发生)。
-//! - **令牌走 query 参数**(`/events?token=`,浏览器的 EventSource 带不了自定义头),
-//!   会进访问日志;上线前换成一次性 ticket。
+//!   ~~仍缺的是幂等~~ 已解决(2026-10-29 块 1):`POST /channels/:cid/messages` 认
+//!   `Idempotency-Key` 头,同作者同键只落一条、不重复广播(`message.rs`)。
+//! - ~~令牌走 query 参数~~ `/events` 已改为一次性订阅票(`POST /events/ticket` 换票,
+//!   60 秒、用一次即作废,服务端只存哈希)。**`?token=` 兼容路径仍在**,用一次 warn 一次:
+//!   负责人 Li,复查条件:桌面壳下一版发布后删除。录像回放 `GET /recordings/:rid/file?token=`
+//!   仍是登录令牌走 query——`<video>` 要发多次 Range 请求,一次性票不适用,待换成
+//!   短期回放票:负责人 Li,复查条件:会议线阶段 2 收口时。
 //! - ~~`/ws` 仍在,迁完即删~~ 已删(2026-09-23):实时通道只剩 SSE 一条(`events.rs`)。
 //! - **无节点链锚定**(设计已定:节点上报事件头 `event_id+hash+prev_hash`、
 //!   不含 payload,服务端串链校验后记 `chain.anchor`)。**在它落地之前,

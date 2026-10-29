@@ -293,17 +293,22 @@ impl Remote {
 
     /// 发一条消息。**返回错误就要让人看见**:以为发到了团队、其实没发出去,
     /// 比发不出去更糟。
+    ///
+    /// `idempotency_key` 每条消息一个(调用方生成的 UUID),重试沿用同一个:
+    /// 服务端同作者同键只落一条,断网重发不会变成两条。
     pub async fn send(
         &self,
         channel: &str,
         body: &str,
         role: &str,
         run_id: Option<&str>,
+        idempotency_key: &str,
     ) -> Result<RemoteMessage, String> {
         let resp = self
             .client
             .post(format!("{}/channels/{channel}/messages", self.base))
             .bearer_auth(&self.token)
+            .header("Idempotency-Key", idempotency_key)
             .json(&PostMessage { body, role, run_id })
             .send()
             .await
