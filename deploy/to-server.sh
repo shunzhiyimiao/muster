@@ -115,14 +115,19 @@ else
   ok "内存 ${mem_mb}M"
 fi
 
-# 80/443 被占的话 Caddy 起不来,而报错要翻容器日志才看得见
-busy=$(ssh "$SERVER" "$SUDO ss -lntp 2>/dev/null | awk '\$4 ~ /:(80|443)\$/ {print \$4}'" || true)
-if [ -n "$busy" ]; then
-  bad "服务器上 80/443 已被占用:"
-  echo "$busy" | sed 's/^/    /'
-  die "先停掉占用的服务(常见是 nginx / apache),再重跑。"
+# 80/443 被占的话 Caddy 起不来,而报错要翻容器日志才看得见。
+# 重部署时占着它们的正是上一版的 Caddy——那不是冲突,跳过
+if [ -n "$(ssh "$SERVER" "$SUDO docker ps -q -f name=deploy-caddy-1 2>/dev/null")" ]; then
+  ok "80/443 由上一版的 Caddy 占着(重部署,up 会原地换掉它)"
+else
+  busy=$(ssh "$SERVER" "$SUDO ss -lntp 2>/dev/null | awk '\$4 ~ /:(80|443)\$/ {print \$4}'" || true)
+  if [ -n "$busy" ]; then
+    bad "服务器上 80/443 已被占用:"
+    echo "$busy" | sed 's/^/    /'
+    die "先停掉占用的服务(常见是 nginx / apache),再重跑。"
+  fi
+  ok "80/443 空闲"
 fi
-ok "80/443 空闲"
 
 # ---------------------------------------------------------------- Docker
 
