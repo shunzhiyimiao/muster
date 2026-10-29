@@ -188,10 +188,40 @@ fi
 
 # ---------------------------------------------------------------- 起服务
 
+DC="$SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml"
+
+# ---------------------------------------------------------------- 重部署前(改造计划 2026-10-26 的风险预案)
+#
+# 库已经在跑,说明这是重部署。三件事都在动手之前:
+# 1) 有进行中的会议就停下——重编 node 镜像会把会里的 Agent 踢掉,而会上的人只会觉得"它突然走了";
+# 2) pg_dump 一份——迁移只加列不删列,但回滚预案就是这份备份,放在 rsync 树外面,
+#    否则下次 --delete 会把它同步掉;
+# 3) 停 whisper / egress 腾内存——2 核 4G 的机器上 rustc 和 whisper 挤不下,OOM 只留一个 signal: 9。
+
+if ssh "$SERVER" "cd $REMOTE_DIR && $DC ps -q postgres 2>/dev/null | grep -q ."; then
+  step "重部署前"
+  live=$(ssh "$SERVER" "cd $REMOTE_DIR && $DC exec -T postgres psql -U muster -d muster -At \
+    -c 'SELECT count(*) FROM meeting WHERE ended_ms IS NULL' 2>/dev/null" || true)
+  if [ "${live:-0}" != "0" ]; then
+    die "线上有 ${live} 场进行中的会议。别在开会时部署——等散会再跑。"
+  fi
+  ok "没有进行中的会议"
+  BACKUP_DIR="${REMOTE_DIR}-backups"
+  ssh "$SERVER" "$SUDO mkdir -p $BACKUP_DIR && $SUDO chown \$(id -u):\$(id -g) $BACKUP_DIR \
+    && cd $REMOTE_DIR && $DC exec -T postgres pg_dump -U muster muster | gzip > $BACKUP_DIR/pg-\$(date +%Y%m%d-%H%M%S).sql.gz" \
+    || die "pg_dump 失败,不往下走——没有备份就没有回滚"
+  ok "库已备份到 ${BACKUP_DIR}/($(ssh "$SERVER" "ls $BACKUP_DIR | tail -1"))"
+  ssh "$SERVER" "cd $REMOTE_DIR && $DC stop whisper egress" >/dev/null 2>&1 || true
+  ok "已停 whisper / egress 给编译腾内存(up 会把它们带回来)"
+fi
+
+# ---------------------------------------------------------------- 起服务
+
 step "构建并启动(第一次要几分钟,在编 Rust)"
 
-ssh "$SERVER" "cd $REMOTE_DIR && $SUDO docker compose --env-file deploy/.env \
-  -f deploy/docker-compose.prod.yml up -d --build" 2>&1 | tail -20
+# --remove-orphans:块 2 把 agent 服务改名 node。老 agent 容器不删会继续拿口令登录,
+# 和新节点抢同一张工牌——会里就会出现两个小七
+ssh "$SERVER" "cd $REMOTE_DIR && $DC up -d --build --remove-orphans" 2>&1 | tail -20
 
 # ---------------------------------------------------------------- 验收
 #
@@ -226,7 +256,6 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://livekit.$DOM
 
 step "组织所有者"
 
-DC="$SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml"
 OWNER_PW=$(openssl rand -base64 18 | tr -d '\n=+/' | head -c 18)
 
 # bootstrap 只在 owner 不存在时成功。**不必先探测**——探测本身要一个口令,
