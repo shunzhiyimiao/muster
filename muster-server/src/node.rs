@@ -555,6 +555,10 @@ pub struct BreakerReport {
     pub meeting_id: Uuid,
     pub error_kind: String,
     pub failures: i32,
+    /// 节点跳闸时看到的「请 Agent」时刻。比会议现在的 agent_requested_ms 旧 = 人已经重试过,
+    /// 这条上报是过期的,不收——否则节点慢一拍的心跳会把刚清掉的记录又写回来。
+    #[serde(default)]
+    pub requested_ms: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -609,14 +613,19 @@ pub async fn heartbeat(
         if existing.as_ref().map(|(k, n)| k == &b.error_kind && *n == b.failures).unwrap_or(false) {
             continue; // 老消息,不重复记账
         }
-        let cid: Option<(String,)> = sqlx::query_as("SELECT channel_id FROM meeting WHERE id = $1")
-            .bind(b.meeting_id)
-            .fetch_optional(&db.pool)
-            .await?;
-        let Some((cid,)) = cid else {
+        let meeting: Option<(String, Option<i64>)> =
+            sqlx::query_as("SELECT channel_id, agent_requested_ms FROM meeting WHERE id = $1")
+                .bind(b.meeting_id)
+                .fetch_optional(&db.pool)
+                .await?;
+        let Some((cid, requested)) = meeting else {
             tracing::warn!(node = %node_id, meeting = %b.meeting_id, "熔断上报指向不存在的会议,忽略");
             continue;
         };
+        if b.requested_ms.is_some() && requested > b.requested_ms {
+            tracing::debug!(node = %node_id, meeting = %b.meeting_id, "过期的熔断上报(人已重试),不收");
+            continue;
+        }
         audit
             .append(NewEvent {
                 ts_ms: None,

@@ -133,6 +133,12 @@ async fn node_lifecycle_and_badge_boundaries() {
     let seed = seed(&s.db, "internal").await;
     let tag = seed.chan.trim_start_matches('c').to_string();
     let (owner, badge) = make_owner_and_badge(&s, &tag).await;
+    // 值班工牌是全组织一个:开发库里可能正有真的值班设置,测完要原样放回去
+    let prev_duty: Option<String> = sqlx::query_as::<_, (String,)>("SELECT value FROM org_setting WHERE key = 'duty_badge'")
+        .fetch_optional(&s.db.pool)
+        .await
+        .unwrap()
+        .map(|r| r.0);
     let (to, ta) = (token(&owner), token(&seed.alice));
 
     // 入网:两个节点,A 有本地转写能力,B 没有
@@ -274,7 +280,10 @@ async fn node_lifecycle_and_badge_boundaries() {
 
     // 收尾
     sqlx::query("DELETE FROM node WHERE id = $1 OR id = $2").bind(a.id).bind(b.id).execute(&s.db.pool).await.unwrap();
-    sqlx::query("DELETE FROM org_setting WHERE key = 'duty_badge' AND value = $1").bind(&badge).execute(&s.db.pool).await.unwrap();
+    match &prev_duty {
+        Some(v) => sqlx::query("UPDATE org_setting SET value = $1 WHERE key = 'duty_badge'").bind(v).execute(&s.db.pool).await.unwrap(),
+        None => sqlx::query("DELETE FROM org_setting WHERE key = 'duty_badge'").execute(&s.db.pool).await.unwrap(),
+    };
     for acc in [&owner, &badge] {
         sqlx::query("DELETE FROM account WHERE id = $1").bind(acc).execute(&s.db.pool).await.unwrap();
     }

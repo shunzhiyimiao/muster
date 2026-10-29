@@ -742,6 +742,8 @@ pub async fn end(
         .bind(mid)
         .execute(&db.pool)
         .await?;
+    // 散会了,节点对这场会的熔断记录也没意义了
+    sqlx::query("DELETE FROM node_breaker WHERE meeting_id = $1").bind(mid).execute(&db.pool).await?;
 
     // 散会即停录:录着的会结束了,文件要收口。停不了只告警,散会本身不受影响。
     crate::recording::auto_stop(&db, &hub, &audit, mid, &row.channel_id, &row.level, &id).await;
