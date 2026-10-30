@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use muster_provider::{Locality, ProviderMetadata, SpeechProvider};
+use muster_provider::{Locality, ProviderMetadata, SpeechProvider, SpeechStreamProvider};
 
 use crate::decision::{decide, RoutePlan, RouteRefusal, RouteRequest};
 use crate::policy::OrgPolicy;
@@ -83,6 +83,65 @@ impl SpeechRouter {
     /// 本次落点是否在本机。调用方据此记 `EgressBytes`:
     /// 本地记 0,云端记真实请求体大小(**音频比文本大几个数量级,不能漏记**)。
     pub fn is_local(res: &SpeechResolution) -> bool {
+        res.plan.primary_locality == Locality::Local
+    }
+}
+
+// ---------------------------------------------------------------- 流式(2026-10-30)
+
+/// 流式转写的落点决策。**与 [`SpeechRouter`] 同一条规则、同一个 `decide()`**,
+/// 只是候选集换成流式 provider。
+///
+/// 一条流**开的时候决定一次**:落点不能在一句话中间换——半句在本地、半句在云端,
+/// 外发记账与审计都没法说清楚这句话到底出没出门。
+pub struct SpeechStreamRouter {
+    order: Vec<String>,
+    providers: std::collections::HashMap<String, Arc<dyn SpeechStreamProvider>>,
+}
+
+/// 一条流的落点。
+pub struct SpeechStreamResolution {
+    pub provider: Arc<dyn SpeechStreamProvider>,
+    pub plan: RoutePlan,
+}
+
+impl SpeechStreamRouter {
+    pub fn new(providers: Vec<Arc<dyn SpeechStreamProvider>>) -> Self {
+        let order = providers.iter().map(|p| p.metadata().id.clone()).collect();
+        let map = providers.into_iter().map(|p| (p.metadata().id.clone(), p)).collect();
+        Self { order, providers: map }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.providers.is_empty()
+    }
+
+    pub fn candidates(&self) -> Vec<ProviderMetadata> {
+        self.order
+            .iter()
+            .filter_map(|id| self.providers.get(id))
+            .map(|p| p.metadata().clone())
+            .collect()
+    }
+
+    /// 决定这条流落在哪。`policy` 必须是**对话路由此刻用的同一份**。
+    pub fn resolve(
+        &self,
+        policy: &OrgPolicy,
+        req: &RouteRequest<'_>,
+    ) -> Result<SpeechStreamResolution, SpeechRouteError> {
+        let cands = self.candidates();
+        let plan = decide(&cands, policy, req)?;
+        let provider = self
+            .providers
+            .get(&plan.primary)
+            .cloned()
+            .ok_or_else(|| SpeechRouteError::Unknown(plan.primary.clone()))?;
+        Ok(SpeechStreamResolution { provider, plan })
+    }
+
+    /// 本条流是否落在本机。本地记 0 外发;云端按**上线的音频字节**记。
+    pub fn is_local(res: &SpeechStreamResolution) -> bool {
         res.plan.primary_locality == Locality::Local
     }
 }
@@ -172,5 +231,81 @@ mod tests {
         assert!(r.is_empty());
         let policy = OrgPolicy::new(Sensitivity::Internal).unwrap();
         assert!(r.resolve(&policy, &req(&[])).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use std::sync::Arc;
+
+    use muster_provider::{
+        Locality, ProviderError, ProviderMetadata, SpeechStreamHandle, SpeechStreamProvider, StreamOpen,
+    };
+
+    use super::*;
+    use crate::label::{LabelOrigin, LabelSource, Sensitivity};
+
+    struct FakeStream(ProviderMetadata);
+
+    #[async_trait::async_trait]
+    impl SpeechStreamProvider for FakeStream {
+        fn metadata(&self) -> &ProviderMetadata {
+            &self.0
+        }
+        async fn open(&self, _: StreamOpen) -> Result<SpeechStreamHandle, ProviderError> {
+            Err(ProviderError::Unreachable("测试桩不开流".into()))
+        }
+        async fn health_check(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    fn stt(id: &str, locality: Locality) -> Arc<dyn SpeechStreamProvider> {
+        Arc::new(FakeStream(ProviderMetadata {
+            id: id.into(),
+            display_name: id.into(),
+            model: "paraformer".into(),
+            locality,
+            endpoint: "ws://x".into(),
+        }))
+    }
+
+    fn req<'a>(sources: &'a [LabelSource]) -> RouteRequest<'a> {
+        RouteRequest { sources, requested_provider: None, default_provider: None }
+    }
+
+    /// **受限级会议的音频永不上云,流式也一样**——边界五改成"转写走密级路由"之后,
+    /// 这条就是它的全部含义:云端转写是显式的落点,受限级一律 fail-closed 拒绝。
+    #[test]
+    fn restricted_stream_never_reaches_cloud() {
+        let r = SpeechStreamRouter::new(vec![stt("dashscope-rt", Locality::Cloud)]);
+        let policy = OrgPolicy::new(Sensitivity::Internal).unwrap();
+        let sources = vec![LabelSource::new(LabelOrigin::Channel, Sensitivity::Restricted, "#安全组")];
+        let e = r.resolve(&policy, &req(&sources)).err().expect("受限级必须拒绝云端流式转写");
+        assert!(matches!(e, SpeechRouteError::Refused(_)), "{e}");
+
+        // 有本地引擎就落本地,不误伤
+        let r = SpeechStreamRouter::new(vec![stt("dashscope-rt", Locality::Cloud), stt("sherpa", Locality::Local)]);
+        let res = r.resolve(&policy, &req(&sources)).unwrap();
+        assert_eq!(res.provider.metadata().id, "sherpa");
+        assert!(SpeechStreamRouter::is_local(&res));
+    }
+
+    /// 公开 / 内部级允许走云,但演习一开同样锁死——与对话侧同一个 decide()。
+    #[test]
+    fn internal_may_use_cloud_until_drill_locks_it() {
+        let r = SpeechStreamRouter::new(vec![stt("dashscope-rt", Locality::Cloud)]);
+        let mut policy = OrgPolicy::new(Sensitivity::Internal).unwrap();
+        let res = r.resolve(&policy, &req(&[])).unwrap();
+        assert!(!SpeechStreamRouter::is_local(&res), "内部级可走云,但要按音频字节记外发");
+        policy.set_egress_locked(true);
+        assert!(r.resolve(&policy, &req(&[])).is_err(), "演习期云端流式转写必须被拒");
+    }
+
+    #[test]
+    fn empty_router_refuses() {
+        let r = SpeechStreamRouter::new(vec![]);
+        assert!(r.is_empty());
+        assert!(r.resolve(&OrgPolicy::new(Sensitivity::Internal).unwrap(), &req(&[])).is_err());
     }
 }

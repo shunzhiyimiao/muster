@@ -39,6 +39,14 @@ pub trait TranscriptSink: Send + Sync {
     /// 落点被拒 / 转写失败。**必须留痕**:纪要里的空白要能区分
     /// "没人说话"和"我们没能转写"。
     async fn on_refused(&self, u: &Utterance, reason: &str);
+
+    /// 转写在**降级**(2026-10-30):后端过载丢了音频、或本地发送队列溢出。
+    /// 这不是失败——引擎还在、连接还在,只是跟不上——所以**不计熔断**,
+    /// 只在纪要里留一条提示,让人知道这段有缺口。默认什么都不做,
+    /// 批处理落点与测试桩不必实现。
+    async fn on_degraded(&self, speaker: &str, note: &str) {
+        let _ = (speaker, note);
+    }
 }
 
 pub struct Pipeline {

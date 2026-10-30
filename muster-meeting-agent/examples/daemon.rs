@@ -25,6 +25,14 @@
 //! **过渡路径**:设了 `MUSTER_ACCOUNT` / `MUSTER_PASSWORD` 且没有节点密钥时仍按口令登录,
 //! 启动时打 warn。muster.top 切到节点身份后删除(见 muster-server lib.rs 诚实边界)。
 //!
+//! ## 转写:流式为主,批处理为备(2026-10-30)
+//!
+//! `MUSTER_STT_URL` 的协议决定走哪条路:`ws://stt:9000/stream` 是 Muster 自己的 sherpa-onnx
+//! 流式边车(`deploy/stt`),一个说话人一条流、引擎端点落句、有界队列背压、过载降级不熔断;
+//! `http://…/v1` 仍走 whisper 兼容的批处理(每句一个请求)——2026-10-29 线上就是在这条路上
+//! 被两个人说话压垮的,只留作兼容。`MUSTER_STT_HOTWORDS`(逗号分隔)是流式路径的热词,
+//! Agent 名与别名自动算在内。
+//!
 //! ## 推送为主,轮询兜底
 //!
 //! 订着服务端的 SSE(`/events`):`meeting` 事件(建会 / 请 Agent / 结束)一到,
@@ -56,11 +64,15 @@ use std::time::Duration;
 
 use muster_meeting_agent::{
     classify_error, node, room, Answer, Answerer, Breakers, ChunkConfig, Context, EnergyGate, ExtractOutcome,
+    OnTranscribed, StreamPipeline, Transcribed,
     Extractor, HttpSink, MentionRules, NodeKey, NodeRecord, Pipeline, SinkEvent, Summarizer, SummaryOutcome,
     Translation, Translator,
 };
-use muster_provider::{ProviderRegistry, SpeechCompatProvider, SpeechConfig, SpeechProvider};
-use muster_route::{OrgPolicy, Router, Sensitivity, SpeechRouter};
+use muster_provider::{
+    ProviderRegistry, SherpaStreamProvider, SpeechCompatProvider, SpeechConfig, SpeechProvider, SpeechStreamConfig,
+    SpeechStreamProvider,
+};
+use muster_route::{OrgPolicy, Router, Sensitivity, SpeechRouter, SpeechStreamRouter};
 use tokio::sync::{Mutex, RwLock};
 
 /// 兜底对账间隔。平时靠推送叫醒,这个只管"推送漏了"的情况。
@@ -114,6 +126,8 @@ struct Cfg {
     stt_url: String,
     stt_model: Option<String>,
     stt_prompt: Option<String>,
+    /// 流式路径的热词(人名、领域词);Agent 名与别名另外自动加上。
+    stt_hotwords: Vec<String>,
     provider_config: Option<String>,
     aliases: Vec<String>,
     agent_name: String,
@@ -229,6 +243,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stt_url,
         stt_model: std::env::var("MUSTER_STT_MODEL").ok(),
         stt_prompt: std::env::var("MUSTER_STT_PROMPT").ok(),
+        stt_hotwords: std::env::var("MUSTER_STT_HOTWORDS")
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+            .unwrap_or_default(),
         provider_config: std::env::var("MUSTER_PROVIDER_CONFIG").ok(),
         aliases: std::env::var("MUSTER_AGENT_ALIASES")
             .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
@@ -245,7 +262,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Mode::Node { node_id, .. } => println!("  服务端 {} · 节点 {node_id}", cfg.server),
         Mode::Password { account, .. } => println!("  服务端 {} · 身份 {account}(口令过渡路径)", cfg.server),
     }
-    println!("  转写落点 {}", cfg.stt_url);
+    println!(
+        "  转写落点 {}({})",
+        cfg.stt_url,
+        if cfg.stt_url.starts_with("ws") { "流式,一人一条流" } else { "批处理,whisper 兼容;两人同时说话会跟不上" }
+    );
     println!(
         "  作答 {}",
         if cfg.provider_config.is_some() { "已启用(本地配置)" } else { "看服务端 provider 目录" }
@@ -798,11 +819,7 @@ async fn serve_inner(
         _ => Sensitivity::Internal,
     };
 
-    let mut scfg = SpeechConfig::local_whisper(&cfg.stt_url);
-    if let Some(m) = &cfg.stt_model {
-        scfg.model = m.clone();
-    }
-    let stt: Arc<dyn SpeechProvider> = Arc::new(SpeechCompatProvider::new("whisper", scfg)?);
+    let streaming = cfg.stt_url.starts_with("ws://") || cfg.stt_url.starts_with("wss://");
 
     // 落点的动静:成功 → 进度;失败 → 熔断计数,连着三次同一类就叫停这场会
     let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<SinkEvent>();
@@ -810,7 +827,7 @@ async fn serve_inner(
         HttpSink::new(&cfg.server, &tok, meeting).with_lang(&cfg.lang).with_badge(badge).with_events(ev_tx),
     );
     {
-        let (cfg_m, stop_m, meeting_m) = (cfg.clone(), stop.clone(), meeting.to_string());
+        let (cfg_m, stop_m, meeting_m, sink_m) = (cfg.clone(), stop.clone(), meeting.to_string(), sink.clone());
         tokio::spawn(async move {
             while let Some(ev) = ev_rx.recv().await {
                 match ev {
@@ -822,6 +839,8 @@ async fn serve_inner(
                         let tripped = cfg_m.breakers.lock().unwrap().record_failure(&meeting_m, &kind, requested_ms);
                         if tripped {
                             tracing::warn!(meeting = %meeting_m, kind = %kind, "连续 3 次同一类错误,熔断:退出这场会,等人再点一次「请 Agent」");
+                            // 先闭嘴再叫停:还在飞的转写会继续失败,退出后不能再往纪要里写回执
+                            sink_m.mute();
                             stop_m.notify_one();
                         }
                     }
@@ -830,11 +849,22 @@ async fn serve_inner(
         });
     }
 
-    let mut pipeline = Pipeline::new(Arc::new(SpeechRouter::new(vec![stt])), sink.clone())
-        .with_language(cfg.lang.clone());
-    if let Some(p) = &cfg.stt_prompt {
-        pipeline = pipeline.with_prompt(p.clone());
-    }
+    // 批处理路径(whisper 兼容端点)。流式路径在下面按 streaming 分支建。
+    let batch_pipeline = if streaming {
+        None
+    } else {
+        let mut scfg = SpeechConfig::local_whisper(&cfg.stt_url);
+        if let Some(m) = &cfg.stt_model {
+            scfg.model = m.clone();
+        }
+        let stt: Arc<dyn SpeechProvider> = Arc::new(SpeechCompatProvider::new("whisper", scfg)?);
+        let mut pipeline = Pipeline::new(Arc::new(SpeechRouter::new(vec![stt])), sink.clone())
+            .with_language(cfg.lang.clone());
+        if let Some(p) = &cfg.stt_prompt {
+            pipeline = pipeline.with_prompt(p.clone());
+        }
+        Some(Arc::new(pipeline))
+    };
 
     let mut policy = OrgPolicy::new(Sensitivity::Internal)?;
     if std::env::var("MUSTER_DRILL").is_ok() {
@@ -890,17 +920,16 @@ async fn serve_inner(
         }
     }
 
-    let pipeline = Arc::new(pipeline);
     let (ctx2, sink2, name2) = (ctx.clone(), sink.clone(), cfg.agent_name.clone());
     let name = cfg.agent_name.clone();
     let ex_live = extractor.clone();
     let langs = Arc::new(LangCache::new());
     let src_lang = cfg.lang.clone();
 
-    let in_room = room::run(&lk_url, &lk_token, ChunkConfig::default(), EnergyGate::default(), move |u| {
-        let (p, pol, ctx, ans, sink, name, ex, tr, langs, src) = (
-            pipeline.clone(),
-            policy.clone(),
+    // 一句落库之后的后续:翻译、@ 应答、会中派活。**流式与批处理两条路共用**,
+    // 转写怎么来的不影响后面怎么处理。
+    let after: OnTranscribed = Arc::new(move |speaker: String, transcribed: Transcribed| {
+        let (ctx, ans, sink, name, ex, tr, langs, src) = (
             ctx.clone(),
             answerer.clone(),
             sink.clone(),
@@ -910,9 +939,7 @@ async fn serve_inner(
             langs.clone(),
             src_lang.clone(),
         );
-        async move {
-            let speaker = u.speaker.clone();
-            let Some(transcribed) = p.handle(u, &pol).await else { return };
+        Box::pin(async move {
             let text = transcribed.text;
             ctx.lock().await.push(&speaker, &text);
 
@@ -989,14 +1016,57 @@ async fn serve_inner(
                     sink.say(&name, &format!("[我这次没法回答:{why}]")).await;
                 }
             }
-        }
+        })
     });
+
+    let in_room: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), room::RoomError>> + Send>> =
+        match batch_pipeline {
+            None => {
+                // 流式:一个说话人一条流,引擎端点落句;热词 = Agent 名 + 别名 + 配置的领域词
+                let mut scfg = SpeechStreamConfig::local_sherpa(&cfg.stt_url);
+                if let Some(m) = &cfg.stt_model {
+                    scfg.model = m.clone();
+                }
+                let stt: Arc<dyn SpeechStreamProvider> = Arc::new(SherpaStreamProvider::new("sherpa", scfg)?);
+                let mut hot = vec![cfg.agent_name.clone()];
+                hot.extend(cfg.aliases.iter().cloned());
+                hot.extend(cfg.stt_hotwords.iter().cloned());
+                let sp = Arc::new(
+                    StreamPipeline::new(Arc::new(SpeechStreamRouter::new(vec![stt])), sink2.clone())
+                        .with_language(cfg.lang.clone())
+                        .with_hotwords(hot),
+                );
+                let consumer = sp.consumer(policy.clone(), level, after.clone());
+                let (u, t) = (lk_url.clone(), lk_token.clone());
+                Box::pin(async move { room::run_frames(&u, &t, consumer).await })
+            }
+            Some(p) => {
+                let (u, t, pol, after) = (lk_url.clone(), lk_token.clone(), policy.clone(), after.clone());
+                Box::pin(async move {
+                    room::run(&u, &t, ChunkConfig::default(), EnergyGate::default(), move |utt| {
+                        let (p, pol, after) = (p.clone(), pol.clone(), after.clone());
+                        async move {
+                            let speaker = utt.speaker.clone();
+                            let Some(tr) = p.handle(utt, &pol).await else { return };
+                            after(speaker, tr).await;
+                        }
+                    })
+                    .await
+                })
+            }
+        };
     // 被叫停就放下房间(drop 即断开),然后照常做散会提炼——结论往往在最后
     tokio::select! {
         r = in_room => r?,
         _ = stop.notified() => {
             tracing::info!(meeting = %meeting, "被叫停,退出房间");
+            // 还在飞的转写会继续失败:退出后不再往纪要里写回执
+            sink2.mute();
         }
+    }
+    // 退出记一笔:服务端落 meeting.leave,参会记录收口——不记的话它在参会者列表里就一直"在"
+    if sink2.leave().await {
+        tracing::info!(meeting = %meeting, "已离会");
     }
 
     // 散会提炼:提案,确认归人。散会后纪要不再收,说明走频道消息。

@@ -33,4 +33,4 @@ pub use label::{effective_sensitivity, LabelOrigin, LabelSource, Sensitivity, DE
 pub use policy::{OrgPolicy, PolicyError};
 pub use router::{Attempt, Resolution, RouteError, Router};
 pub use session::{LockState, Raise, SessionRatchet};
-pub use speech::{SpeechRouteError, SpeechResolution, SpeechRouter};
+pub use speech::{SpeechRouteError, SpeechResolution, SpeechRouter, SpeechStreamResolution, SpeechStreamRouter};

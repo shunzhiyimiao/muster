@@ -21,8 +21,17 @@
 //!    [`SpeechGate`] 是这道闸,A2 先用能量阈值,A3 换 VAD——同一个 trait,不改上层。
 //!
 //! 4. **转写走 `muster_route`,不直连**。会议音频是全系统密级最高的数据流;
-//!    详见 `docs/服务端架构.md` 的边界五。本 crate 只负责把音频切好、
-//!    交给 [`muster_route::SpeechRouter`],密级与演习封锁由那一层保证。
+//!    详见 `docs/服务端架构.md` 的边界五(2026-10-30 起是"转写走密级路由":受限级
+//!    只能落本地,公开 / 内部级允许显式配置的云端落点,外发按音频字节计量)。本 crate
+//!    只负责把音频交给 [`muster_route::SpeechStreamRouter`](流式)或
+//!    [`muster_route::SpeechRouter`](批处理),密级与演习封锁由那一层保证。
+//!
+//! 6. **流式是主路,批处理是备路**(2026-10-30)。2026-10-29 线上崩在"每句一个请求、
+//!    不限并发":两个人说话就把 2 核的 whisper 压垮,120 秒超时连着三次触发熔断。
+//!    [`stream`] 改成**一个说话人一条流**,引擎做端点检测落句,每路前面一个有界队列,
+//!    跟不上就丢音频并留一条提示——**降级不是故障,不计熔断**;熔断只留给连不上、
+//!    被拒这类真的卡住的情况。`chunk` + `pipeline` 那条批处理路保留给 whisper 兼容端点
+//!    与离线转写文件,daemon 按 `MUSTER_STT_URL` 的协议(ws / http)选路。
 //!
 //! 5. **字幕翻译与会议回顾也在这里做**(2026-10-08,对标 Teams)。它们都是模型调用,
 //!    会议内容要出门,密级必须进路由决策——与被 @ 作答同一条路。翻译目标由在场的人
@@ -33,8 +42,10 @@
 //!
 //! - 本进程**没有自己的审计链**:翻译 / 回顾 / 作答用了哪个模型、出没出网,只在日志里;
 //!   服务端链上有它们结果的哈希。接 muster-audit 是下一步。
-//! - 翻译是逐句、整句说完才翻(whisper 不流式),字幕有一两秒延迟;目标语言变更最多
-//!   10 秒后生效(Agent 缓存了语言集合)。
+//! - 翻译是逐句、整句说完才翻(流式只到"句"这一级,部分结果不翻),字幕延迟 = 端点检测的
+//!   静音等待(约 1 秒)+ 翻译;目标语言变更最多 10 秒后生效(Agent 缓存了语言集合)。
+//! - 流式路径不落盘原始音频(`MUSTER_DUMP_AUDIO` 只对批处理路有效),也不做本地能量闸——
+//!   静音由引擎的端点规则处理;云端落点按**上线的全部音频字节**计外发,包括静音。
 //! - 切句当前是**能量阈值 + 静音间隔**,不是 VAD:嘈杂环境会误判成一直在说话,
 //!   靠 `max_utterance_ms` 硬切兜底。A3 换 Silero。
 //! - 不做打断处理、不做回声消除——那些是 Agent 要"开口说话"(B4)时才需要的。
@@ -53,6 +64,7 @@ pub mod mention;
 pub mod node;
 pub mod pipeline;
 pub mod sink;
+pub mod stream;
 pub mod summary;
 pub mod translate;
 pub mod wav;
@@ -68,6 +80,7 @@ pub use node::{classify_error, Breakers, NodeKey, NodeRecord};
 pub use gate::{EnergyGate, SpeechGate};
 pub use pipeline::{Pipeline, Transcribed, TranscriptSink};
 pub use sink::{HttpSink, SinkEvent};
+pub use stream::{FrameConsumer, OnTranscribed, StreamConfig, StreamConsumer, StreamPipeline};
 pub use summary::{Summarizer, SummaryOutcome};
 pub use translate::{lang_name_zh, Translation, Translator};
 pub use wav::pcm16_to_wav;

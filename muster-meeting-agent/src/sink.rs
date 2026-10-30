@@ -13,6 +13,13 @@
 //! 会议纪要里"这段没人说话"和"这段我们没能转写"是完全不同的两件事:
 //! 前者是事实,后者是证据缺口,而**看不出来的证据缺口比缺口本身更糟**。
 //!
+//! ## 熔断之后闭嘴
+//!
+//! 熔断跳闸、或这场会被叫停之后,后面还在飞的转写会继续失败——每一句都往纪要里
+//! 写一条「未能转写」,2026-10-29 线上就是这样在退出后又落了十几条系统行。
+//! [`HttpSink::mute`] 把这些回执关掉:日志照打,纪要不再写。它只关失败回执,
+//! 不关正常转写——真转出来的话仍然要记。
+//!
 //! ## 行号
 //!
 //! 服务端给每行纪要一个 id。原文行回传成功后拿到它,翻译行靠 `origin_id` 指回去——
@@ -42,6 +49,8 @@ pub struct HttpSink {
     /// 节点会话以哪张工牌行事(X-Muster-Badge);口令登录的老路径不带。
     badge: Option<String>,
     events: Option<tokio::sync::mpsc::UnboundedSender<SinkEvent>>,
+    /// 熔断 / 叫停之后置真:失败回执与降级提示不再进纪要(见模块文档)。
+    muted: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -77,6 +86,33 @@ impl HttpSink {
             lang: "zh".into(),
             badge: None,
             events: None,
+            muted: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// 熔断跳闸 / 会议被叫停:此后失败回执与降级提示只进日志、不进纪要。
+    pub fn mute(&self) {
+        self.muted.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 离会(`POST /meetings/:id/leave`):Agent 退出时**记一笔**,服务端会落 meeting.leave
+    /// 审计事件并把参会记录收口;不记的话它在参会者列表里就一直"在"。
+    pub async fn leave(&self) -> bool {
+        let url = format!("{}/meetings/{}/leave", self.base, self.meeting_id);
+        match self.auth(self.client.post(&url)).send().await {
+            Ok(r) if r.status().is_success() => true,
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), "离会被拒");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "离会请求失败");
+                false
+            }
         }
     }
 
@@ -255,6 +291,9 @@ impl TranscriptSink for HttpSink {
 
     async fn on_refused(&self, u: &Utterance, reason: &str) {
         tracing::warn!(speaker = %u.speaker, reason, "这一句未能转写");
+        if self.is_muted() {
+            return; // 熔断 / 叫停之后:不再计数,也不再往纪要里写回执
+        }
         // 转写失败按类计数:连着三次同一类,daemon 会熔断这场会等人来看
         self.emit(SinkEvent::Failure { kind: crate::node::classify_error(&format!("转写 {reason}")).into() });
         // 以系统说明进纪要:留白会被读成"没人说话"。这条**不算进度**
@@ -268,6 +307,15 @@ impl TranscriptSink for HttpSink {
             ),
         )
         .await;
+    }
+
+    /// 降级只留提示,不计熔断、不算进度(见 pipeline.rs 的 TranscriptSink 文档)。
+    async fn on_degraded(&self, speaker: &str, note: &str) {
+        tracing::warn!(speaker, note, "转写降级");
+        if self.is_muted() {
+            return;
+        }
+        self.say_note("系统", note).await;
     }
 }
 
@@ -293,6 +341,16 @@ mod tests {
         assert!(note.contains("12s"), "要有时间点:{note}");
         assert!(note.contains("alice"), "要有说话人:{note}");
         assert!(note.contains("演习期无本地转写落点"), "要有原因:{note}");
+    }
+
+    /// 熔断之后不再写回执:mute 是单向的,一场会退出前不会再打开。
+    #[test]
+    fn mute_is_one_way() {
+        let s = HttpSink::new("http://localhost:8787", "tok", "m-1");
+        assert!(!s.is_muted());
+        s.mute();
+        assert!(s.is_muted());
+        assert_eq!(format!("{}/meetings/{}/leave", s.base, s.meeting_id), "http://localhost:8787/meetings/m-1/leave");
     }
 
     #[test]

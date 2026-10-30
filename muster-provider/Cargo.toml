@@ -15,6 +15,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 tokio = { version = "1.38", features = ["rt", "time", "macros"] }
+# 流式转写(speech_stream):与 deploy/stt 的 sherpa-onnx 边车、以及日后的云端实时识别说 WebSocket。
+# 钉 0.24 是因为 axum 已把它带进了 lock,不再多一份;rustls 走 reqwest 同一套。
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 toml = "0.8"
 tracing = "0.1"
 

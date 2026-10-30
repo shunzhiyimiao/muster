@@ -13,6 +13,12 @@
 //!
 //! ## Scope
 //!
+//! This is the **batch** transport: one utterance, one request. Meetings moved
+//! to [`crate::speech_stream`] on 2026-10-30 (one stream per speaker, endpoint
+//! detection in the backend) after this shape collapsed under two people
+//! talking on a 2-vCPU box; this one remains for whisper-compatible endpoints
+//! and offline files.
+//!
 //! One transport, per-backend presets — same decision as `openai_compat`.
 //! whisper.cpp, faster-whisper-server and OpenAI itself all speak multipart
 //! `POST /audio/transcriptions`; vendor quirks belong in a preset, not in a
@@ -65,8 +71,9 @@ pub struct SpeechConfig {
 }
 
 impl SpeechConfig {
-    /// Self-hosted whisper on the intranet. **This is the only preset that
-    /// should be used for meetings** — see the module docs.
+    /// Self-hosted whisper on the intranet. Since 2026-10-30 meetings use the
+    /// streaming transport ([`crate::speech_stream`]); this batch preset stays
+    /// for whisper-compatible endpoints and offline file transcription.
     pub fn local_whisper(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),

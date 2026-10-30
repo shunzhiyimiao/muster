@@ -15,6 +15,13 @@
 //! "谁在说话"的全局视角就没了;若共享一份加锁,每帧都要抢锁(16k 单声道
 //! 每 10ms 一帧,几个参会者就是每秒几百次)。所以:**每条轨一个任务只管
 //! 把帧丢进 channel,主循环独占累加器**。
+//!
+//! ## 帧的去处(2026-10-30)
+//!
+//! 主循环本身不再认识"句子":它把每一帧交给一个 [`FrameConsumer`]——
+//! 流式路径([`crate::stream::StreamConsumer`])把帧直接送进该说话人的转写流,
+//! 批处理路径(本文件的 `Batch`,即老的 `run`)把帧喂给累加器切句。
+//! 消费者的 `on_frame` **必须立刻返回**:它在主循环里,一等就是所有人一起等。
 
 use std::sync::Arc;
 
@@ -25,6 +32,7 @@ use tokio::sync::mpsc;
 
 use crate::chunk::{Accumulator, ChunkConfig, Utterance};
 use crate::gate::SpeechGate;
+use crate::stream::FrameConsumer;
 use crate::{CHANNELS, SAMPLE_RATE};
 
 /// 一帧音频 + 它属于谁。
@@ -53,7 +61,7 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// 连上房间,持续产出切好的句子,直到断开。
+/// 连上房间,持续产出切好的句子,直到断开(批处理路径:能量闸切句 → 每句一次转写)。
 ///
 /// `on_utterance` 每断出一句调用一次,**由本函数放到独立任务里跑**——
 /// 调用方不必自己记得 spawn。
@@ -67,20 +75,67 @@ pub async fn run<G, F, Fut>(
     token: &str,
     cfg: ChunkConfig,
     gate: G,
-    mut on_utterance: F,
+    on_utterance: F,
 ) -> Result<(), RoomError>
 where
     G: SpeechGate + 'static,
-    F: FnMut(Utterance) -> Fut,
+    F: FnMut(Utterance) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
+    run_frames(url, token, Batch { acc: Accumulator::new(cfg, gate), on_utterance }).await
+}
+
+/// 批处理路径的帧消费者:累加器切句,每句丢给独立任务。
+struct Batch<G: SpeechGate, F> {
+    acc: Accumulator<G>,
+    on_utterance: F,
+}
+
+#[async_trait::async_trait]
+impl<G, F, Fut> FrameConsumer for Batch<G, F>
+where
+    G: SpeechGate + 'static,
+    F: FnMut(Utterance) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    async fn on_frame(&mut self, speaker: &str, pcm: &[i16], ts_ms: u64) {
+        if let Some(u) = self.acc.push(speaker, pcm, ts_ms) {
+            // 丢给独立任务:主循环必须立刻回到消费音频上
+            tokio::spawn((self.on_utterance)(u));
+        }
+    }
+
+    async fn on_leave(&mut self, speaker: &str) {
+        // 人走了要把残留的半句吐出来——**最后一句往往是结论**
+        if let Some(u) = self.acc.remove(speaker) {
+            tokio::spawn((self.on_utterance)(u));
+        }
+    }
+
+    async fn finish(&mut self) {
+        // 会议结束:所有人的残留都要吐出来,一句都不能丢
+        let mut tail = Vec::new();
+        for s in self.acc.speakers() {
+            if let Some(u) = self.acc.remove(&s) {
+                tail.push(tokio::spawn((self.on_utterance)(u)));
+            }
+        }
+        // 散会时**要等**残留处理完:后面紧接着就是提炼行动项,
+        // 不等的话最后几句还没进纪要,提炼就看不见它们了
+        for t in tail {
+            let _ = t.await;
+        }
+    }
+}
+
+/// 连上房间,把每一帧交给 `consumer`,直到断开或 Ctrl-C。散会时等 `consumer.finish()` 收完尾。
+pub async fn run_frames<C: FrameConsumer>(url: &str, token: &str, mut consumer: C) -> Result<(), RoomError> {
     let (room, mut events) = Room::connect(url, token, RoomOptions::default())
         .await
         .map_err(|e| RoomError::Connect(e.to_string()))?;
     tracing::info!(room = %room.name(), "会议 Agent 已入房间");
 
     let (tx, mut rx) = mpsc::channel::<Frame>(FRAME_QUEUE);
-    let mut acc = Accumulator::new(cfg, gate);
     // 搬运任务的句柄。**散会时必须停掉**:否则它们继续往没人读的队列里塞,
     // 一边刷"转写跟不上采集,已丢帧"一边空转——真机上散会提炼那 20 秒里
     // 刷了 2000 多条警告,看着像出了大事,其实是没收摊。
@@ -101,10 +156,7 @@ where
             }
 
             Some(f) = rx.recv() => {
-                if let Some(u) = acc.push(&f.speaker, &f.pcm, f.ts_ms) {
-                    // 丢给独立任务:主循环必须立刻回到消费音频上
-                    tokio::spawn(on_utterance(u));
-                }
+                consumer.on_frame(&f.speaker, &f.pcm, f.ts_ms).await;
             }
 
             ev = events.recv() => {
@@ -118,11 +170,8 @@ where
                         }
                     }
                     RoomEvent::ParticipantDisconnected(p) => {
-                        // 人走了要把残留的半句吐出来——**最后一句往往是结论**
                         let who = p.identity().to_string();
-                        if let Some(u) = acc.remove(&who) {
-                            tokio::spawn(on_utterance(u));
-                        }
+                        consumer.on_leave(&who).await;
                         tracing::info!(speaker = %who, "参会者离开");
                     }
                     RoomEvent::Disconnected { reason } => {
@@ -139,20 +188,7 @@ where
 
     // 先停搬运任务,再收残留:顺序反了的话,收残留期间还在往队列里塞。
     pumps.abort_all();
-
-    // 会议结束:所有人的残留都要吐出来,一句都不能丢
-    let speakers: Vec<String> = acc.speakers();
-    let mut tail = Vec::new();
-    for s in speakers {
-        if let Some(u) = acc.remove(&s) {
-            tail.push(tokio::spawn(on_utterance(u)));
-        }
-    }
-    // 散会时**要等**残留处理完:后面紧接着就是提炼行动项,
-    // 不等的话最后几句还没进纪要,提炼就看不见它们了
-    for t in tail {
-        let _ = t.await;
-    }
+    consumer.finish().await;
     Ok(())
 }
 

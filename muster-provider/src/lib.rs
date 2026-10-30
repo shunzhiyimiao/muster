@@ -50,6 +50,7 @@ pub mod openai_compat;
 pub mod provider;
 pub mod registry;
 pub mod speech;
+pub mod speech_stream;
 pub mod sse;
 pub mod types;
 
@@ -60,6 +61,10 @@ pub use provider::{collect_stream, Locality, ModelProvider, ProviderMetadata};
 pub use registry::{ProviderRegistry, RegistryConfig};
 pub use speech::{
     SpeechCompatProvider, SpeechConfig, SpeechProvider, TranscribeRequest, TranscribeResponse,
+};
+pub use speech_stream::{
+    SherpaStreamProvider, SpeechStreamConfig, SpeechStreamEvent, SpeechStreamHandle, SpeechStreamInput,
+    SpeechStreamProvider, StreamOpen,
 };
 pub use types::{
     ChatMessage, ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, TokenUsage, ToolCall,
