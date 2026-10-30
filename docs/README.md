@@ -28,7 +28,7 @@
 | P1-04 Git Worktree Manager | — | ✅ 每 run 独立 worktree + 保留策略 + 合入后回收 |
 | P1-05 SQLite 本地存储 | C1 | ✅ `~/.muster/desktop-state.db`,与审计库分离 |
 | P2 权限语义内核 / P2-P3 服务端 | muster-identity / muster-server | 内核 ✅(can() 纯函数,五不变量穷举);服务端阶段 1–5 落地(见《服务端架构.md》§8);锚定、审批上服务端、OIDC 未做 |
-| 会议链路(《服务端架构.md》§7) | muster-meeting-agent / muster-server | ✅ 常驻 daemon 经 SSE 推送认领、听会、本地 whisper 转写、@应答、会中派活;会议事件进服务端审计链(2026-10-08);切句仍是能量阈值,未换 Silero VAD |
+| 会议链路(《服务端架构.md》§7) | muster-meeting-agent / muster-server | ✅ 常驻 daemon 经 SSE 推送认领、听会、流式转写(2026-10-30:deploy/stt 的 sherpa-onnx 边车,一人一条流、引擎端点落句、有界队列背压、过载降级不熔断;whisper 批处理为备路)、@应答、会中派活;会议事件进服务端审计链(2026-10-08);边界五改为"转写走密级路由" |
 | P4 工作流共享 | 能力库 / Capsule | ✅ 锻造 → 存储(哈希防篡改)→ 影子重放验真 → 跨团队引入 |
 | 技能(规划外,与 codex 同一 SKILL.md 约定) | muster-skill | ✅ v0(2026-09-22):本地发现、目录进提示词、read_skill、skill.offer / skill.read 只记哈希 |
 | 自定义工作流(规划外,入口:我的工作台 › 任务 › 工作流) | muster-workflow | ✅ v0(2026-09-23):定时(cron)+ 技能 + 白名单 http_get + 自有仓库自动合入 + html/pdf 产物;调度器在桌面壳内;pptx 未实现 |

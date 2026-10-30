@@ -22,7 +22,10 @@ class CB(RecognitionCallback):
             if RecognitionResult.is_sentence_end(s):
                 self.sentences.append(s["text"]); self.final_at = now
     def on_complete(self): self.done.set()
-    def on_error(self, result): print("error:", result, file=sys.stderr); self.done.set()
+    def on_error(self, result):
+        # SDK 的 RecognitionResult.__str__ 自己会崩(找 headers 属性),只取字段
+        info = {k: getattr(result, k, None) for k in ("status_code", "code", "message", "request_id")}
+        print("error:", info, file=sys.stderr); self.error = info; self.done.set()
     def on_close(self): self.done.set()
 
 def main():
@@ -42,11 +45,23 @@ def main():
         t0 = time.perf_counter(); cb.t_start = t0
         rec.start()
         step = int(sr * 0.1) * 2
+        cb.error = None
         for i in range(0, len(pcm), step):
-            rec.send_audio_frame(pcm[i:i + step]); time.sleep(0.1)
+            if cb.error:
+                break
+            try:
+                rec.send_audio_frame(pcm[i:i + step])
+            except Exception as e:  # 识别已经停了(通常是 on_error 之后)
+                print("send failed:", e, file=sys.stderr); break
+            time.sleep(0.1)
         t_end_audio = time.perf_counter()
-        rec.stop()
+        try:
+            rec.stop()
+        except Exception as e:
+            print("stop failed:", e, file=sys.stderr)
         cb.done.wait(timeout=20)
+        if cb.error:
+            raise SystemExit(f"DashScope 识别失败:{cb.error}")
         hyp = "".join(cb.sentences)
         ref = refs.get(sid, "")
         rows.append({"file": os.path.basename(path), "dur_s": round(dur, 2),
