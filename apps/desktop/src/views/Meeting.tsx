@@ -198,6 +198,9 @@ export function MeetingRoom({
   const [reason, setReason] = useState("");
   const [assigning, setAssigning] = useState<string | null>(null);
   const [assignee, setAssignee] = useState("");
+  /** 指派框是下拉(会上的人,Agent 除外),选「不在会上的人」才露出手填框——
+   *  自由文本会让人填进「小七」,而派发单只派给人(服务端 action.rs 的硬规则)。 */
+  const [assigneeOther, setAssigneeOther] = useState(false);
   const [devOpen, setDevOpen] = useState(false);
   const [devices, setDevices] = useState<Devices>({ mics: [], speakers: [], cams: [] });
   const [active, setActive] = useState<{ mic?: string; speaker?: string; cam?: string }>({});
@@ -600,7 +603,10 @@ export function MeetingRoom({
   const connected = state === ConnectionState.Connected;
   // Agent 是不是一个在场的参会者。名字来自它的账号 id / 显示名,
   // 两者都认——部署方可能改过显示名。
-  const agentHere = roster.some((p) => p.name === "A-007" || p.name === "小七");
+  const isAgentSeat = (p: Seat) => p.id === "A-007" || p.name === "A-007" || p.name === "小七";
+  const agentHere = roster.some(isAgentSeat);
+  /** 能被派活的人:会上的参会者,Agent 除外(派发单只派给人,服务端 action.rs 的硬规则)。 */
+  const people = roster.filter((p) => !isAgentSeat(p));
   const levelTone = meeting.level === "restricted" ? "red" : meeting.level === "internal" ? "amb" : undefined;
   const publishOk = connected && canPublish && !ended;
   const nameOf = (id: string) => roster.find((p) => p.id === id)?.name ?? id;
@@ -1042,17 +1048,46 @@ export function MeetingRoom({
                       <span className="text-[10.5px]" style={{ color: T.faint }}>等 {t.assignee} 处理——派活是请求,别人不能替他点</span>
                     )}
                     {pending && !t.assignee && isHost && assigning !== t.id && (
-                      <button onClick={() => { setAssigning(t.id); setAssignee(t.owner_hint ?? ""); }}
+                      <button onClick={() => {
+                        const hint = t.owner_hint ?? "";
+                        setAssigning(t.id);
+                        setAssigneeOther(!!hint && !people.some((p) => p.id === hint));
+                        setAssignee(hint);
+                      }}
                         className="text-[11px] font-semibold px-3 py-1 rounded-lg" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
                         指派负责人
                       </button>
                     )}
                     {pending && !t.assignee && isHost && assigning === t.id && (
-                      <div className="w-full flex items-center gap-1.5">
-                        <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="账号 id,例如 alice"
-                          className="flex-1 px-2.5 py-1 rounded-lg text-[11px] outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
-                        <button onClick={() => assign(t.id)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.indigo, color: "#fff" }}>指派</button>
-                        <button onClick={() => setAssigning(null)} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>取消</button>
+                      <div className="w-full flex items-center gap-1.5 flex-wrap">
+                        <select
+                          value={assigneeOther ? "__other" : assignee}
+                          onChange={(e) => {
+                            if (e.target.value === "__other") {
+                              setAssigneeOther(true);
+                              setAssignee("");
+                            } else {
+                              setAssigneeOther(false);
+                              setAssignee(e.target.value);
+                            }
+                          }}
+                          className="flex-1 px-2 py-1 rounded-lg text-[11px] outline-none"
+                          style={{ background: T.panel, border: `1px solid ${T.line}`, minWidth: 140 }}
+                        >
+                          <option value="">选一个会上的人…</option>
+                          {people.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}{p.isLocal ? "(你)" : ""}{p.name !== p.id ? ` · ${p.id}` : ""}
+                            </option>
+                          ))}
+                          <option value="__other">不在会上的人,手填账号…</option>
+                        </select>
+                        {assigneeOther && (
+                          <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="人员账号 id(不能是 Agent 工牌)"
+                            className="flex-1 px-2.5 py-1 rounded-lg text-[11px] outline-none" style={{ background: T.panel, border: `1px solid ${T.line}`, minWidth: 140 }} />
+                        )}
+                        <button onClick={() => assign(t.id)} disabled={!assignee.trim()} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.indigo, color: "#fff", opacity: assignee.trim() ? 1 : 0.45 }}>指派</button>
+                        <button onClick={() => { setAssigning(null); setAssigneeOther(false); }} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>取消</button>
                       </div>
                     )}
                     {pending && !t.assignee && !isHost && (
