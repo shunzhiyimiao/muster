@@ -33,8 +33,8 @@ import {
   type RemoteTrack,
 } from "livekit-client";
 import {
-  ArrowLeft, Bot, Captions, Check, CircleDot, FileText, Film, Mic, MicOff, Monitor, MonitorOff, PhoneOff,
-  Radio, Settings2, Square, Users, Video, VideoOff, X,
+  ArrowLeft, Bot, Captions, Check, CircleDot, FileText, Film, Maximize2, Mic, MicOff, Minimize2, Monitor, MonitorOff,
+  PhoneOff, Radio, Settings2, Square, Users, Video, VideoOff, X,
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, Tag } from "../ui";
@@ -183,6 +183,13 @@ export function MeetingRoom({
   const [local, setLocal] = useState<LocalMedia>({ mic: false, cam: false, screen: false });
   const [roster, setRoster] = useState<Seat[]>([]);
   const [screens, setScreens] = useState<string[]>([]);
+  /** 焦点区(2026-10-30):有人共享就自动放大最新的那路;点席位画面可以把摄像头钉上来;
+   *  「收起」后同一路共享不再自动弹回,直到有新的共享。`maxed` 是铺满窗口的放大层——
+   *  WKWebView 的 Fullscreen API 不可靠,在窗口内铺满比赌它靠谱。 */
+  const [pinKey, setPinKey] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [maxed, setMaxed] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const [wantsAgent, setWantsAgent] = useState(meeting.wants_agent);
   const [agentBusy, setAgentBusy] = useState(false);
   const [pulled, setPulled] = useState<ActionItem[]>([]);
@@ -224,12 +231,16 @@ export function MeetingRoom({
           isLocal: p.isLocal,
           micOn: p.isMicrophoneEnabled,
           speaking: p.isSpeaking,
-          hasVideo: videoTracks.current.has(p.identity),
+          // 关摄像头是 mute 不是 unpublish:轨还在但画面停了,按"没画面"显示首字母,别留黑格子
+          hasVideo:
+            videoTracks.current.has(p.identity) && !(p.getTrackPublication(Track.Source.Camera)?.isMuted ?? false),
         })),
       );
       setScreens(
         [...videoTracks.current.keys()].filter((k) => k.startsWith("screen:")).map((k) => k.slice(7)),
       );
+      // 有新的共享进来,之前「收起」的那路不再算数
+      setDismissed((d) => (d && !videoTracks.current.has(`screen:${d}`) ? null : d));
       refreshLocal();
     };
 
@@ -260,7 +271,14 @@ export function MeetingRoom({
 
     const drop = (track: RemoteTrack | LocalTrack, who?: string, source?: Track.Source) => {
       track.detach().forEach((e) => e.remove());
-      if (who) videoTracks.current.delete(keyFor(who, source));
+      // 按轨本身找键:停止共享时 pub.source 偶尔是 Unknown,按它算键会删掉摄像头的键,
+      // 于是席位里留下一个没流的黑 <video>——2026-10-30 验收报的就是这个
+      for (const [k, t] of videoTracks.current) {
+        if (t === track || (t.sid && t.sid === track.sid)) videoTracks.current.delete(k);
+      }
+      if (who && (source === Track.Source.Camera || source === Track.Source.ScreenShare)) {
+        videoTracks.current.delete(keyFor(who, source));
+      }
       refresh();
     };
 
@@ -486,9 +504,27 @@ export function MeetingRoom({
   };
   const toggleScreen = async () => {
     setErr(null);
-    const next = !room.localParticipant.isScreenShareEnabled;
+    setNote(null);
+    const lp = room.localParticipant;
+    const next = !lp.isScreenShareEnabled;
     try {
-      await room.localParticipant.setScreenShareEnabled(next, { audio: false });
+      try {
+        // audio: true —— Chrome / Edge 共享标签页时能带标签页声音,Windows 上共享整屏能带系统声音。
+        // WebKit(macOS 桌面壳的 WKWebView、Safari)不支持,有的忽略、有的报错:报错就退回只共享画面
+        await lp.setScreenShareEnabled(next, { audio: true });
+      } catch (e) {
+        const name = (e as { name?: string })?.name ?? "";
+        if (next && name !== "NotAllowedError" && name !== "AbortError") {
+          await lp.setScreenShareEnabled(true, { audio: false });
+        } else {
+          throw e;
+        }
+      }
+      if (next && lp.isScreenShareEnabled && !lp.getTrackPublication(Track.Source.ScreenShareAudio)) {
+        setNote(
+          "画面已共享,但没有声音:macOS 桌面壳的 WebKit 不能采集系统声音。要带声音,用 Chrome 网页端共享「标签页」并勾选「分享标签页音频」;要共享整机声音得装虚拟声卡(如 BlackHole)当麦克风。",
+        );
+      }
     } catch (e) {
       setErr(mediaErrorZh(e, "屏幕共享"));
     }
@@ -535,7 +571,30 @@ export function MeetingRoom({
     if (!el) return;
     hosts.current.set(key, el);
     const t = videoTracks.current.get(key);
-    if (t && !el.querySelector("video")) el.appendChild(t.attach());
+    if (t && !el.querySelector("video")) {
+      // 宿主换过(焦点区出现 / 消失 / 放大)时,轨上还挂着已经不在文档里的旧元素:
+      // 先把那些摘掉,否则 attachedElements 越攒越多,本地轨还会对着看不见的元素继续推帧
+      t.attachedElements.filter((e) => !e.isConnected).forEach((e) => t.detach(e));
+      el.appendChild(t.attach());
+    }
+  };
+
+  /** 焦点区放谁:钉住的优先(人还在、画面还在),否则最新的那路共享(收起的除外)。 */
+  const focusKey = (() => {
+    if (pinKey) {
+      if (pinKey.startsWith("screen:") ? screens.includes(pinKey.slice(7)) : roster.some((p) => p.id === pinKey && p.hasVideo)) {
+        return pinKey;
+      }
+    }
+    const latest = [...screens].reverse().find((who) => who !== dismissed);
+    return latest ? `screen:${latest}` : null;
+  })();
+  const focusWho = focusKey ? focusKey.replace(/^screen:/, "") : null;
+  const focusIsScreen = !!focusKey?.startsWith("screen:");
+  const unfocus = () => {
+    setMaxed(false);
+    if (pinKey) setPinKey(null);
+    else if (focusIsScreen && focusWho) setDismissed(focusWho);
   };
 
   const connected = state === ConnectionState.Connected;
@@ -611,20 +670,66 @@ export function MeetingRoom({
             </div>
           )}
 
-          {/* 焦点区:有人共享屏幕时出现。只做最小接线——谁共享就放谁的,多人共享并排;
-              真正的焦点布局(放大、切换、画中画)是阶段 2。 */}
-          {screens.length > 0 && (
-            <div className="mt-3.5 grid gap-3" style={{ gridTemplateColumns: `repeat(${screens.length}, 1fr)` }}>
-              {screens.map((who) => (
-                <div key={who} className="rounded-2xl overflow-hidden" style={{ background: "#111", border: `1px solid ${T.line}` }}>
-                  <div className="relative" style={{ aspectRatio: "16 / 9" }}>
-                    <div ref={(el) => mountHost(`screen:${who}`, el)} className="absolute inset-0 [&>video]:w-full [&>video]:h-full [&>video]:object-contain" />
-                  </div>
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold" style={{ background: "#fff", borderTop: `1px solid ${T.line}` }}>
-                    <Monitor size={11} style={{ color: T.indigo }} /> {nameOf(who)} 正在共享屏幕
-                  </div>
-                </div>
-              ))}
+          {note && (
+            <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.soft, color: T.sub }}>
+              {note}
+            </div>
+          )}
+
+          {/* 焦点区(2026-10-30):一次放一路——最新的共享自动上来(Teams 式),或者被钉上来的摄像头。
+              画面 contain 不裁切;「放大」铺满整个窗口(WKWebView 的 Fullscreen API 不可靠,不赌它)。
+              宿主 div 在普通与放大两种样式之间**是同一个元素**,只改样式不换节点,画面不会断。 */}
+          {focusKey && focusWho && (
+            <div
+              className={maxed ? "fixed inset-0 z-50 flex flex-col" : "mt-3.5 rounded-2xl overflow-hidden"}
+              style={maxed ? { background: "#000" } : { background: "#111", border: `1px solid ${T.line}` }}
+              onDoubleClick={() => setMaxed((m) => !m)}
+            >
+              <div className="relative flex-1" style={maxed ? undefined : { aspectRatio: "16 / 9" }}>
+                <div
+                  ref={(el) => mountHost(focusKey, el)}
+                  className="absolute inset-0 [&>video]:w-full [&>video]:h-full [&>video]:object-contain"
+                />
+              </div>
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold"
+                style={maxed ? { background: "#111", color: "#fff" } : { background: "#fff", borderTop: `1px solid ${T.line}` }}
+              >
+                {focusIsScreen ? <Monitor size={11} style={{ color: T.indigo }} /> : <Video size={11} style={{ color: T.indigo }} />}
+                {focusIsScreen ? `${nameOf(focusWho)} 正在共享屏幕` : `${nameOf(focusWho)} 的画面`}
+                {screens.length > 1 && (
+                  <span className="flex items-center gap-1 ml-2">
+                    {screens.map((who) => (
+                      <button
+                        key={who}
+                        onClick={() => { setPinKey(`screen:${who}`); setDismissed(null); }}
+                        className="px-2 py-0.5 rounded-md text-[10.5px]"
+                        style={{ background: `screen:${who}` === focusKey ? T.indigo : T.soft, color: `screen:${who}` === focusKey ? "#fff" : T.sub }}
+                      >
+                        {nameOf(who)}
+                      </button>
+                    ))}
+                  </span>
+                )}
+                <span className="ml-auto flex items-center gap-1">
+                  <button
+                    onClick={() => setMaxed((m) => !m)}
+                    title={maxed ? "还原(双击画面也行)" : "放大到整个窗口(双击画面也行)"}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px]"
+                    style={{ background: maxed ? "#333" : T.soft, color: maxed ? "#fff" : T.sub }}
+                  >
+                    {maxed ? <Minimize2 size={11} /> : <Maximize2 size={11} />} {maxed ? "还原" : "放大"}
+                  </button>
+                  <button
+                    onClick={unfocus}
+                    title="收回到席位格子"
+                    className="px-2 py-0.5 rounded-md text-[10.5px]"
+                    style={{ background: maxed ? "#333" : T.soft, color: maxed ? "#fff" : T.sub }}
+                  >
+                    收起
+                  </button>
+                </span>
+              </div>
             </div>
           )}
 
@@ -644,8 +749,17 @@ export function MeetingRoom({
                   transition: "border-color .12s, box-shadow .12s",
                 }}
               >
-                <div className="relative" style={{ aspectRatio: "4 / 3" }}>
-                  <div ref={(el) => mountHost(p.id, el)} className="absolute inset-0 [&>video]:w-full [&>video]:h-full [&>video]:object-cover" />
+                <div
+                  className="relative"
+                  style={{ aspectRatio: "4 / 3", cursor: p.hasVideo ? "zoom-in" : undefined }}
+                  title={p.hasVideo ? "点一下放大到焦点区" : undefined}
+                  onClick={() => { if (p.hasVideo) setPinKey(p.id); }}
+                >
+                  <div
+                    ref={(el) => mountHost(p.id, el)}
+                    className="absolute inset-0 [&>video]:w-full [&>video]:h-full [&>video]:object-cover"
+                    style={{ display: p.hasVideo ? undefined : "none" }}
+                  />
                   {!p.hasVideo && (
                     <div className="absolute inset-0 flex items-center justify-center">
                       <div
@@ -726,7 +840,7 @@ export function MeetingRoom({
               disabled={!publishOk || !SCREEN_SHARE_SUPPORTED}
               title={
                 SCREEN_SHARE_SUPPORTED
-                  ? "共享整个屏幕或某个窗口(不带系统声音)"
+                  ? "共享整个屏幕或某个窗口。macOS 桌面壳带不了系统声音(WebKit 限制);要带声音用 Chrome 网页端共享标签页"
                   : "这个 webview 不提供 getDisplayMedia,共享屏幕在此环境不可用——阶段 2 的试验结论之一"
               }
               className="flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl"

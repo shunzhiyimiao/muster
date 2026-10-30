@@ -172,6 +172,9 @@ async function joinMeeting(m) {
   // 能不能开麦由服务端 can() 决定,前端只照着显示
   $("micBtn").disabled = !info.can_publish;
   $("micBtn").title = info.can_publish ? "" : "你在这个频道没有发言权限(服务端权限内核判定)";
+  $("screenBtn").disabled = !info.can_publish || !SCREEN_SHARE_SUPPORTED;
+  if (!SCREEN_SHARE_SUPPORTED) $("screenBtn").title = "这个浏览器没有 getDisplayMedia,不能共享屏幕";
+  syncScreenBtn();
 
   const room = new Room({ adaptiveStream: true });
   state.room = room;
@@ -179,33 +182,42 @@ async function joinMeeting(m) {
     .on(RoomEvent.ConnectionStateChanged, (s) => {
       $("mState").textContent = s === ConnectionState.Connected ? "已入房间" : String(s);
     })
-    .on(RoomEvent.TrackSubscribed, (track, _pub, who) => {
+    .on(RoomEvent.TrackSubscribed, (track, pub, who) => {
       // 同一条轨只挂一次:重连时 TrackSubscribed 会再来一遍,
       // 挂两次就是两份声音同时播
       if (track.attachedElements?.length) return;
-      const el = track.attach();
       if (track.kind === Track.Kind.Video) {
-        seatFor(who).querySelector(".media").appendChild(el);
+        seatFor(who);
+        addVideo(track, who.identity, pub.source);
       } else {
-        // 音频要在 DOM 里才播,但它不属于任何一个可见格子
+        // 音频要在 DOM 里才播,但它不属于任何一个可见格子(共享屏幕的声音也走这里)
+        const el = track.attach();
         el.style.display = "none";
         $("audioSink").appendChild(el);
       }
       syncStage();
     })
-    .on(RoomEvent.TrackUnsubscribed, (t) => {
-      t.detach().forEach((e) => e.remove());
+    .on(RoomEvent.TrackUnsubscribed, (t, pub, who) => {
+      if (t.kind === Track.Kind.Video) removeVideo(keyOf(who.identity, pub.source));
+      else t.detach().forEach((e) => e.remove());
+      syncStage();
+    })
+    // 对方停止共享 / 关摄像头时 Unpublished 往往比 Unsubscribed 先到(甚至只到这一个):
+    // 按它摘画面,格子立刻回到首字母,不留黑屏
+    .on(RoomEvent.TrackUnpublished, (pub, who) => {
+      if (pub.kind === Track.Kind.Video) removeVideo(keyOf(who.identity, pub.source));
       syncStage();
     })
     // 自己的画面 LiveKit 不会"订阅"给自己,得单独接
     .on(RoomEvent.LocalTrackPublished, (pub) => {
-      if (pub.track?.kind === Track.Kind.Video) {
-        seatFor(room.localParticipant).querySelector(".media").appendChild(pub.track.attach());
-      }
+      if (pub.track?.kind === Track.Kind.Video) addVideo(pub.track, room.localParticipant.identity, pub.source);
+      syncScreenBtn();
       syncStage();
     })
     .on(RoomEvent.LocalTrackUnpublished, (pub) => {
-      pub.track?.detach().forEach((e) => e.remove());
+      if (pub.track?.kind === Track.Kind.Video) removeVideo(keyOf(room.localParticipant.identity, pub.source));
+      else pub.track?.detach().forEach((e) => e.remove());
+      syncScreenBtn();
       syncStage();
     })
     // 浏览器的自动播放限制:入会后几秒远端音轨才到,这时 play() 可能被拦,表现是
@@ -213,8 +225,15 @@ async function joinMeeting(m) {
     // 暴露成 canPlaybackAudio;被拦就亮一个按钮,让人亲手点一下 startAudio()
     .on(RoomEvent.AudioPlaybackStatusChanged, syncAudioGate)
     .on(RoomEvent.ActiveSpeakersChanged, syncSpeaking)
-    .on(RoomEvent.TrackMuted, syncStage)
-    .on(RoomEvent.TrackUnmuted, syncStage)
+    // 关摄像头是 mute 不是 unpublish:画面停了但轨还在,不藏起来就是一块黑格子
+    .on(RoomEvent.TrackMuted, (pub, who) => {
+      if (pub.kind === Track.Kind.Video) setVideoHidden(keyOf(who.identity, pub.source), true);
+      syncStage();
+    })
+    .on(RoomEvent.TrackUnmuted, (pub, who) => {
+      if (pub.kind === Track.Kind.Video) setVideoHidden(keyOf(who.identity, pub.source), false);
+      syncStage();
+    })
     .on(RoomEvent.ParticipantConnected, syncStage)
     .on(RoomEvent.ParticipantDisconnected, syncStage);
 
@@ -248,6 +267,44 @@ async function pushCaptionLang() {
   if (!state.meeting) return;
   await api(`/meetings/${state.meeting.id}/captions`, { method: "POST", body: JSON.stringify({ lang: caps.lang }) });
 }
+
+/* ---------------------------------------------------------------- 共享屏幕(2026-10-30)
+ *
+ * 带声音:`audio: true` 让 Chrome / Edge 在共享标签页时出现「分享标签页音频」的勾;Windows 上
+ * 共享整个屏幕还能带系统声音。Safari、Firefox、WKWebView 的 getDisplayMedia 不支持音频——
+ * 有的忽略、有的报错,所以报错就退回只共享画面,并把这件事说出来。
+ */
+const SCREEN_SHARE_SUPPORTED = typeof navigator.mediaDevices?.getDisplayMedia === "function";
+
+function syncScreenBtn() {
+  const on = !!state.room?.localParticipant?.isScreenShareEnabled;
+  $("screenBtn").textContent = on ? "停止共享" : "共享屏幕";
+  $("screenBtn").classList.toggle("active", on);
+}
+$("screenBtn").onclick = async () => {
+  const lp = state.room?.localParticipant;
+  if (!lp) return;
+  const next = !lp.isScreenShareEnabled;
+  try {
+    try {
+      await lp.setScreenShareEnabled(next, { audio: true });
+    } catch (e) {
+      // 用户点了取消 ⇒ NotAllowedError,别再弹第二次;其余多半是这个浏览器不认 audio
+      if (next && e?.name !== "NotAllowedError") {
+        await lp.setScreenShareEnabled(true, { audio: false });
+        toast("这个浏览器不支持带声音共享,已改为只共享画面");
+      } else if (e?.name !== "NotAllowedError") {
+        throw e;
+      }
+    }
+    if (next && lp.isScreenShareEnabled && !lp.getTrackPublication(Track.Source.ScreenShareAudio)) {
+      toast("画面已共享,但没带声音:Chrome / Edge 共享「标签页」并勾选「分享标签页音频」才有声音");
+    }
+  } catch (e) {
+    toast(`共享失败:${e.message || e}`, true);
+  }
+  syncScreenBtn();
+};
 
 /** 播放被浏览器拦住时亮出「开启声音」;放开了就藏起来。 */
 function syncAudioGate() {
@@ -305,6 +362,12 @@ const everyone = () =>
 
 function clearStage() {
   seats.clear();
+  for (const v of videos.values()) v.el.remove();
+  videos.clear();
+  focus.key = null;
+  focus.pinned = false;
+  focus.dismissed = null;
+  $("focus").hidden = true;
   $("stage").innerHTML = "";
   $("audioSink").innerHTML = "";
   $("stageHint").textContent = "";
@@ -318,10 +381,129 @@ function seatFor(p) {
   el.innerHTML =
     '<div class="media"><div class="initial"></div></div>' +
     '<div class="bar2"><span class="nm"></span><span class="you"></span><span class="mic"></span></div>';
+  // 点席位里的画面 ⇒ 钉到焦点区
+  el.querySelector(".media").onclick = () => {
+    const key = [...videos.keys()].find((k) => k.endsWith(":" + p.identity) && videos.get(k).el.parentElement === el.querySelector(".media"));
+    if (!key) return;
+    focus.key = key;
+    focus.pinned = true;
+    placeVideos();
+  };
   seats.set(p.identity, el);
   $("stage").appendChild(el);
   return el;
 }
+
+/* ---------------------------------------------------------------- 画面与焦点区(2026-10-30)
+ *
+ * 每条视频轨按「来源:谁」记一个键(cam:alice / screen:alice),摄像头和共享屏幕**不再塞进同一个格子**。
+ * 画面放哪由 placeVideos 决定:焦点区放一路,其余回各自的席位。有人共享屏幕就自动聚焦它
+ * (Teams 式);点席位里的画面可以把摄像头钉上来;「收起」后同一路共享不再自动弹回,直到有新的共享。
+ *
+ * 停止共享后格子变黑,之前的原因有两个:摄像头和屏幕两条轨都在同一个 .media 里,摘错或没摘;
+ * 以及轨结束了但 TrackUnsubscribed 晚到。现在按键摘,并且 Unpublished / 底层 ended 都触发摘除。
+ */
+const videos = new Map(); // key → { el, track, who, source, hidden }
+const focus = { key: null, pinned: false, dismissed: null };
+const keyOf = (who, source) => (source === Track.Source.ScreenShare ? "screen:" : "cam:") + who;
+
+function addVideo(track, who, source) {
+  const key = keyOf(who, source);
+  removeVideo(key, true);
+  const el = track.attach();
+  videos.set(key, { el, track, who, source, hidden: false });
+  // 共享者点浏览器自己的「停止共享」:底层轨先 ended,LiveKit 的事件随后才到(或不到)
+  track.mediaStreamTrack?.addEventListener?.("ended", () => {
+    if (videos.get(key)?.track === track) removeVideo(key);
+  });
+  if (source === Track.Source.ScreenShare) {
+    focus.dismissed = null; // 新的共享来了,之前收起的不算数
+    if (!focus.pinned) focus.key = key;
+  }
+  placeVideos();
+}
+
+function removeVideo(key, quiet = false) {
+  const v = videos.get(key);
+  if (!v) return;
+  videos.delete(key);
+  v.el.remove();
+  try {
+    v.track.detach(v.el);
+  } catch {
+    /* 轨已经没了 */
+  }
+  if (focus.key === key) {
+    focus.key = null;
+    focus.pinned = false;
+  }
+  if (!quiet) placeVideos();
+}
+
+function setVideoHidden(key, hidden) {
+  const v = videos.get(key);
+  if (!v) return;
+  v.hidden = hidden;
+  v.el.style.display = hidden ? "none" : "";
+  if (hidden && focus.key === key && !focus.pinned) focus.key = null;
+  placeVideos();
+}
+
+function placeVideos() {
+  // 没人钉住时:有共享就聚焦最新的那路(收起过的除外)
+  if (!focus.pinned && !focus.key) {
+    const s = [...videos.keys()].filter((k) => k.startsWith("screen:") && k !== focus.dismissed && !videos.get(k).hidden).pop();
+    if (s) focus.key = s;
+  }
+  if (focus.key && !videos.has(focus.key)) {
+    focus.key = null;
+    focus.pinned = false;
+  }
+  for (const [key, v] of videos) {
+    const seat = seats.get(v.who);
+    const host = key === focus.key ? $("focusHost") : seat?.querySelector(".media");
+    if (!host) {
+      v.el.remove();
+      continue;
+    }
+    if (v.el.parentElement !== host) host.appendChild(v.el);
+  }
+  // 同一个席位里既有摄像头又有(没被聚焦的)共享:共享更有信息量,摄像头先让位
+  for (const v of videos.values()) {
+    if (v.source === Track.Source.ScreenShare || v.hidden) continue;
+    const screenHere = [...videos.values()].some((o) => o.who === v.who && o.source === Track.Source.ScreenShare && o.el.parentElement === v.el.parentElement);
+    v.el.style.display = screenHere ? "none" : "";
+  }
+  const fv = focus.key ? videos.get(focus.key) : null;
+  $("focus").hidden = !fv;
+  if (fv) {
+    const p = everyone().find((x) => x.identity === fv.who);
+    const n = p ? nameOf(p) : fv.who;
+    $("focusLabel").textContent = fv.source === Track.Source.ScreenShare ? `${n} 正在共享屏幕` : `${n} 的画面`;
+  } else if (document.fullscreenElement === $("focus")) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+  for (const [id, el] of seats) {
+    const media = el.querySelector(".media");
+    media.classList.toggle("clickable", [...videos.values()].some((v) => v.who === id && !v.hidden && v.el.parentElement === media));
+  }
+}
+
+const toggleFullscreen = () => {
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  else $("focus").requestFullscreen?.().catch((e) => toast(`全屏被拒:${e.message || e}`, true));
+};
+$("fsBtn").onclick = toggleFullscreen;
+$("focusHost").ondblclick = toggleFullscreen;
+$("unfocusBtn").onclick = () => {
+  focus.dismissed = focus.key;
+  focus.key = null;
+  focus.pinned = false;
+  placeVideos();
+};
+document.addEventListener("fullscreenchange", () => {
+  $("fsBtn").textContent = document.fullscreenElement ? "退出全屏" : "全屏";
+});
 
 function updateSeat(p) {
   const el = seatFor(p);
@@ -330,8 +512,10 @@ function updateSeat(p) {
   el.querySelector(".nm").title = name;
   el.querySelector(".you").textContent = p.isLocal ? "(你)" : "";
   el.querySelector(".initial").textContent = [...name][0] || "?";
-  // 有画面就不显示首字母占位
-  el.querySelector(".initial").style.display = el.querySelector("video") ? "none" : "";
+  // 有(可见的)画面就不显示首字母占位;关了摄像头的轨虽然还挂着,但 hidden
+  const media = el.querySelector(".media");
+  const showing = [...videos.values()].some((v) => v.who === p.identity && !v.hidden && v.el.parentElement === media && v.el.style.display !== "none");
+  el.querySelector(".initial").style.display = showing ? "none" : "";
 
   const on = p.isMicrophoneEnabled;
   const mic = el.querySelector(".mic");
@@ -360,7 +544,7 @@ function syncStage() {
 
   $("peers").textContent = `${all.length} 人在场`;
   // 没人开摄像头时别留一片空白格子而不解释
-  const anyVideo = all.some((p) => seats.get(p.identity)?.querySelector("video"));
+  const anyVideo = [...videos.values()].some((v) => !v.hidden);
   $("stageHint").textContent = !state.room
     ? ""
     : anyVideo
