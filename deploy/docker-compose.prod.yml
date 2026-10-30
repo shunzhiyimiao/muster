@@ -6,7 +6,7 @@
 # 所以这份文件里几处刻意的收紧:
 #   - **数据库不映射端口**。开发那份映射 5433 是为了让宿主机的 psql 能连;
 #     公网上那等于把 Postgres 直接挂在互联网上。要连就用 `docker compose exec`。
-#   - **whisper 不映射端口**。它是个无鉴权的转写接口,谁都能拿它白嫖算力。
+#   - **转写边车 stt 不映射端口**。它是个无鉴权的转写接口,谁都能拿它白嫖算力。
 #   - **密钥一律来自 .env**,没有仓库里的默认值可用(开发那份的 devsecret
 #     是公开在仓库里的)。
 #   - **只有 Caddy 对外**,应用自己只在 compose 网络里听。
@@ -144,21 +144,21 @@ services:
     volumes:
       - recordings:/out
 
-  whisper:
-    image: fedirz/faster-whisper-server:latest-cpu
+  # 转写:sherpa-onnx 流式边车(2026-10-30 取代 faster-whisper;协议与模型见 deploy/stt/)。
+  # **没有 ports**:它是个无鉴权的转写接口,暴露出去谁都能白嫖算力。只有同一网络里的会议 Agent 需要它。
+  #
+  # **给它设上限,给媒体面留一个核。** LiveKit 在同一台机器上转发音频包,CPU 一饱和包的调度就抖,
+  # 表现是会议里声音卡顿。流式 Paraformer 单路 RTF 0.16、两路 0.23(2 vCPU 实测),
+  # 1.5 个核够两三个人同时说;生产要四人以上流畅就得 4 核机器。
+  stt:
+    build: ./stt
     restart: unless-stopped
-    # **没有 ports**:它是个无鉴权的转写接口,暴露出去谁都能白嫖算力,
-    # 还能拿它当放大器。只有同一网络里的会议 Agent 需要它
-    #
-    # **给它设上限,给媒体面留一个核。**
-    # 实测转写一段音频会吃掉 4.45 个核——比 4 核的机器还多。不限的话它会
-    # 把整台机器占满,而 LiveKit 正在同一台机器上转发音频包:CPU 一饱和,
-    # 包的调度就开始抖,表现是**会议里声音卡顿**,而 whisper 那边一切正常。
-    #
-    # 少一个核只是让转写慢一点(仍快过实时),而卡顿是所有人当场就听得见的。
-    cpus: ${WHISPER_CPUS:-3}
+    cpus: ${STT_CPUS:-1.5}
     environment:
-      WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
+      STT_MODEL_KIND: ${STT_MODEL_KIND:-paraformer-online}
+      STT_THREADS: "1"
+      STT_MAX_STREAMS: ${STT_MAX_STREAMS:-8}
+      STT_QUEUE_MS: ${STT_QUEUE_MS:-20000}
 
   # 组织节点:会议 Agent 常驻服务以**节点身份**跑在这里(块 2)。按钮只在服务端记"意愿"
   # (meeting.wants_agent),是这个进程经 SSE 认领、进会、转写、@应答、散会提炼——
@@ -177,9 +177,10 @@ services:
       # 入会票里的 LiveKit 地址是给外面的人的(wss://livekit.<域名>,经 Caddy);
       # 同一个 compose 网络里直接走容器名,不绕公网、不碰 DNS 与证书、不靠 NAT 回环
       MUSTER_LIVEKIT_URL: ws://livekit:7880
-      MUSTER_STT_URL: http://whisper:8000/v1
-      MUSTER_STT_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small}
+      # ws:// 走流式(一人一条流);换回 http://…/v1 就是 whisper 兼容的批处理备路
+      MUSTER_STT_URL: ${MUSTER_STT_URL:-ws://stt:9000/stream}
       MUSTER_STT_LANG: ${MUSTER_STT_LANG:-zh}
+      MUSTER_STT_HOTWORDS: ${MUSTER_STT_HOTWORDS:-}
       MUSTER_AGENT_NAME: ${MUSTER_AGENT_NAME:-小七}
       MUSTER_AGENT_ALIASES: ${MUSTER_AGENT_ALIASES:-小七,小琪,小齐,小其}
       KIMI_API_KEY: ${KIMI_API_KEY:-}
@@ -191,7 +192,7 @@ services:
       - node_home:/node
     depends_on:
       - muster-server
-      - whisper
+      - stt
       - livekit
 
 volumes:

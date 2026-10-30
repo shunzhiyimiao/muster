@@ -86,18 +86,20 @@ services:
     volumes:
       - ./recordings:/out
 
-  # 转写:**必须是本地的**。会议音频是全系统密级最高的数据流,
-  # 走云端 STT 会让演习报告说「零外发」而整场会议音频都出去了。
-  # 它对 Muster 就是一个 Locality::Local 的 OpenAI 兼容 provider。
-  # 换成任何暴露 OpenAI 兼容 /v1/audio/transcriptions 的镜像都行——
-  # Muster 只认那个接口契约。下面这个镜像的接口路径请以其文档为准,
-  # 对不上就换镜像或加一层适配,**不要改成调云端 API**。
-  whisper:
-    image: fedirz/faster-whisper-server:latest-cpu
+  # 转写(2026-10-30 起是 sherpa-onnx 流式边车,取代 faster-whisper):一个说话人一条 WebSocket,
+  # 引擎端点落句,过载丢音频并告诉 Agent 丢了多少——批处理 + 无限扇出的 whisper 在 2 核机器上
+  # 两个人说话就崩(docs/转写方案评估-2026-10-30.md)。协议与模型见 deploy/stt/。
+  #
+  # 它对 Muster 是一个 Locality::Local 的流式 provider。边界五(2026-10-30 改):转写走密级路由——
+  # 受限级会议只能落这里;公开 / 内部级允许显式配置的云端落点,外发按音频字节计入审计。
+  # **不是静默回退**:云端落点要在 provider 目录里明写,这里的边车永远是本地的那一个。
+  stt:
+    build: ./stt
     environment:
-      # 档位取舍见 dev-up.sh 的实测表:small 是 CPU 上的甜点,medium 断崖式变慢
-      WHISPER__MODEL: Systran/faster-whisper-small
-    ports: ["9000:8000"]
+      STT_MODEL_KIND: paraformer-online
+      STT_THREADS: "1"          # 每路一个线程:2 核机器上实测比双线程快
+      STT_MAX_STREAMS: "8"
+    ports: ["9000:9000"]        # 开发机暴露给本机的 daemon;生产 compose 不映射
 
 volumes:
   pgdata:

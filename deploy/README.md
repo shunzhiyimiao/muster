@@ -1,7 +1,7 @@
 # 服务端本地起步
 
 ```bash
-cd deploy && docker compose up -d          # PostgreSQL + LiveKit + whisper
+cd deploy && docker compose up -d          # PostgreSQL + LiveKit + 转写边车 stt(首次要构建镜像、下模型)
 export DATABASE_URL=postgres://muster:muster@localhost:5433/muster   # 5433:见 compose 注释
 export MUSTER_JWT_SECRET=$(openssl rand -hex 32)   # 少于 32 字符会被拒绝启动
 cargo run -p muster-server
@@ -117,7 +117,7 @@ fail-closed 直接拒掉。
 | 11 | 散会提炼 | Ctrl-C 停掉 agent | 打印行动项,**待人确认** |
 
 第 2 步最值得先做:它不需要 LiveKit、不需要开会、不需要麦克风,却能同时验证
-provider、路由、密级和 whisper 后端。
+provider、路由、密级和转写后端(流式边车用 `--example stream_file`,批处理备路用 `transcribe_file`)。
 
 ## 常见的坑(都是真机上撞过的)
 

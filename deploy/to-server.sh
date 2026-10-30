@@ -94,7 +94,7 @@ else
 fi
 if [ "${free_gb:-0}" -lt "$need_gb" ]; then
   bad "根分区可用空间 ${free_gb}G,不够(这次需要 ${need_gb}G)。"
-  die "编译整个 Rust 工作区 + Docker 镜像 + whisper 模型要 20G 以上。
+  die "编译整个 Rust 工作区 + Docker 镜像 + 转写模型要 20G 以上。
   **EC2 默认根卷只有 8G**——在控制台把 EBS 卷扩到 30G,然后:
     sudo growpart /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1
   (Amazon Linux 用 xfs_growfs 代替 resize2fs)"
@@ -179,7 +179,8 @@ POSTGRES_PASSWORD=\$(gen)
 MUSTER_JWT_SECRET=\$(gen)
 LIVEKIT_API_KEY=musterkey
 LIVEKIT_API_SECRET=\$(gen)
-WHISPER_MODEL=Systran/faster-whisper-small
+# 转写边车(sherpa-onnx 流式)给多少核:2 核机器留 1.5,其余给 LiveKit 转发音频包
+STT_CPUS=1.5
 RUST_LOG=muster_server=info
 # 组织节点(compose 的 node 服务)的名字。节点不用口令,靠本机生成的密钥入网
 MUSTER_NODE_NAME=server-node
@@ -201,7 +202,7 @@ DC="$SUDO docker compose --env-file deploy/.env -f deploy/docker-compose.prod.ym
 # 1) 有进行中的会议就停下——重编 node 镜像会把会里的 Agent 踢掉,而会上的人只会觉得"它突然走了";
 # 2) pg_dump 一份——迁移只加列不删列,但回滚预案就是这份备份,放在 rsync 树外面,
 #    否则下次 --delete 会把它同步掉;
-# 3) 停 whisper / egress 腾内存——2 核 4G 的机器上 rustc 和 whisper 挤不下,OOM 只留一个 signal: 9。
+# 3) 停 stt / egress 腾内存——2 核 4G 的机器上 rustc 和转写引擎挤不下,OOM 只留一个 signal: 9。
 
 if ssh "$SERVER" "cd $REMOTE_DIR && $DC ps -q postgres 2>/dev/null | grep -q ."; then
   step "重部署前"
@@ -221,8 +222,8 @@ if ssh "$SERVER" "cd $REMOTE_DIR && $DC ps -q postgres 2>/dev/null | grep -q .";
     && cd $REMOTE_DIR && $DC exec -T postgres pg_dump -U muster muster | gzip > $BACKUP_DIR/pg-\$(date +%Y%m%d-%H%M%S).sql.gz" \
     || die "pg_dump 失败,不往下走——没有备份就没有回滚"
   ok "库已备份到 ${BACKUP_DIR}/($(ssh "$SERVER" "ls $BACKUP_DIR | tail -1"))"
-  ssh "$SERVER" "cd $REMOTE_DIR && $DC stop whisper egress" >/dev/null 2>&1 || true
-  ok "已停 whisper / egress 给编译腾内存(up 会把它们带回来)"
+  ssh "$SERVER" "cd $REMOTE_DIR && $DC stop stt whisper egress" >/dev/null 2>&1 || true
+  ok "已停 stt / egress 给编译腾内存(up 会把它们带回来)"
 fi
 
 # ---------------------------------------------------------------- 起服务

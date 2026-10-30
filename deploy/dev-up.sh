@@ -7,7 +7,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 SERVER=http://localhost:8787
-STT=http://localhost:9000/v1
+STT=http://localhost:9000
 
 # 状态走 stderr,stdout 只留数据:否则 $(...) 捕获返回值时会把提示一起吃进去
 say() { printf "\n\033[1m%s\033[0m\n" "$*" >&2; }
@@ -27,7 +27,7 @@ LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/nul
 LAN_IP=${LAN_IP:-127.0.0.1}
 export LIVEKIT_NODE_IP="$LAN_IP"
 
-say "1/5 起依赖(PostgreSQL / LiveKit / redis / Egress / whisper)"
+say "1/5 起依赖(PostgreSQL / LiveKit / redis / Egress / 转写边车 stt)"
 mkdir -p deploy/recordings
 ok "局域网地址 ${LAN_IP}(第二台机器用它连过来)"
 if ! docker info >/dev/null 2>&1; then
@@ -45,13 +45,13 @@ echo
 PGPASSWORD=muster psql -h 127.0.0.1 -p 5433 -U muster -d muster -c 'select 1' >/dev/null 2>&1 \
   && ok "PostgreSQL 5433 可连" || { bad "PostgreSQL 连不上"; exit 1; }
 
-printf "  等 whisper(首次要下模型,可能几分钟)"
+printf "  等转写边车(首次要构建镜像并下载模型,可能几分钟)"
 for _ in $(seq 1 90); do
-  curl -s -m 3 "$STT/models" >/dev/null 2>&1 && break
+  curl -s -m 3 "$STT/health" >/dev/null 2>&1 && break
   printf "."; sleep 4
 done
 echo
-curl -s -m 5 "$STT/models" >/dev/null 2>&1 && ok "whisper 就绪" || bad "whisper 还没起来(转写会失败,其余可继续)"
+curl -s -m 5 "$STT/health" >/dev/null 2>&1 && ok "转写边车就绪($(curl -s -m 5 "$STT/health" | tr -d '\n'))" || bad "转写边车还没起来(转写会失败,其余可继续)"
 
 say "2/5 环境变量"
 cat > /tmp/muster-dev.env <<'ENV'
@@ -147,7 +147,7 @@ cat <<NEXT
 
   会议 Agent 常驻服务(以组织节点身份,块 2):
     source /tmp/muster-dev.env
-    export MUSTER_NODE_HOME=~/.muster/node MUSTER_STT_MODEL=Systran/faster-whisper-small
+    export MUSTER_NODE_HOME=~/.muster/node MUSTER_STT_URL=ws://localhost:9000/stream
     cargo run -p muster-meeting-agent --features livekit --example daemon
     # 第一次会打印设备码,另开一个终端批准并把值班工牌分配过去:
     cargo run -q -p muster-server --example admin -- node-approve <设备码>
@@ -157,17 +157,14 @@ cat <<NEXT
   单场会议的 Agent(旧的一次性方式,先在桌面壳里发起会议,拿到会议 id 再跑):
     source /tmp/muster-dev.env
     export MUSTER_TOKEN=\$(cat /tmp/muster-agent-token)
-    # 模型档位实测(本机 CPU,6.2s 中文音频,均已预热):
-    #   base   0.9s(快 7 倍)  错字多:"周会"→"周慧",还冒繁体字
-    #   small  2.3s(快 2.7 倍)简体正常,"周会"对 ← 用它
-    #   medium 55.8s(**慢 9 倍**)不能用
-    # small 和 medium 之间是断崖,不是斜坡——别想着"再往上调一格试试"。
-    # 注:第一次跑要下载权重(small 约 500MB),那次的耗时不算数。
-    export MUSTER_STT_MODEL=Systran/faster-whisper-small
+    # 这个老入口仍走 whisper 兼容的批处理(MUSTER_STT_URL=http://…/v1);
+    # 2026-10-30 起会议 Agent 的正路是 daemon + ws:// 流式边车
+    export MUSTER_STT_URL=http://localhost:9000/v1 MUSTER_STT_MODEL=Systran/faster-whisper-small
     export MUSTER_STT_PROMPT="以下是简体中文的技术周会记录。"
     export MUSTER_PROVIDER_CONFIG=<你的 provider.toml>   # 不配则只转写不作答
     cargo run -p muster-meeting-agent --features livekit --example agent -- <会议id>
 
   只想验转写通不通(最便宜的一步,不用开会):
-    cargo run -p muster-meeting-agent --example transcribe_file -- <某个.wav>
+    cargo run -p muster-meeting-agent --example stream_file -- <某个 16k 单声道 .wav>
+    # 批处理备路(whisper 兼容端点):--example transcribe_file
 NEXT
