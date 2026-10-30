@@ -226,8 +226,14 @@ if ssh "$SERVER" "cd $REMOTE_DIR && $DC ps -q postgres 2>/dev/null | grep -q .";
     && cd $REMOTE_DIR && $DC exec -T postgres pg_dump -U muster muster | gzip > $BACKUP_DIR/pg-\$(date +%Y%m%d-%H%M%S).sql.gz" \
     || die "pg_dump 失败,不往下走——没有备份就没有回滚"
   ok "库已备份到 ${BACKUP_DIR}/($(ssh "$SERVER" "ls $BACKUP_DIR | tail -1"))"
-  ssh "$SERVER" "cd $REMOTE_DIR && $DC stop stt whisper egress" >/dev/null 2>&1 || true
-  ok "已停 stt / egress 给编译腾内存(up 会把它们带回来)"
+  # 一个一个停:compose 不认识的服务名(比如已经从 compose 里删掉的 whisper)会让整条命令失败,
+  # 而 || true 把失败吞掉,结果什么都没停——2026-10-30 实测如此,rustc 只好和转写引擎挤内存。
+  # 改名前的旧容器用 docker stop 按容器名停,up --remove-orphans 会把它们清掉。
+  for s in stt egress; do
+    ssh "$SERVER" "cd $REMOTE_DIR && $DC stop $s" >/dev/null 2>&1 || true
+  done
+  ssh "$SERVER" "$SUDO docker stop deploy-whisper-1" >/dev/null 2>&1 || true
+  ok "已停 stt / egress(及旧的 whisper)给编译腾内存(up 会把它们带回来)"
 fi
 
 # ---------------------------------------------------------------- 起服务
