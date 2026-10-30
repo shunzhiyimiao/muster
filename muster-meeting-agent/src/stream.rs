@@ -22,6 +22,14 @@
 //! 由 daemon 按类计数。一条流死了之后隔 [`StreamConfig::reopen_after`] 再试着重开,
 //! 期间这个人的音频丢掉(也算降级);连着重开失败三次,熔断自然会跳。
 //!
+//! ## 喂音频的那条线上不能有慢事
+//!
+//! 一句落出来之后的事——回传服务端、翻译、@ 应答、会中派活——有的要调模型,一等就是几秒。
+//! 这些**绝不能在喂音频的循环里 await**:循环一停,发送队列 3 秒就满,这个人接下来的话全丢。
+//! 2026-10-30 线上验收第一次就撞上:owner 叫了一声小七,Agent 去问模型,3 秒音频被跳过。
+//! 所以每条流另起一个"落句"任务:回传按顺序做(纪要行序要对),后续处理各自 spawn 出去;
+//! 喂音频的循环只往它的队列里丢一下,永远不等。
+//!
 //! ## 外发计量
 //!
 //! 落点在开流时决定一次(见 [`muster_route::SpeechStreamRouter`]),一条流不换落点。
@@ -293,7 +301,7 @@ async fn run_lane(
     };
     let is_local = SpeechStreamRouter::is_local(&res);
     let open = StreamOpen { speaker: speaker.clone(), language: pipe.language.clone(), hotwords: pipe.hotwords.clone() };
-    let SpeechStreamHandle { mut input, mut events, wire_bytes } = match res.provider.open(open).await {
+    let SpeechStreamHandle { input, events, wire_bytes } = match res.provider.open(open).await {
         Ok(h) => h,
         Err(e) => {
             sink.on_refused(&marker(&speaker, opened_at), &format!("转写流打不开:{e}")).await;
@@ -302,6 +310,43 @@ async fn run_lane(
     };
     tracing::info!(speaker = %speaker, provider = %res.plan.primary, local = is_local, "转写流已开");
 
+    // 落句任务:回传按顺序、后续处理各自 spawn。喂音频的循环只 send,永远不等(见模块文档)
+    let (post_tx, mut post_rx) = mpsc::unbounded_channel::<(Utterance, String, u64)>();
+    let poster = {
+        let (sink, on_text, speaker) = (sink.clone(), on_text.clone(), speaker.clone());
+        tokio::spawn(async move {
+            let mut downstream: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+            while let Some((u, text, egress)) = post_rx.recv().await {
+                let line_id = sink.on_text(&u, &text, egress).await;
+                let (cb, sp) = (on_text.clone(), speaker.clone());
+                downstream.push(tokio::spawn(async move { cb(sp, Transcribed { text, line_id }).await }));
+                downstream.retain(|h| !h.is_finished());
+            }
+            // 流收尾时等后续处理做完:散会提炼紧跟在后面,它得看见最后几句的翻译与作答
+            for h in downstream {
+                let _ = h.await;
+            }
+        })
+    };
+    lane_loop(&pipe, &sink, &speaker, &mut rx, input, events, wire_bytes, is_local, opened_at, post_tx).await;
+    let _ = poster.await;
+}
+
+/// 喂音频 / 收事件的循环。返回即这条流结束(正常收尾或死了);落句交给 `post_tx`。
+#[allow(clippy::too_many_arguments)]
+async fn lane_loop(
+    pipe: &StreamPipeline,
+    sink: &Arc<dyn TranscriptSink>,
+    speaker: &str,
+    rx: &mut mpsc::Receiver<Vec<i16>>,
+    mut input: Box<dyn muster_provider::SpeechStreamInput>,
+    mut events: mpsc::Receiver<SpeechStreamEvent>,
+    wire_bytes: Arc<std::sync::atomic::AtomicU64>,
+    is_local: bool,
+    opened_at: u64,
+    post_tx: mpsc::UnboundedSender<(Utterance, String, u64)>,
+) {
+    let speaker = speaker.to_string();
     let mut metered: u64 = 0;
     let mut finishing = false;
     let mut flush_deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
@@ -349,8 +394,8 @@ async fn run_lane(
                         let total = wire_bytes.load(Ordering::Relaxed);
                         let egress = if is_local { 0 } else { total.saturating_sub(metered) };
                         metered = total;
-                        let line_id = sink.on_text(&u, text, egress).await;
-                        (on_text)(speaker.clone(), Transcribed { text: text.to_string(), line_id }).await;
+                        // 只丢进落句队列,不等:回传与后续处理在另一个任务里
+                        let _ = post_tx.send((u, text.to_string(), egress));
                     }
                     Some(SpeechStreamEvent::Partial { .. }) => {}
                     Some(SpeechStreamEvent::Dropped { ms }) => {
@@ -612,9 +657,41 @@ mod tests {
         assert_eq!((t[0].0.as_str(), t[0].1.as_str(), t[0].2), ("alice", "第1句", 0));
         let d = r.downstream.lock().unwrap();
         assert_eq!(d.len(), 2, "每句都要触发后续(翻译 / 作答)");
-        assert_eq!(d[1].1, Transcribed { text: "第2句".into(), line_id: Some(2) }, "行号来自落点");
+        assert!(
+            d.iter().any(|x| x.1 == Transcribed { text: "第2句".into(), line_id: Some(2) }),
+            "行号来自落点:{d:?}"
+        );
         assert!(r.rec.refusals.lock().unwrap().is_empty());
         assert!(r.rec.degraded.lock().unwrap().is_empty());
+    }
+
+    /// **后续处理慢(问模型要几秒)不能挡住喂音频**:2026-10-30 线上第一次验收就是这么丢了 3 秒。
+    /// 队列只给 200ms,后续每句睡 500ms;要是在喂音频的循环里等它,队列必溢出。
+    #[tokio::test]
+    async fn slow_downstream_does_not_stall_feeding() {
+        let cfg = StreamConfig { queue_ms: 200, note_after_dropped_ms: 100, ..StreamConfig::default() };
+        let rec = Arc::new(Recorder::default());
+        let p: Arc<dyn SpeechStreamProvider> = fake(Locality::Local, Mode::Echo, None);
+        let pipe = Arc::new(
+            StreamPipeline::new(Arc::new(SpeechStreamRouter::new(vec![p])), rec.clone())
+                .with_hotwords(vec!["小七".into()])
+                .with_config(cfg),
+        );
+        let calls = Arc::new(Mutex::new(0u32));
+        let c2 = calls.clone();
+        let slow: OnTranscribed = Arc::new(move |_s, _t| {
+            let c = c2.clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                *c.lock().unwrap() += 1;
+            })
+        });
+        let mut consumer = pipe.consumer(OrgPolicy::new(Sensitivity::Internal).unwrap(), Sensitivity::Internal, slow);
+        feed_ms(&mut consumer, "alice", 3_000).await;
+        consumer.finish().await;
+        assert!(rec.degraded.lock().unwrap().is_empty(), "后续慢不该让音频被跳过:{:?}", rec.degraded.lock().unwrap());
+        assert_eq!(rec.texts.lock().unwrap().len(), 3, "3 秒 = 3 句都要落");
+        assert_eq!(*calls.lock().unwrap(), 3, "finish 要等后续处理做完");
     }
 
     /// 散会时最后半句不能丢:finish 要等后端把尾巴吐完。

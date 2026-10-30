@@ -26,7 +26,7 @@
 - apps/desktop：智能协作平台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
 
 ## 约定
-- 动手前后都跑 cargo test（当前基线 360 项全绿；桌面壳另有 43 项需在 apps/desktop/src-tauri 下跑）
+- 动手前后都跑 cargo test（当前基线 361 项全绿；桌面壳另有 43 项需在 apps/desktop/src-tauri 下跑）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
 - 根目录 AGENTS.md 是给 Agent（Muster 工牌与 Codex）读的章程摘要，运行时每次都进提示词；改铁律时与本文件两处同步
