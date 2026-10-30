@@ -149,12 +149,16 @@ step "同步源码到 ${REMOTE_DIR}"
 # 建目录并**交给登录用户**:后面 rsync 是以他的身份写的,属主是 root 就写不进去
 ssh "$SERVER" "$SUDO mkdir -p $REMOTE_DIR && $SUDO chown -R \$(id -u):\$(id -g) $REMOTE_DIR"
 # --delete 让服务器上的树与本机一致(删掉的文件那边也删),
-# 但**排除 .env 和数据卷**:那些是服务器上的东西,不该被本机的状态覆盖
+# 但**排除 .env 和数据卷**:那些是服务器上的东西,不该被本机的状态覆盖。
+# --filter=':- .gitignore':被 .gitignore 挡住的东西(target、node_modules、deploy/.env、录像、
+# 首页工作目录、Python 缓存……)一律不上服务器——不入库的就不该进部署;被排除的文件
+# rsync 也不会在那边删掉(没有 --delete-excluded)。
 rsync -az --delete \
+  --filter=':- .gitignore' \
   --exclude target --exclude node_modules --exclude .git \
   --exclude 'apps/desktop' --exclude 'deploy/.env' \
   "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
-ok "已同步(不含 target / node_modules / .git / 桌面壳)"
+ok "已同步(不含 target / node_modules / .git / 桌面壳 / .gitignore 里的东西)"
 
 # ---------------------------------------------------------------- 密钥
 
