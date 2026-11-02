@@ -198,6 +198,27 @@ export interface RemoteStatus {
   account_id: string | null;
   display_name: string | null;
 }
+/** 服务端账号(管理员视角,2026-11-03 自助注册) */
+export interface RemoteAccount {
+  id: string;
+  display_name: string;
+  kind: string;
+  disabled: boolean;
+  pending: boolean;
+  created_ms: number;
+  node_id?: string | null;
+  node_online?: boolean | null;
+}
+export interface RemoteRegistration {
+  mode: "closed" | "approval" | "open" | string;
+  pending: number;
+}
+export interface RegisterOutcome {
+  pending: boolean;
+  id: string;
+  display_name: string;
+  connected: boolean;
+}
 /** C3:服务端上的会议 */
 export interface RemoteMeeting {
   id: string;
@@ -499,6 +520,19 @@ export const api = {
   remoteLogin: (base: string, id: string, password: string) =>
     invoke<RemoteStatus>("remote_login", { base, id, password }),
   remoteLogout: () => invoke<void>("remote_logout"),
+  /** 自助注册:open 模式注册即连上;approval 模式返回 pending,等管理员批准 */
+  remoteRegister: (base: string, id: string, password: string, displayName: string) =>
+    invoke<RegisterOutcome>("remote_register", { base, id, password, displayName }),
+  remoteRegistrationMode: (base: string) => invoke<string>("remote_registration_mode", { base }),
+  remoteWhoami: () =>
+    invoke<{ id: string; display_name: string; kind: string; can: Record<string, boolean> }>("remote_whoami"),
+  remoteAccounts: () => invoke<RemoteAccount[]>("remote_accounts"),
+  remoteAccountApprove: (id: string) => invoke<void>("remote_account_approve", { id }),
+  remoteAccountDisable: (id: string, disabled: boolean) => invoke<void>("remote_account_disable", { id, disabled }),
+  remoteRegistration: () => invoke<RemoteRegistration>("remote_registration"),
+  remoteRegistrationSet: (mode: string) => invoke<RemoteRegistration>("remote_registration_set", { mode }),
+  remoteChangePassword: (oldPassword: string, newPassword: string) =>
+    invoke<void>("remote_change_password", { oldPassword, newPassword }),
   remoteToken: () => invoke<string | null>("remote_token"),
   /** 一次性订阅票:每次连 EventSource 前换一张(60 秒、只能用一次) */
   remoteEventsTicket: () => invoke<string | null>("remote_events_ticket"),

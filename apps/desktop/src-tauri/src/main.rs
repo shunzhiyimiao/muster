@@ -4312,6 +4312,84 @@ async fn remote_login(
     Ok(st)
 }
 
+/// 自助注册(2026-11-03)。open 模式注册即登录(与 remote_login 同一套收尾);
+/// approval 模式只建号,返回 pending=true,人要等管理员批准后再登录。
+#[tauri::command]
+async fn remote_register(
+    state: State<'_, AppState>,
+    base: String,
+    id: String,
+    password: String,
+    display_name: String,
+) -> Result<serde_json::Value, String> {
+    let (out, remote) = remote::Remote::register(&base, &id, &password, &display_name).await?;
+    let Some(r) = remote else {
+        return Ok(serde_json::json!({ "pending": true, "id": out.id, "display_name": out.display_name, "connected": false }));
+    };
+    let handle = {
+        let guard = state.0.lock().unwrap();
+        guard.as_ref().ok_or("后端未初始化")?.remote.clone()
+    };
+    let n = adopt_remote_catalog(&state, &r).await?;
+    if n == 0 {
+        tracing_warn("服务端还没配任何 provider:能连上,但跑任务会被路由拒绝");
+    }
+    r.save_session();
+    *handle.lock().unwrap() = Some(r);
+    Ok(serde_json::json!({ "pending": false, "id": out.id, "display_name": out.display_name, "connected": true }))
+}
+
+#[tauri::command]
+async fn remote_registration_mode(base: String) -> Result<String, String> {
+    remote::Remote::registration_mode(&base).await
+}
+
+#[tauri::command]
+async fn remote_whoami(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.whoami().await
+}
+
+#[tauri::command]
+async fn remote_accounts(state: State<'_, AppState>) -> Result<Vec<remote::RemoteAccount>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.accounts().await
+}
+
+#[tauri::command]
+async fn remote_account_approve(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.approve_account(&id).await
+}
+
+#[tauri::command]
+async fn remote_account_disable(state: State<'_, AppState>, id: String, disabled: bool) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.set_account_disabled(&id, disabled).await
+}
+
+#[tauri::command]
+async fn remote_registration(state: State<'_, AppState>) -> Result<remote::RemoteRegistration, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.registration().await
+}
+
+#[tauri::command]
+async fn remote_registration_set(state: State<'_, AppState>, mode: String) -> Result<remote::RemoteRegistration, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.set_registration(&mode).await
+}
+
+#[tauri::command]
+async fn remote_change_password(
+    state: State<'_, AppState>,
+    old_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.change_password(&old_password, &new_password).await
+}
+
 /// 没引 tracing,又不想为一句话引。stderr 足够——这行是给运维看的。
 fn tracing_warn(msg: &str) {
     eprintln!("[warn] {msg}");
@@ -4759,6 +4837,15 @@ fn main() {
             transcript_export,
             transcript_purge,
             remote_login,
+            remote_register,
+            remote_registration_mode,
+            remote_whoami,
+            remote_accounts,
+            remote_account_approve,
+            remote_account_disable,
+            remote_registration,
+            remote_registration_set,
+            remote_change_password,
             remote_logout,
             remote_status,
             remote_restore,

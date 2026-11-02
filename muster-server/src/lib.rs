@@ -99,6 +99,7 @@ pub mod provider;
 pub mod ratelimit;
 pub mod recording;
 pub mod routes;
+pub mod signup;
 pub mod ws;
 
 pub use db::Db;
@@ -120,6 +121,8 @@ pub enum ServerError {
     Internal(String),
     #[error("请求过于频繁:{0}")]
     TooManyRequests(String),
+    #[error("冲突:{0}")]
+    Conflict(String),
 }
 
 impl axum::response::IntoResponse for ServerError {
@@ -131,6 +134,7 @@ impl axum::response::IntoResponse for ServerError {
             ServerError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ServerError::NotFound(_) => StatusCode::NOT_FOUND,
             ServerError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            ServerError::Conflict(_) => StatusCode::CONFLICT,
             // 数据库与内部错误不把原文吐给客户端(可能含连接串、表结构)
             ServerError::Db(e) => {
                 tracing::error!("db error: {e}");

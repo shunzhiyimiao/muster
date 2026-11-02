@@ -1,6 +1,6 @@
 //! 路由装配。
 //!
-//! 只有 `/health` 与 `/auth/login` 免鉴权;其余 handler 的参数表里都有
+//! 只有 `/health`、`/auth/login`、`/auth/register`、`/auth/registration` 免鉴权;其余 handler 的参数表里都有
 //! [`crate::auth::Identity`]——**忘了写就拿不到身份**,让"忘记鉴权"在类型上
 //! 尽量难发生,而不是靠中间件配置对不对。
 
@@ -9,13 +9,19 @@ use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::ratelimit::LoginLimiter;
-use crate::{action, events, meeting, message, node, org, provider, recording, ws, Db};
+use crate::{action, events, meeting, message, node, org, provider, recording, signup, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
 
     let auth_routes = Router::new()
         .route("/auth/login", post(org::login))
+        // 自助注册(2026-11-03,signup.rs):注册、注册开不开放;本人改口令;管理员批准与改模式
+        .route("/auth/register", post(signup::register))
+        .route("/auth/registration", get(signup::registration_public))
+        .route("/me/password", post(signup::change_password))
+        .route("/org/registration", get(signup::registration_get).post(signup::registration_set))
+        .route("/accounts/:aid/approve", post(signup::approve))
         // Provider 目录:读只要已认证(每个跑模型的节点都要),
         // 写要 ChangePolicy(见 provider.rs 模块文档)
         .route("/providers/catalog", get(provider::catalog))

@@ -347,6 +347,8 @@ pub struct AccountOut {
     pub display_name: String,
     pub kind: String,
     pub disabled: bool,
+    /// 自助注册、还没被管理员批准(signup.rs)
+    pub pending: bool,
     pub created_ms: i64,
     /// 工牌住在哪个节点(只有 kind=agent 的账号会有)
     pub node_id: Option<uuid::Uuid>,
@@ -362,7 +364,7 @@ pub async fn list_accounts(
     require(&db, &id, &Action::ManageMembers, &Scope::Org).await?;
     // 工牌带上节点在不在线:心跳超时的节点,其上的工牌在这里显示不可用
     let rows = sqlx::query_as::<_, AccountOut>(
-        "SELECT a.id, a.display_name, a.kind, a.disabled, a.created_ms, a.node_id,
+        "SELECT a.id, a.display_name, a.kind, a.disabled, a.pending, a.created_ms, a.node_id,
                 CASE WHEN a.node_id IS NULL THEN NULL
                      ELSE (n.status = 'approved' AND n.last_seen_ms IS NOT NULL AND n.last_seen_ms > $1) END AS node_online
          FROM account a LEFT JOIN node n ON n.id = a.node_id ORDER BY a.id",
@@ -456,9 +458,9 @@ pub async fn login(
         }
     }
 
-    let row = sqlx::query_as::<_, (String, Option<String>, String)>(
+    let row = sqlx::query_as::<_, (String, Option<String>, String, bool)>(
         // 停用的账号连"账号或口令不对"都不必区分——统一走同一条拒绝路径
-        "SELECT display_name, password_hash, kind FROM account WHERE id = $1 AND disabled = FALSE",
+        "SELECT display_name, password_hash, kind, pending FROM account WHERE id = $1 AND disabled = FALSE",
     )
     .bind(&r.id)
     .fetch_optional(&db.pool)
@@ -466,10 +468,14 @@ pub async fn login(
 
     // 账号不存在与口令错误返回**同一句话**:否则接口就成了账号枚举器
     let fail = || ServerError::Unauthenticated("账号或口令不对".into());
-    let (name, phc, kind) = row.ok_or_else(fail)?;
+    let (name, phc, kind, pending) = row.ok_or_else(fail)?;
     let phc = phc.ok_or_else(fail)?;
     if !crate::auth::verify_password(&r.password, &phc) {
         return Err(fail());
+    }
+    // 待批准只在口令对了之后才说:知道口令的就是注册者本人(signup.rs)
+    if pending {
+        return Err(ServerError::Forbidden("账号还在等管理员批准,批准后再登录".into()));
     }
     let token = crate::auth::issue_token(&r.id, &name, &kind)?;
     Ok(Json(serde_json::json!({ "token": token, "id": r.id, "display_name": name })))

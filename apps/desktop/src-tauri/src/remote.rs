@@ -62,6 +62,39 @@ pub struct RemoteMessage {
     pub ts_ms: i64,
 }
 
+/// 服务端账号(管理员视角,`GET /accounts`)。
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RemoteAccount {
+    pub id: String,
+    pub display_name: String,
+    pub kind: String,
+    pub disabled: bool,
+    /// 自助注册、还没被批准(2026-11-03)
+    #[serde(default)]
+    pub pending: bool,
+    pub created_ms: i64,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub node_online: Option<bool>,
+}
+
+/// 注册模式与待批准数(`GET /org/registration`)。
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RemoteRegistration {
+    pub mode: String,
+    #[serde(default)]
+    pub pending: i64,
+}
+
+/// 注册结果。approval 模式只建号、不发令牌。
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RegisterOutcome {
+    pub id: String,
+    pub display_name: String,
+    pub pending: bool,
+}
+
 /// 会议(C3)。`level` 决定界面上的密级徽章,`can_publish` 决定要不要显示
 /// 开麦按钮——**由服务端的权限内核给出,前端不自己判**。
 #[derive(Debug, Deserialize, Serialize)]
@@ -132,6 +165,107 @@ impl Remote {
             display_name: r.display_name,
             client,
         })
+    }
+
+    /// 自助注册(2026-11-03)。服务端 approval 模式只建号不发令牌 → 返回 `None`,
+    /// 人要等管理员批准;open 模式直接给令牌 → 返回可用的连接,与登录同。
+    pub async fn register(
+        base: &str,
+        id: &str,
+        password: &str,
+        display_name: &str,
+    ) -> Result<(RegisterOutcome, Option<Self>), String> {
+        let base = base.trim_end_matches('/').to_string();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("http 客户端创建失败:{e}"))?;
+        let resp = client
+            .post(format!("{base}/auth/register"))
+            .json(&serde_json::json!({ "id": id, "password": password, "display_name": display_name }))
+            .send()
+            .await
+            .map_err(|e| format!("连不上服务端 {base}:{e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(msg);
+        }
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("注册响应无法解析:{e}"))?;
+        let out = RegisterOutcome {
+            id: v["id"].as_str().unwrap_or(id).to_string(),
+            display_name: v["display_name"].as_str().unwrap_or(display_name).to_string(),
+            pending: v["pending"].as_bool().unwrap_or(true),
+        };
+        let remote = match v["token"].as_str() {
+            Some(t) if !out.pending => Some(Self {
+                base,
+                token: t.to_string(),
+                account_id: out.id.clone(),
+                display_name: out.display_name.clone(),
+                client,
+            }),
+            _ => None,
+        };
+        Ok((out, remote))
+    }
+
+    /// 注册开不开放(免鉴权):登录框据此决定要不要显示「注册」。
+    pub async fn registration_mode(base: &str) -> Result<String, String> {
+        let base = base.trim_end_matches('/');
+        let v: serde_json::Value = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .map_err(|e| format!("http 客户端创建失败:{e}"))?
+            .get(format!("{base}/auth/registration"))
+            .send()
+            .await
+            .map_err(|e| format!("连不上服务端 {base}:{e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("响应无法解析:{e}"))?;
+        Ok(v["mode"].as_str().unwrap_or("closed").to_string())
+    }
+
+    /// 我在服务端是谁、能做什么(`can.manage_members` 决定要不要显示成员管理)。
+    pub async fn whoami(&self) -> Result<serde_json::Value, String> {
+        self.get("/whoami").await
+    }
+
+    pub async fn accounts(&self) -> Result<Vec<RemoteAccount>, String> {
+        self.get("/accounts").await
+    }
+
+    pub async fn approve_account(&self, id: &str) -> Result<(), String> {
+        let _: serde_json::Value = self.post_json(&format!("/accounts/{id}/approve"), &serde_json::json!({})).await?;
+        Ok(())
+    }
+
+    pub async fn set_account_disabled(&self, id: &str, disabled: bool) -> Result<(), String> {
+        let _: serde_json::Value =
+            self.post_json(&format!("/accounts/{id}/disabled"), &serde_json::json!({ "disabled": disabled })).await?;
+        Ok(())
+    }
+
+    pub async fn registration(&self) -> Result<RemoteRegistration, String> {
+        self.get("/org/registration").await
+    }
+
+    pub async fn set_registration(&self, mode: &str) -> Result<RemoteRegistration, String> {
+        let _: serde_json::Value = self.post_json("/org/registration", &serde_json::json!({ "mode": mode })).await?;
+        self.registration().await
+    }
+
+    /// 本人改口令:要原口令(服务端 signup.rs)。
+    pub async fn change_password(&self, old_password: &str, new_password: &str) -> Result<(), String> {
+        let _: serde_json::Value = self
+            .post_json("/me/password", &serde_json::json!({ "old_password": old_password, "new_password": new_password }))
+            .await?;
+        Ok(())
     }
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, String> {

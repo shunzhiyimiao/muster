@@ -75,6 +75,79 @@ $("loginForm").onsubmit = async (e) => {
   }
 };
 
+/* ---------------------------------------------------------------- 自助注册(2026-11-03)
+ *
+ * 入口只在服务端说开放(GET /auth/registration 不是 closed)时显示。approval 模式下注册完
+ * 不发令牌,要等管理员批准;open 模式直接给令牌,当场进大厅。
+ */
+const serverBase = () => $("server").value.trim().replace(/\/$/, "") || location.origin;
+
+async function syncRegisterEntry() {
+  try {
+    const r = await fetch(serverBase() + "/auth/registration");
+    const j = r.ok ? await r.json() : null;
+    $("toRegister").hidden = !j || j.mode === "closed";
+  } catch {
+    $("toRegister").hidden = true;
+  }
+}
+$("server").addEventListener("change", syncRegisterEntry);
+$("toRegister").onclick = () => {
+  $("registerForm").hidden = false;
+  $("regId").focus();
+};
+$("toLogin").onclick = () => {
+  $("registerForm").hidden = true;
+};
+$("registerForm").onsubmit = async (e) => {
+  e.preventDefault();
+  if ($("regPw").value !== $("regPw2").value) return toast("两次口令不一致", true);
+  state.base = serverBase();
+  try {
+    const r = await api("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ id: $("regId").value.trim(), password: $("regPw").value, display_name: $("regName").value.trim() }),
+    });
+    if (r.pending) {
+      toast(`已提交注册 ${r.id}。等管理员批准后,用这个账号和口令登录。`);
+      $("account").value = r.id;
+      $("registerForm").hidden = true;
+      return;
+    }
+    state.token = r.token;
+    state.me = r.display_name;
+    localStorage.setItem("muster.session", JSON.stringify({ base: state.base, token: r.token, me: r.display_name }));
+    $("registerForm").hidden = true;
+    await enterLobby();
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+};
+
+/* 改口令:要原口令。拿着没过期的令牌不等于知道口令,不能凭令牌换锁(服务端 signup.rs)。 */
+$("pwBtn").onclick = () => {
+  $("pwForm").hidden = !$("pwForm").hidden;
+  if (!$("pwForm").hidden) $("pwOld").focus();
+};
+$("pwCancel").onclick = () => {
+  $("pwForm").hidden = true;
+};
+$("pwForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/me/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password: $("pwOld").value, new_password: $("pwNew").value }),
+    });
+    toast("口令已改");
+    $("pwOld").value = "";
+    $("pwNew").value = "";
+    $("pwForm").hidden = true;
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+};
+
 async function enterLobby() {
   $("who").textContent = state.me;
   show("lobby");
@@ -781,6 +854,7 @@ $("leaveBtn").onclick = () => {
 
 (function boot() {
   $("server").value = location.origin;
+  syncRegisterEntry();
   const raw = localStorage.getItem("muster.session");
   if (!raw) return show("login");
   try {

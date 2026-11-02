@@ -21,6 +21,8 @@
 //! muster-admin grant bob approver group 平台组
 //! muster-admin revoke bob approver group 平台组
 //! muster-admin disable bob / enable bob
+//! muster-admin approve bob                  # 批准自助注册的账号(授 member@org)
+//! muster-admin register-mode [closed|approval|open]   # 看 / 改注册模式(缺省 approval)
 //! muster-admin team-add platform 平台组
 //! muster-admin channel-add platform-main platform 主频道 internal
 //! muster-admin nodes                         # 列节点(待批准的带设备码)
@@ -125,7 +127,13 @@ fn main() {
                     r["id"].as_str().unwrap_or("?"),
                     r["display_name"].as_str().unwrap_or("?"),
                     r["kind"].as_str().unwrap_or("?"),
-                    if r["disabled"].as_bool().unwrap_or(false) { "已停用" } else { "正常" }
+                    if r["disabled"].as_bool().unwrap_or(false) {
+                        "已停用"
+                    } else if r["pending"].as_bool().unwrap_or(false) {
+                        "待批准(muster-admin approve)"
+                    } else {
+                        "正常"
+                    }
                 );
             }
         }
@@ -184,6 +192,24 @@ fn main() {
                 true,
             );
             println!("✓ {} 已{}", rest[0], if cmd == "disable" { "停用" } else { "启用" });
+        }
+        "approve" => {
+            need(rest, 1, "approve <账号>");
+            call("POST", &format!("/accounts/{}/approve", rest[0]), None, true);
+            println!("✓ {} 已批准,成为组织成员", rest[0]);
+        }
+        "register-mode" => {
+            if let Some(m) = rest.first() {
+                let v = call("POST", "/org/registration", Some(serde_json::json!({ "mode": m })), true);
+                println!("✓ 注册模式:{}", v["mode"].as_str().unwrap_or("?"));
+            } else {
+                let v = call("GET", "/org/registration", None, true);
+                println!(
+                    "注册模式 {}(closed 不开放 / approval 注册后待批准 / open 注册即成员)· 待批准 {} 个",
+                    v["mode"].as_str().unwrap_or("?"),
+                    v["pending"]
+                );
+            }
         }
         "team-add" => {
             need(rest, 2, "team-add <id> <名称>");

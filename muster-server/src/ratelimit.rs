@@ -43,6 +43,8 @@ pub const MAX_PER_ACCOUNT: usize = 10;
 /// 60 次/5 分钟对在线爆破仍然是很慢的(一天不到两万次,而 Argon2 让
 /// 每次猜测都很贵),对正常办公室却绰绰有余。
 pub const MAX_PER_IP: usize = 60;
+/// 自助注册按 IP:5 次 / 5 分钟。注册比登录贵得多(建号 + Argon2),也更没有正当的高频理由。
+pub const MAX_REGISTER_PER_IP: usize = 5;
 /// 滑动窗口长度。
 const WINDOW: Duration = Duration::from_secs(5 * 60);
 

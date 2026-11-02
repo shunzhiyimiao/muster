@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RosterEntryOut, api, fmtDate, fmtTime } from "../api";
+import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RemoteAccount, RemoteRegistration, RosterEntryOut, api, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
@@ -303,12 +303,99 @@ const PinCap = ({ name, ver, rate, from, fresh }: { name: string; ver: string; r
 
 /* ==================== 编制管理(D6 概念) ==================== */
 
+/** 服务端账号管理(2026-11-03 自助注册)。只在连着服务端、且服务端说我能 manage_members 时出现;
+ *  数据与按钮都走和 muster-admin 同一套接口——这里没有 CLI 干不了的事,反之亦然。 */
+function ServerAccountsCard() {
+  const [can, setCan] = useState<boolean | null>(null);
+  const [accounts, setAccounts] = useState<RemoteAccount[]>([]);
+  const [reg, setReg] = useState<RemoteRegistration | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const reload = () => {
+    api.remoteAccounts().then(setAccounts).catch((e) => setErr(String(e)));
+    api.remoteRegistration().then(setReg).catch(() => setReg(null));
+  };
+  useEffect(() => {
+    api
+      .remoteWhoami()
+      .then((me) => {
+        const ok = !!me.can?.manage_members;
+        setCan(ok);
+        if (ok) reload();
+      })
+      .catch(() => setCan(false));
+  }, []);
+  if (!can) return null;
+
+  const act = (key: string, p: Promise<unknown>) => {
+    setBusy(key);
+    setErr(null);
+    p.then(reload).catch((e) => setErr(String(e))).finally(() => setBusy(null));
+  };
+  const humans = accounts.filter((a) => a.kind === "human");
+  const pending = humans.filter((a) => a.pending);
+  const modeZh: Record<string, string> = { closed: "不开放", approval: "注册后待批准", open: "注册即成员" };
+
+  return (
+    <Card className="p-5 mb-4">
+      <div className="flex items-center gap-2">
+        <b className="text-sm">服务端账号</b>
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md" style={{ background: T.soft, color: T.sub }}>{humans.length} 人</span>
+        {pending.length > 0 && (
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md" style={{ background: T.amberSoft, color: T.amber }}>{pending.length} 待批准</span>
+        )}
+        <span className="ml-auto flex items-center gap-2 text-[11px]" style={{ color: T.sub }}>
+          自助注册
+          <select
+            value={reg?.mode ?? "approval"}
+            disabled={busy === "mode"}
+            onChange={(e) => act("mode", api.remoteRegistrationSet(e.target.value))}
+            className="px-2 py-1 rounded-lg text-[11px] outline-none"
+            style={{ background: T.panel, border: `1px solid ${T.line}` }}
+            title="closed:不开放;approval:注册后要管理员批准(缺省);open:注册即组织成员——公网服务器慎用"
+          >
+            {Object.entries(modeZh).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+        </span>
+      </div>
+      <div className="text-[11px] mt-1.5" style={{ color: T.faint }}>
+        与 muster-admin 同一套接口:批准 = 授 member@org;停用不删号(历史里的作者不能变孤儿)。
+      </div>
+      {err && <div className="mt-2 text-[11.5px]" style={{ color: T.red }}>{err}</div>}
+      <div className="mt-3 divide-y" style={{ borderColor: T.line }}>
+        {humans.map((a) => (
+          <div key={a.id} className="flex items-center gap-2 py-2 text-xs">
+            <span className="font-semibold truncate" style={{ minWidth: 120 }}>{a.display_name}</span>
+            <span className="truncate" style={{ color: T.faint }}>{a.id}</span>
+            <span className="ml-auto text-[10.5px]" style={{ color: a.disabled ? T.red : a.pending ? T.amber : T.green }}>
+              {a.disabled ? "已停用" : a.pending ? "待批准" : "正常"}
+            </span>
+            {a.pending && !a.disabled && (
+              <button disabled={busy === a.id} onClick={() => act(a.id, api.remoteAccountApprove(a.id))}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold" style={{ background: T.indigo, color: "#fff" }}>批准</button>
+            )}
+            <button disabled={busy === a.id} onClick={() => act(a.id, api.remoteAccountDisable(a.id, !a.disabled))}
+              className="px-2.5 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>
+              {a.disabled ? "启用" : "停用"}
+            </button>
+          </div>
+        ))}
+        {humans.length === 0 && <div className="py-2 text-[11.5px]" style={{ color: T.faint }}>还没有人的账号</div>}
+      </div>
+    </Card>
+  );
+}
+
 export function RosterView({
   planned = false,
   filter,
   setFilter,
   team,
   live,
+  remoteConnected = false,
 }: {
   /** 显示演示叙事的概念编制;默认只显示审计链实证的在册编制 */
   planned?: boolean;
@@ -316,6 +403,8 @@ export function RosterView({
   setFilter: (f: string) => void;
   team: string;
   live: RosterEntryOut[];
+  /** 连着服务端时,管理员在这里看到服务端账号(自助注册的批准、停用) */
+  remoteConnected?: boolean;
 }) {
   // 真实编制:审计链里干过活的 actor(system 类不算人手,不入册)
   const real = live.filter((r) => r.actor_kind !== "system");
@@ -333,6 +422,7 @@ export function RosterView({
 
   return (
     <div className="px-7 pb-8 pt-2">
+      {remoteConnected && <ServerAccountsCard />}
       <div className="flex items-center gap-2.5 mb-4">
         <div className="flex items-center gap-2 flex-1 px-3.5 py-2 rounded-xl text-[13px]" style={{ background: T.soft, color: T.faint, maxWidth: 320 }}>
           <Search size={14} /> 搜索本团队成员或 Agent…

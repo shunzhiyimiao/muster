@@ -105,6 +105,18 @@
       <label><span>账号</span><input id="account" autocomplete="username" /></label>
       <label><span>口令</span><input id="password" type="password" autocomplete="current-password" /></label>
       <button class="primary" type="submit">连接</button>
+      <button type="button" id="toRegister" hidden style="margin-left:8px">没有账号?注册一个</button>
+    </form>
+    <!-- 自助注册(2026-11-03):服务端 /auth/registration 说开放才显示入口;待批准模式下注册完要等管理员 -->
+    <form id="registerForm" hidden style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+      <b>注册新账号</b>
+      <div class="dim" style="margin-top:4px;font-size:11px">账号 id 只能用小写字母、数字和 . _ -(3 到 32 位);口令至少 8 位。</div>
+      <label><span>账号 id</span><input id="regId" autocomplete="username" placeholder="例如 zhangwei" /></label>
+      <label><span>显示名</span><input id="regName" placeholder="例如 张伟" /></label>
+      <label><span>口令</span><input id="regPw" type="password" autocomplete="new-password" /></label>
+      <label><span>再输一次</span><input id="regPw2" type="password" autocomplete="new-password" /></label>
+      <button class="primary" type="submit">注册</button>
+      <button type="button" id="toLogin" style="margin-left:8px">返回登录</button>
     </form>
     <div class="note">
       这个页面只用来<b>参会</b>:发消息、开会、看纪要。<br />
@@ -117,6 +129,7 @@
       <div class="bar">
         <h1 style="flex:1">会议</h1>
         <span class="dim">已登录 <b id="who"></b></span>
+        <button id="pwBtn" title="改自己的口令" style="font-size:11px;padding:5px 10px">改口令</button>
       </div>
       <div class="bar" style="margin-top:14px">
         <select id="channel" style="max-width:260px"></select>
@@ -129,6 +142,13 @@
     <div class="card">
       <b style="font-size:13px">进行中</b>
       <div id="meetings" style="margin-top:8px"></div>
+      <form id="pwForm" hidden style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+        <b>改口令</b>
+        <label><span>原口令</span><input id="pwOld" type="password" autocomplete="current-password" /></label>
+        <label><span>新口令(至少 8 位)</span><input id="pwNew" type="password" autocomplete="new-password" /></label>
+        <button class="primary" type="submit">改</button>
+        <button type="button" id="pwCancel" style="margin-left:8px">取消</button>
+      </form>
     </div>
   </section>
 

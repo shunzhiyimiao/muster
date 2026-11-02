@@ -819,7 +819,7 @@ export default function App() {
                 onThreadsChanged={(g) => void onThreadsChanged(g)} />
             )}
             {view === "roster" && (
-              <RosterView planned={planned} filter={filter} setFilter={setFilter} team={team} live={rosterLive} />
+              <RosterView planned={planned} filter={filter} setFilter={setFilter} team={team} live={rosterLive} remoteConnected={!!remote?.connected} />
             )}
             {view === "meeting" &&
               (meetingDetail ? (
@@ -1197,6 +1197,17 @@ function LoginDialog({
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** 自助注册(2026-11-03):服务端说开放才给「注册」页;approval 模式注册完要等管理员批准 */
+  const [tab, setTab] = useState<"login" | "register">("login");
+  const [regName, setRegName] = useState("");
+  const [regPw2, setRegPw2] = useState("");
+  const [info, setInfo] = useState<string | null>(null);
+  /** 连上之后的改口令 */
+  const [oldPw, setOldPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+
+  /** 地址里带路径(https://x/web)是最常见的填错法:登录请求会打到 /web/auth/login 变成 404 */
+  const cleanBase = (b: string) => b.trim().replace(/\/+$/, "").replace(/\/web$/, "");
 
   const submit = () => {
     if (!base.trim() || !id.trim() || !pw) {
@@ -1206,8 +1217,63 @@ function LoginDialog({
     setBusy(true);
     setErr(null);
     api
-      .remoteLogin(base.trim(), id.trim(), pw)
+      .remoteLogin(cleanBase(base), id.trim(), pw)
       .then(onDone)
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const goRegister = () => {
+    setErr(null);
+    setInfo(null);
+    setBusy(true);
+    api
+      .remoteRegistrationMode(cleanBase(base))
+      .then((mode) => {
+        if (mode === "closed") setErr("这个组织不开放自助注册,请联系管理员开号");
+        else setTab("register");
+      })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const submitRegister = () => {
+    if (!base.trim() || !id.trim() || !pw || !regName.trim()) {
+      setErr("服务器地址、账号 id、显示名、口令都要填");
+      return;
+    }
+    if (pw !== regPw2) {
+      setErr("两次口令不一致");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    api
+      .remoteRegister(cleanBase(base), id.trim(), pw, regName.trim())
+      .then((r) => {
+        if (r.connected) return api.remoteStatus().then(onDone);
+        setInfo(`已提交注册 ${r.id}。等管理员批准后,用这个账号和口令登录。`);
+        setTab("login");
+        setPw("");
+      })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const submitPassword = () => {
+    if (!oldPw || !newPw) {
+      setErr("原口令和新口令都要填");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    api
+      .remoteChangePassword(oldPw, newPw)
+      .then(() => {
+        setInfo("口令已改");
+        setOldPw("");
+        setNewPw("");
+      })
       .catch((e) => setErr(String(e)))
       .finally(() => setBusy(false));
   };
@@ -1226,6 +1292,18 @@ function LoginDialog({
             <div className="text-xs" style={{ color: T.sub }}>
               当前已连接 <b style={{ color: T.indigoDeep }}>{current.base}</b>
               <br />身份:{current.display_name}({current.account_id})
+            </div>
+            <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${T.line}` }}>
+              <div className="text-[11px] font-semibold" style={{ color: T.sub }}>改口令(要原口令)</div>
+              <div className="flex gap-2 mt-2">
+                <input type="password" value={oldPw} onChange={(e) => setOldPw(e.target.value)} placeholder="原口令" autoComplete="current-password"
+                  className="flex-1 px-3 py-2 rounded-xl text-xs outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
+                <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="新口令(至少 8 位)" autoComplete="new-password"
+                  className="flex-1 px-3 py-2 rounded-xl text-xs outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
+                <button disabled={busy} onClick={submitPassword} className="px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: T.indigoSoft, color: T.indigoDeep }}>改</button>
+              </div>
+              {info && <div className="mt-2 text-[11.5px]" style={{ color: T.green }}>{info}</div>}
+              {err && <div className="mt-2 text-[11.5px]" style={{ color: T.red }}>{err}</div>}
             </div>
             <div className="flex gap-2 mt-4">
               <button
@@ -1247,35 +1325,66 @@ function LoginDialog({
         ) : (
           <>
             <div className="mt-4 space-y-2">
-              {[
-                ["服务器地址", base, setBase, "text"],
-                ["账号", id, setId, "text"],
-                ["口令", pw, setPw, "password"],
-              ].map(([label, val, set, type]) => (
+              {(tab === "login"
+                ? [
+                    ["服务器地址(不带 /web 等路径)", base, setBase, "text"],
+                    ["账号", id, setId, "text"],
+                    ["口令", pw, setPw, "password"],
+                  ]
+                : [
+                    ["服务器地址(不带 /web 等路径)", base, setBase, "text"],
+                    ["账号 id(小写字母、数字、. _ -,3 到 32 位)", id, setId, "text"],
+                    ["显示名", regName, setRegName, "text"],
+                    ["口令(至少 8 位)", pw, setPw, "password"],
+                    ["再输一次口令", regPw2, setRegPw2, "password"],
+                  ]
+              ).map(([label, val, set, type]) => (
                 <label key={label as string} className="block">
                   <span className="text-[11px]" style={{ color: T.faint }}>{label as string}</span>
                   <input
                     type={type as string}
                     value={val as string}
                     onChange={(e) => (set as (v: string) => void)(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && submit()}
+                    onKeyDown={(e) => e.key === "Enter" && (tab === "login" ? submit() : submitRegister())}
                     className="w-full mt-1 px-3 py-2 rounded-xl text-xs outline-none"
                     style={{ background: T.panel, border: `1px solid ${T.line}` }}
                   />
                 </label>
               ))}
             </div>
+            {info && (
+              <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.greenSoft, color: T.green }}>
+                {info}
+              </div>
+            )}
             {err && (
               <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px]" style={{ background: T.redSoft, color: T.red }}>
                 {err}
               </div>
             )}
-            <div className="flex gap-2 mt-4">
-              <button disabled={busy} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
-                style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
-                {busy ? "连接中…" : "连接"}
-              </button>
-              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+            <div className="flex gap-2 mt-4 items-center">
+              {tab === "login" ? (
+                <>
+                  <button disabled={busy} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                    style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
+                    {busy ? "连接中…" : "连接"}
+                  </button>
+                  <button disabled={busy} onClick={goRegister} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+                    没有账号?注册
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button disabled={busy} onClick={submitRegister} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                    style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
+                    {busy ? "提交中…" : "注册"}
+                  </button>
+                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+                    返回登录
+                  </button>
+                </>
+              )}
+              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs ml-auto" style={{ background: T.soft, color: T.sub }}>
                 取消
               </button>
             </div>
