@@ -95,6 +95,7 @@ pub mod meeting;
 pub mod message;
 pub mod node;
 pub mod org;
+pub mod profile;
 pub mod provider;
 pub mod ratelimit;
 pub mod recording;

@@ -4321,8 +4321,12 @@ async fn remote_register(
     id: String,
     password: String,
     display_name: String,
+    email: Option<String>,
+    department: Option<String>,
+    title: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let (out, remote) = remote::Remote::register(&base, &id, &password, &display_name).await?;
+    let (out, remote) =
+        remote::Remote::register(&base, &id, &password, &display_name, email.as_deref(), department.as_deref(), title.as_deref()).await?;
     let Some(r) = remote else {
         return Ok(serde_json::json!({ "pending": true, "id": out.id, "display_name": out.display_name, "connected": false }));
     };
@@ -4388,6 +4392,66 @@ async fn remote_change_password(
 ) -> Result<(), String> {
     let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
     r.change_password(&old_password, &new_password).await
+}
+
+// ---- 用户资料(2026-11-03)
+#[tauri::command]
+async fn remote_catalog(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.catalog_json().await
+}
+
+#[tauri::command]
+async fn remote_profile(state: State<'_, AppState>) -> Result<remote::RemoteProfile, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.profile().await
+}
+
+#[tauri::command]
+async fn remote_profile_update(state: State<'_, AppState>, patch: serde_json::Value) -> Result<remote::RemoteProfile, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.update_profile(&patch).await
+}
+
+#[tauri::command]
+async fn remote_avatar_upload(state: State<'_, AppState>, bytes: Vec<u8>) -> Result<(), String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.upload_avatar(bytes).await
+}
+
+#[tauri::command]
+async fn remote_avatar(state: State<'_, AppState>, account: String) -> Result<Option<Vec<u8>>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.avatar(&account).await
+}
+
+#[tauri::command]
+async fn remote_my_logins(state: State<'_, AppState>, limit: u32) -> Result<Vec<remote::RemoteLoginEvent>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.my_logins(limit).await
+}
+
+#[tauri::command]
+async fn remote_account_profile(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.account_profile(&id).await
+}
+
+#[tauri::command]
+async fn remote_account_logins(state: State<'_, AppState>, id: String, limit: u32) -> Result<Vec<remote::RemoteLoginEvent>, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.account_logins(&id, limit).await
+}
+
+#[tauri::command]
+async fn remote_reset_link(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
+    let Some(r) = remote_of(&state) else { return Err("未连接服务端".into()) };
+    r.reset_link(&id).await
+}
+
+#[tauri::command]
+async fn remote_recover(base: String, email: String) -> Result<serde_json::Value, String> {
+    remote::Remote::recover(&base, &email).await
 }
 
 /// 没引 tracing,又不想为一句话引。stderr 足够——这行是给运维看的。
@@ -4846,6 +4910,16 @@ fn main() {
             remote_registration,
             remote_registration_set,
             remote_change_password,
+            remote_catalog,
+            remote_profile,
+            remote_profile_update,
+            remote_avatar_upload,
+            remote_avatar,
+            remote_my_logins,
+            remote_account_profile,
+            remote_account_logins,
+            remote_reset_link,
+            remote_recover,
             remote_logout,
             remote_status,
             remote_restore,

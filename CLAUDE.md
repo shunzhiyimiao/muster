@@ -20,13 +20,13 @@
 - muster-prompt：A1 系统提示词唯一出处（改它必须重跑 A7 评测）
 - muster-identity：P2 权限语义内核；can() 判定纯函数按 §4.4 顺序，五不变量穷举验证（13,500 组）
 - muster-meeting-agent：会议 Agent（LiveKit Rust SDK 在 `livekit` feature 后面，默认不编）；常驻 daemon **以组织节点身份跑**（node.rs：本机 ed25519 密钥入网、签 challenge 换会话、以值班工牌行事，同类错误连续 3 次熔断等人重试，口令登录只剩过渡路径）、订服务端 SSE 认领会议、流式转写（stream.rs：一个说话人一条流，deploy/stt 的 sherpa-onnx 边车端点落句，有界队列背压，过载降级不熔断；whisper 批处理 chunk+pipeline 为备路，按 MUSTER_STT_URL 的 ws/http 选路）、@ 应答、会中派活、散会提炼；字幕翻译（按在场者各自选的语言，经 muster_route）与散会回顾（固定结构，落 /summary 并发频道消息）也在这边做，服务端只收文本
-- muster-server：P2/P3 服务端（Axum + PostgreSQL）；权限判定复用 muster-identity 不另写一份；会议接口（建/入/离/散/纪要含翻译行/密级/请 Agent/字幕语言/总结/录制）每条先落服务端自己的审计链再动库，正文只留哈希，录像文件哈希入链；节点（node.rs，迁移 0003）：设备码入网、节点会话只能以托管的工牌行事（X-Muster-Badge）、设定值与心跳、值班工牌（节点须有本地转写能力）；派发单(action.rs,迁移 0004):行动项确认权只在被派到的本人,主持人指派、驳回带理由、72 小时过期不转派,`GET /me/inbox` 是桌面壳「待我处理」的来源,`accepted(private)` 明确不做；自助注册(signup.rs,迁移 0005,2026-11-03):`POST /auth/register` 按 org_setting.registration 三种模式(closed / approval 缺省待批准 / open),按 IP 限流,`/accounts/:aid/approve` 批准即授 member@org,`/me/password` 本人改口令要原口令,都落 badge.update；录制靠自托管 LiveKit Egress（deploy compose 的 redis + egress，recording.rs 直打 Twirp JSON），restricted 禁录、人人可见、散会自动停、Range 回放；e2e 在 tests/meetings_e2e.rs（需 DATABASE_URL）；
+- muster-server：P2/P3 服务端（Axum + PostgreSQL）；权限判定复用 muster-identity 不另写一份；会议接口（建/入/离/散/纪要含翻译行/密级/请 Agent/字幕语言/总结/录制）每条先落服务端自己的审计链再动库，正文只留哈希，录像文件哈希入链；节点（node.rs，迁移 0003）：设备码入网、节点会话只能以托管的工牌行事（X-Muster-Badge）、设定值与心跳、值班工牌（节点须有本地转写能力）；派发单(action.rs,迁移 0004):行动项确认权只在被派到的本人,主持人指派、驳回带理由、72 小时过期不转派,`GET /me/inbox` 是桌面壳「待我处理」的来源,`accepted(private)` 明确不做；自助注册(signup.rs,迁移 0005,2026-11-03):`POST /auth/register` 按 org_setting.registration 三种模式(closed / approval 缺省待批准 / open),按 IP 限流,`/accounts/:aid/approve` 批准即授 member@org,`/me/password` 本人改口令要原口令,都落 badge.update；用户资料(profile.rs,迁移 0006,2026-11-03,全库设计见 docs/数据库设计.md):user_profile(邮箱唯一不分大小写、头像文件在 /data/avatars 库里只存名、部门/职位/简介、preferred_provider)、login_event 登录流水只记存在的账号、password_reset 一次性令牌只存哈希(管理员签发链接;邮件通道未接,/auth/recover 回 delivery:none)；录制靠自托管 LiveKit Egress（deploy compose 的 redis + egress，recording.rs 直打 Twirp JSON），restricted 禁录、人人可见、散会自动停、Range 回放；e2e 在 tests/meetings_e2e.rs（需 DATABASE_URL）；
   服务端不持有源码、不做全局审计链（节点各自留链，组织侧靠锚定——尚未实现）；
   依赖用 deploy/docker-compose.yml 一条命令拉起
 - apps/desktop：智能协作平台桌面壳（Tauri 2，独立工作区，pnpm tauri dev）
 
 ## 约定
-- 动手前后都跑 cargo test（当前基线 364 项全绿；桌面壳另有 43 项需在 apps/desktop/src-tauri 下跑）
+- 动手前后都跑 cargo test（当前基线 369 项全绿；桌面壳另有 43 项需在 apps/desktop/src-tauri 下跑）
 - 每个任务一个 commit；不顺手重构已锁死的公共接口
 - 设计决策都在各 crate 的 lib.rs 文档注释里，先读再改
 - 根目录 AGENTS.md 是给 Agent（Muster 工牌与 Codex）读的章程摘要，运行时每次都进提示词；改铁律时与本文件两处同步

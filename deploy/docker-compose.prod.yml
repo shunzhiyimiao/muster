@@ -59,6 +59,8 @@ services:
       LIVEKIT_HTTP_URL: http://livekit:7880
       MUSTER_RECORDINGS_DIR: /out
       MUSTER_RECORDINGS_MOUNT: /out
+      # 头像文件(profile.rs):和审计库同一个 /data 卷,库里只存文件名
+      MUSTER_AVATARS_DIR: /data/avatars
       RUST_LOG: ${RUST_LOG:-muster_server=info}
     volumes:
       # 服务端自己的审计链。**丢了就断链**——而断掉的链证明不了任何事,

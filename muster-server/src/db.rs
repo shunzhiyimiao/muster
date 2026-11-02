@@ -20,6 +20,7 @@ impl Db {
         sqlx::raw_sql(include_str!("../migrations/0003_nodes.sql")).execute(&pool).await?;
         sqlx::raw_sql(include_str!("../migrations/0004_dispatch.sql")).execute(&pool).await?;
         sqlx::raw_sql(include_str!("../migrations/0005_signup.sql")).execute(&pool).await?;
+        sqlx::raw_sql(include_str!("../migrations/0006_profile.sql")).execute(&pool).await?;
         Ok(Self { pool })
     }
 

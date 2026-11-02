@@ -206,12 +206,40 @@ export interface RemoteAccount {
   disabled: boolean;
   pending: boolean;
   created_ms: number;
+  /** 资料摘要(2026-11-03;人的账号才有) */
+  email?: string | null;
+  department?: string | null;
+  title?: string | null;
+  last_login_ms?: number | null;
+  failed_logins: number;
   node_id?: string | null;
   node_online?: boolean | null;
 }
 export interface RemoteRegistration {
   mode: "closed" | "approval" | "open" | string;
   pending: number;
+}
+/** 用户资料(2026-11-03) */
+export interface RemoteProfile {
+  id: string;
+  display_name: string;
+  kind: string;
+  email?: string | null;
+  avatar_url?: string | null;
+  department?: string | null;
+  title?: string | null;
+  bio?: string | null;
+  preferred_provider?: string | null;
+  last_login_ms?: number | null;
+  last_login_ip?: string | null;
+  failed_logins: number;
+}
+export interface RemoteLoginEvent {
+  ok: boolean;
+  reason?: string | null;
+  ip?: string | null;
+  user_agent?: string | null;
+  ts_ms: number;
 }
 export interface RegisterOutcome {
   pending: boolean;
@@ -521,8 +549,8 @@ export const api = {
     invoke<RemoteStatus>("remote_login", { base, id, password }),
   remoteLogout: () => invoke<void>("remote_logout"),
   /** 自助注册:open 模式注册即连上;approval 模式返回 pending,等管理员批准 */
-  remoteRegister: (base: string, id: string, password: string, displayName: string) =>
-    invoke<RegisterOutcome>("remote_register", { base, id, password, displayName }),
+  remoteRegister: (base: string, id: string, password: string, displayName: string, email?: string, department?: string, title?: string) =>
+    invoke<RegisterOutcome>("remote_register", { base, id, password, displayName, email: email || null, department: department || null, title: title || null }),
   remoteRegistrationMode: (base: string) => invoke<string>("remote_registration_mode", { base }),
   remoteWhoami: () =>
     invoke<{ id: string; display_name: string; kind: string; can: Record<string, boolean> }>("remote_whoami"),
@@ -533,6 +561,18 @@ export const api = {
   remoteRegistrationSet: (mode: string) => invoke<RemoteRegistration>("remote_registration_set", { mode }),
   remoteChangePassword: (oldPassword: string, newPassword: string) =>
     invoke<void>("remote_change_password", { oldPassword, newPassword }),
+  remoteCatalog: () => invoke<{ providers?: Record<string, { display_name?: string; locality?: string }> }>("remote_catalog"),
+  remoteProfile: () => invoke<RemoteProfile>("remote_profile"),
+  /** 字段给了就改(空串 = 清空),没给的不动 */
+  remoteProfileUpdate: (patch: Record<string, string>) => invoke<RemoteProfile>("remote_profile_update", { patch }),
+  remoteAvatarUpload: (bytes: number[]) => invoke<void>("remote_avatar_upload", { bytes }),
+  remoteAvatar: (account: string) => invoke<number[] | null>("remote_avatar", { account }),
+  remoteMyLogins: (limit: number) => invoke<RemoteLoginEvent[]>("remote_my_logins", { limit }),
+  remoteAccountProfile: (id: string) => invoke<{ profile: RemoteProfile; logins: RemoteLoginEvent[] }>("remote_account_profile", { id }),
+  remoteAccountLogins: (id: string, limit: number) => invoke<RemoteLoginEvent[]>("remote_account_logins", { id, limit }),
+  /** 管理员签发找回口令的一次性链接 */
+  remoteResetLink: (id: string) => invoke<{ id: string; token: string; expires_ms: number; ttl_secs: number }>("remote_reset_link", { id }),
+  remoteRecover: (base: string, email: string) => invoke<{ ok: boolean; delivery: string }>("remote_recover", { base, email }),
   remoteToken: () => invoke<string | null>("remote_token"),
   /** 一次性订阅票:每次连 EventSource 前换一张(60 秒、只能用一次) */
   remoteEventsTicket: () => invoke<string | null>("remote_events_ticket"),

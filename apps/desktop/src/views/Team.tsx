@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { T } from "../theme";
 import { Card, IBtn, LvTag, RouteTag, Tag } from "../ui";
-import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RemoteAccount, RemoteRegistration, RosterEntryOut, api, fmtDate, fmtTime } from "../api";
+import { AgentOut, AuditRow, CapsuleOut, Channel, DOWNGRADE_ZH, ForgeableRun, ORIGIN_ZH, PendingApprovalOut, RemoteAccount, RemoteLoginEvent, RemoteRegistration, RosterEntryOut, api, fmtDate, fmtTime } from "../api";
 import { ChatPane, ChatState } from "../chat";
 import { CAPS, ROSTER, RosterEntry, TICON } from "../data";
 import { DiffPanel } from "./Diff";
@@ -311,6 +311,27 @@ function ServerAccountsCard() {
   const [reg, setReg] = useState<RemoteRegistration | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** 签发出来的重置链接只显示这一次 */
+  const [link, setLink] = useState<{ id: string; url: string; ttl: number } | null>(null);
+  const [logins, setLogins] = useState<{ id: string; rows: RemoteLoginEvent[] } | null>(null);
+  const [base, setBase] = useState<string>("");
+  useEffect(() => {
+    api.remoteStatus().then((s) => setBase(s.base ?? "")).catch(() => {});
+  }, []);
+
+  const issueLink = (id: string) => {
+    setBusy(id);
+    setErr(null);
+    api
+      .remoteResetLink(id)
+      .then((r) => setLink({ id, url: `${base.replace(/\/$/, "")}/web?reset=${r.token}`, ttl: Math.round(r.ttl_secs / 60) }))
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(null));
+  };
+  const showLogins = (id: string) => {
+    if (logins?.id === id) return setLogins(null);
+    api.remoteAccountLogins(id, 10).then((rows) => setLogins({ id, rows })).catch((e) => setErr(String(e)));
+  };
 
   const reload = () => {
     api.remoteAccounts().then(setAccounts).catch((e) => setErr(String(e)));
@@ -367,12 +388,21 @@ function ServerAccountsCard() {
       {err && <div className="mt-2 text-[11.5px]" style={{ color: T.red }}>{err}</div>}
       <div className="mt-3 divide-y" style={{ borderColor: T.line }}>
         {humans.map((a) => (
-          <div key={a.id} className="flex items-center gap-2 py-2 text-xs">
+          <div key={a.id} className="py-2 text-xs">
+          <div className="flex items-center gap-2">
             <span className="font-semibold truncate" style={{ minWidth: 120 }}>{a.display_name}</span>
-            <span className="truncate" style={{ color: T.faint }}>{a.id}</span>
+            <span className="truncate" style={{ color: T.faint }}>{a.id}{a.email ? ` · ${a.email}` : ""}{a.department ? ` · ${a.department}` : ""}</span>
             <span className="ml-auto text-[10.5px]" style={{ color: a.disabled ? T.red : a.pending ? T.amber : T.green }}>
               {a.disabled ? "已停用" : a.pending ? "待批准" : "正常"}
             </span>
+            <span className="text-[10.5px]" style={{ color: T.faint }} title="最近一次成功登录">
+              {a.last_login_ms ? fmtTime(a.last_login_ms) : "未登录过"}{a.failed_logins > 0 ? ` · 连续失败 ${a.failed_logins}` : ""}
+            </span>
+            <button onClick={() => showLogins(a.id)} className="px-2 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>记录</button>
+            {!a.disabled && !a.pending && (
+              <button disabled={busy === a.id} onClick={() => issueLink(a.id)} title="给忘了口令的人签发一次性重置链接(30 分钟),转交本人"
+                className="px-2 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>重置链接</button>
+            )}
             {a.pending && !a.disabled && (
               <button disabled={busy === a.id} onClick={() => act(a.id, api.remoteAccountApprove(a.id))}
                 className="px-2.5 py-1 rounded-lg text-[11px] font-semibold" style={{ background: T.indigo, color: "#fff" }}>批准</button>
@@ -381,6 +411,26 @@ function ServerAccountsCard() {
               className="px-2.5 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>
               {a.disabled ? "启用" : "停用"}
             </button>
+          </div>
+          {link?.id === a.id && (
+            <div className="mt-2 px-3 py-2 rounded-xl text-[11px] break-all" style={{ background: T.amberSoft, color: T.amber }}>
+              重置链接({link.ttl} 分钟内有效,只显示这一次,转交本人):<br />
+              <code>{link.url}</code>
+              <button onClick={() => navigator.clipboard?.writeText(link.url)} className="ml-2 px-2 py-0.5 rounded-md" style={{ background: "#fff" }}>复制</button>
+            </div>
+          )}
+          {logins?.id === a.id && (
+            <div className="mt-2 px-3 py-2 rounded-xl text-[11px]" style={{ background: T.panel }}>
+              {logins.rows.length === 0 && <span style={{ color: T.faint }}>没有登录记录</span>}
+              {logins.rows.map((l, i) => (
+                <div key={i} className="flex gap-3">
+                  <span style={{ color: l.ok ? T.green : T.red }}>{l.ok ? "✓" : `✗ ${l.reason ?? ""}`}</span>
+                  <span style={{ color: T.sub }}>{fmtTime(l.ts_ms)}</span>
+                  <span style={{ color: T.faint }}>{l.ip ?? "-"}</span>
+                </div>
+              ))}
+            </div>
+          )}
           </div>
         ))}
         {humans.length === 0 && <div className="py-2 text-[11.5px]" style={{ color: T.faint }}>还没有人的账号</div>}

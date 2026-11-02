@@ -350,6 +350,12 @@ pub struct AccountOut {
     /// 自助注册、还没被管理员批准(signup.rs)
     pub pending: bool,
     pub created_ms: i64,
+    /// 资料摘要(profile.rs;人的账号才有)
+    pub email: Option<String>,
+    pub department: Option<String>,
+    pub title: Option<String>,
+    pub last_login_ms: Option<i64>,
+    pub failed_logins: i32,
     /// 工牌住在哪个节点(只有 kind=agent 的账号会有)
     pub node_id: Option<uuid::Uuid>,
     /// 节点 90 秒内有心跳。没分配节点的工牌、人的账号都是 null
@@ -364,10 +370,11 @@ pub async fn list_accounts(
     require(&db, &id, &Action::ManageMembers, &Scope::Org).await?;
     // 工牌带上节点在不在线:心跳超时的节点,其上的工牌在这里显示不可用
     let rows = sqlx::query_as::<_, AccountOut>(
-        "SELECT a.id, a.display_name, a.kind, a.disabled, a.pending, a.created_ms, a.node_id,
+        "SELECT a.id, a.display_name, a.kind, a.disabled, a.pending, a.created_ms,
+                p.email, p.department, p.title, a.last_login_ms, a.failed_logins, a.node_id,
                 CASE WHEN a.node_id IS NULL THEN NULL
                      ELSE (n.status = 'approved' AND n.last_seen_ms IS NOT NULL AND n.last_seen_ms > $1) END AS node_online
-         FROM account a LEFT JOIN node n ON n.id = a.node_id ORDER BY a.id",
+         FROM account a LEFT JOIN node n ON n.id = a.node_id LEFT JOIN user_profile p ON p.account_id = a.id ORDER BY a.id",
     )
     .bind(now_ms() - crate::node::HEARTBEAT_TIMEOUT_MS)
     .fetch_all(&db.pool)
@@ -458,25 +465,33 @@ pub async fn login(
         }
     }
 
-    let row = sqlx::query_as::<_, (String, Option<String>, String, bool)>(
-        // 停用的账号连"账号或口令不对"都不必区分——统一走同一条拒绝路径
-        "SELECT display_name, password_hash, kind, pending FROM account WHERE id = $1 AND disabled = FALSE",
+    let row = sqlx::query_as::<_, (String, Option<String>, String, bool, bool)>(
+        "SELECT display_name, password_hash, kind, pending, disabled FROM account WHERE id = $1",
     )
     .bind(&r.id)
     .fetch_optional(&db.pool)
     .await?;
 
-    // 账号不存在与口令错误返回**同一句话**:否则接口就成了账号枚举器
+    // 账号不存在、口令错、已停用返回**同一句话**:否则接口就成了账号枚举器。
+    // 登录流水(profile.rs)只记存在的账号;不存在的不记——那张表不该成为枚举器的日志
     let fail = || ServerError::Unauthenticated("账号或口令不对".into());
-    let (name, phc, kind, pending) = row.ok_or_else(fail)?;
+    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok());
+    let (name, phc, kind, pending, disabled) = row.ok_or_else(fail)?;
     let phc = phc.ok_or_else(fail)?;
     if !crate::auth::verify_password(&r.password, &phc) {
+        crate::profile::record_login(&db, &r.id, false, Some("bad_password"), &ip, ua).await?;
+        return Err(fail());
+    }
+    if disabled {
+        crate::profile::record_login(&db, &r.id, false, Some("disabled"), &ip, ua).await?;
         return Err(fail());
     }
     // 待批准只在口令对了之后才说:知道口令的就是注册者本人(signup.rs)
     if pending {
+        crate::profile::record_login(&db, &r.id, false, Some("pending"), &ip, ua).await?;
         return Err(ServerError::Forbidden("账号还在等管理员批准,批准后再登录".into()));
     }
+    crate::profile::record_login(&db, &r.id, true, None, &ip, ua).await?;
     let token = crate::auth::issue_token(&r.id, &name, &kind)?;
     Ok(Json(serde_json::json!({ "token": token, "id": r.id, "display_name": name })))
 }

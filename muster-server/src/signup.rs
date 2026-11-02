@@ -115,7 +115,7 @@ fn validate_id(id: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn validate_password(pw: &str) -> std::result::Result<(), String> {
+pub(crate) fn validate_password(pw: &str) -> std::result::Result<(), String> {
     let n = pw.chars().count();
     if n < 8 {
         return Err("口令至少 8 个字符".into());
@@ -131,6 +131,13 @@ pub struct RegisterReq {
     pub id: String,
     pub password: String,
     pub display_name: String,
+    /// 资料(2026-11-03,profile.rs):都可选
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// `POST /auth/register`(免鉴权)。按 IP 限流在建号之前——Argon2 很贵。
@@ -151,6 +158,24 @@ pub async fn register(
     }
     validate_signup(&r.id, &r.password, &r.display_name).map_err(ServerError::BadRequest)?;
     let name = r.display_name.trim().to_string();
+    let email = match &r.email {
+        Some(e) => crate::profile::normalize_email(e).map_err(ServerError::BadRequest)?,
+        None => None,
+    };
+    let department = match &r.department {
+        Some(v) => crate::profile::clip("部门", v, 60, false).map_err(ServerError::BadRequest)?,
+        None => None,
+    };
+    let title = match &r.title {
+        Some(v) => crate::profile::clip("职位", v, 60, false).map_err(ServerError::BadRequest)?,
+        None => None,
+    };
+    // 邮箱冲突在建号**之前**查:建了号再发现冲突,就得回滚一个已经落库的账号
+    if let Some(e) = &email {
+        if crate::profile::email_taken(&db, e).await? {
+            return Err(ServerError::Conflict("这个邮箱已被别的账号使用".into()));
+        }
+    }
     let pending = mode == RegistrationMode::Approval;
     let phc = hash_password(&r.password)?;
 
@@ -169,6 +194,7 @@ pub async fn register(
     if inserted == 0 {
         return Err(ServerError::Conflict(format!("账号 id {} 已被占用,换一个", r.id)));
     }
+    crate::profile::create_profile(&db, &r.id, email.as_deref(), department.as_deref(), title.as_deref()).await?;
     let me = Identity { account_id: r.id.clone(), display_name: name.clone(), kind: PrincipalKind::Human };
     if !pending {
         grant_member(&db, &r.id).await?;
@@ -176,10 +202,10 @@ pub async fn register(
     record_grant_change(&audit, &me, &r.id, &format!("self-register mode={}", mode.as_str())).await?;
 
     if pending {
-        return Ok(Json(serde_json::json!({ "id": r.id, "display_name": name, "pending": true })));
+        return Ok(Json(serde_json::json!({ "id": r.id, "display_name": name, "email": email, "pending": true })));
     }
     let token = crate::auth::issue_token(&r.id, &name, "human")?;
-    Ok(Json(serde_json::json!({ "id": r.id, "display_name": name, "pending": false, "token": token })))
+    Ok(Json(serde_json::json!({ "id": r.id, "display_name": name, "email": email, "pending": false, "token": token })))
 }
 
 async fn grant_member(db: &Db, account: &str) -> Result<()> {

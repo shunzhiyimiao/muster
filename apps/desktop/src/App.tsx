@@ -20,6 +20,8 @@ import { PersonalHome, AgentProfile } from "./views/Personal";
 import { ChannelView, RosterView, MeetingOffline, CapsView } from "./views/Team";
 import { MeetingDetail, MeetingRoom, toLine, type RecordingState, type TranscriptLine } from "./views/Meeting";
 import { InboxView } from "./views/Inbox";
+import { ProfileView } from "./views/Profile";
+import { UserRound } from "lucide-react";
 import { DiffPanel } from "./views/Diff";
 import { ApprovalsPanel } from "./views/Approvals";
 import { SkillsView } from "./views/Skills";
@@ -621,6 +623,9 @@ export default function App() {
                     <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-md" style={{ background: view === "inbox" ? "rgba(255,255,255,.22)" : T.redSoft, color: view === "inbox" ? "#fff" : T.red }}>{inbox.length}</span>
                   ) : undefined} />
               )}
+              {remote?.connected && (
+                <SideItem icon={<UserRound size={16} />} label="个人资料" active={view === "profile"} onClick={() => { setView("profile"); setNotice(""); }} />
+              )}
               <SideItem icon={<Bot size={16} />} label="Agent 档案" active={view === "agent"} onClick={() => { setView("agent"); setNotice(""); refreshAll(); }}
                 extra={<span className="ml-auto text-[10px]" style={{ color: view === "agent" ? "#DCDCFE" : T.faint }}>{roster?.agents.find((a) => a.badge === roster.default_badge)?.name ?? "小七"}</span>} />
               {/* 对话列表。形态照团队的 #频道:同一件事(左边一行 = 一段对话)
@@ -821,6 +826,7 @@ export default function App() {
               roster={roster} badge={agentBadge} onPick={(b) => { setAgentBadge(b); api.agentStats(b).then(setAgent).catch(() => {}); }} />}
             {view === "skills" && <SkillsView data={skills} onRefresh={refreshAll} />}
             {view === "workflows" && <WorkflowsView data={workflows} onRefresh={refreshAll} live={liveWorkflowRuns} />}
+            {view === "profile" && <ProfileView />}
             {view === "inbox" && (
               <InboxView items={inbox} onChanged={() => setInboxVersion((n) => n + 1)} />
             )}
@@ -1230,9 +1236,14 @@ function LoginDialog({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   /** 自助注册(2026-11-03):服务端说开放才给「注册」页;approval 模式注册完要等管理员批准 */
-  const [tab, setTab] = useState<"login" | "register">("login");
+  const [tab, setTab] = useState<"login" | "register" | "recover">("login");
   const [regName, setRegName] = useState("");
   const [regPw2, setRegPw2] = useState("");
+  const [regEmail, setRegEmail] = useState("");
+  const [regDept, setRegDept] = useState("");
+  const [regTitle, setRegTitle] = useState("");
+  /** 找回口令:凭邮箱申请(邮件通道未接时服务端如实回 delivery=none) */
+  const [recEmail, setRecEmail] = useState("");
   const [info, setInfo] = useState<string | null>(null);
   /** 连上之后的改口令 */
   const [oldPw, setOldPw] = useState("");
@@ -1281,12 +1292,33 @@ function LoginDialog({
     setBusy(true);
     setErr(null);
     api
-      .remoteRegister(cleanBase(base), id.trim(), pw, regName.trim())
+      .remoteRegister(cleanBase(base), id.trim(), pw, regName.trim(), regEmail.trim(), regDept.trim(), regTitle.trim())
       .then((r) => {
         if (r.connected) return api.remoteStatus().then(onDone);
         setInfo(`已提交注册 ${r.id}。等管理员批准后,用这个账号和口令登录。`);
         setTab("login");
         setPw("");
+      })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const submitRecover = () => {
+    if (!base.trim() || !recEmail.trim()) {
+      setErr("服务器地址和邮箱都要填");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    api
+      .remoteRecover(cleanBase(base), recEmail.trim())
+      .then((r) => {
+        setTab("login");
+        setInfo(
+          r.delivery === "none"
+            ? "已记录申请,但这个服务器还没接邮件通道:请找组织管理员在「编制」页为你签发重置链接。"
+            : "如果邮箱存在,重置链接已发到邮箱,30 分钟内有效。",
+        );
       })
       .catch((e) => setErr(String(e)))
       .finally(() => setBusy(false));
@@ -1348,7 +1380,7 @@ function LoginDialog({
       <Card className={page ? "w-full max-w-[440px] p-7" : "w-[420px] p-6"}>
         {page ? (
           <>
-            <b className="text-[20px]" style={{ letterSpacing: "-.01em" }}>{probing ? "正在恢复连接…" : tab === "login" ? "欢迎回来" : "注册新账号"}</b>
+            <b className="text-[20px]" style={{ letterSpacing: "-.01em" }}>{probing ? "正在恢复连接…" : tab === "login" ? "欢迎回来" : tab === "recover" ? "找回口令" : "注册新账号"}</b>
             <div className="text-[11.5px] mt-1 leading-relaxed" style={{ color: T.sub }}>
               {probing ? "上次连过的服务器还在探,一会儿就好。" : "登录后进入团队频道与会议室;私有会话仍然只存在这台机器上。"}
             </div>
@@ -1407,13 +1439,21 @@ function LoginDialog({
                     ["账号", id, setId, "text"],
                     ["口令", pw, setPw, "password"],
                   ]
-                : [
-                    ["服务器地址(不带 /web 等路径)", base, setBase, "text"],
-                    ["账号 id(小写字母、数字、. _ -,3 到 32 位)", id, setId, "text"],
-                    ["显示名", regName, setRegName, "text"],
-                    ["口令(至少 8 位)", pw, setPw, "password"],
-                    ["再输一次口令", regPw2, setRegPw2, "password"],
-                  ]
+                : tab === "recover"
+                  ? [
+                      ["服务器地址(不带 /web 等路径)", base, setBase, "text"],
+                      ["注册时留的邮箱", recEmail, setRecEmail, "email"],
+                    ]
+                  : [
+                      ["服务器地址(不带 /web 等路径)", base, setBase, "text"],
+                      ["账号 id(小写字母、数字、. _ -,3 到 32 位)", id, setId, "text"],
+                      ["显示名", regName, setRegName, "text"],
+                      ["邮箱(可选,用于找回口令)", regEmail, setRegEmail, "email"],
+                      ["部门(可选)", regDept, setRegDept, "text"],
+                      ["职位(可选)", regTitle, setRegTitle, "text"],
+                      ["口令(至少 8 位)", pw, setPw, "password"],
+                      ["再输一次口令", regPw2, setRegPw2, "password"],
+                    ]
               ).map(([label, val, set, type]) => (
                 <label key={label as string} className="block">
                   <span className="text-[11px]" style={{ color: T.faint }}>{label as string}</span>
@@ -1421,7 +1461,7 @@ function LoginDialog({
                     type={type as string}
                     value={val as string}
                     onChange={(e) => (set as (v: string) => void)(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && (tab === "login" ? submit() : submitRegister())}
+                    onKeyDown={(e) => e.key === "Enter" && (tab === "login" ? submit() : tab === "recover" ? submitRecover() : submitRegister())}
                     className="w-full mt-1 px-3 py-2 rounded-xl text-xs outline-none"
                     style={{ background: T.panel, border: `1px solid ${T.line}` }}
                   />
@@ -1447,6 +1487,19 @@ function LoginDialog({
                   </button>
                   <button disabled={busy} onClick={goRegister} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
                     没有账号?注册
+                  </button>
+                  <button disabled={busy} onClick={() => { setTab("recover"); setErr(null); setInfo(null); }} className="px-2 py-2 text-xs" style={{ color: T.sub }}>
+                    忘了口令
+                  </button>
+                </>
+              ) : tab === "recover" ? (
+                <>
+                  <button disabled={busy} onClick={submitRecover} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                    style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
+                    {busy ? "提交中…" : "申请重置"}
+                  </button>
+                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+                    返回登录
                   </button>
                 </>
               ) : (

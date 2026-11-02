@@ -106,8 +106,7 @@ $("server").addEventListener("change", syncRegisterEntry);
 /** 登录 / 注册页签。 */
 function authTab(which) {
   const reg = which === "register";
-  $("registerForm").hidden = !reg;
-  $("loginForm").hidden = reg;
+  authForms(reg ? "register" : "login");
   $("toRegister").classList.toggle("on", reg);
   $("toLogin").classList.toggle("on", !reg);
   (reg ? $("regId") : $("account")).focus();
@@ -127,7 +126,14 @@ $("registerForm").onsubmit = async (e) => {
   try {
     const r = await api("/auth/register", {
       method: "POST",
-      body: JSON.stringify({ id: $("regId").value.trim(), password: $("regPw").value, display_name: $("regName").value.trim() }),
+      body: JSON.stringify({
+        id: $("regId").value.trim(),
+        password: $("regPw").value,
+        display_name: $("regName").value.trim(),
+        email: $("regEmail").value.trim() || null,
+        department: $("regDept").value.trim() || null,
+        title: $("regTitle").value.trim() || null,
+      }),
     });
     if (r.pending) {
       $("account").value = r.id;
@@ -143,6 +149,134 @@ $("registerForm").onsubmit = async (e) => {
     await enterLobby();
   } catch (err) {
     toast(String(err.message || err), true);
+  }
+};
+
+/* ---------------------------------------------------------------- 找回口令(2026-11-03,服务端 profile.rs)
+ *
+ * 凭邮箱申请永远回 200(不泄露邮箱存不存在);邮件通道未接时服务端回 delivery:"none",
+ * 如实告诉人去找管理员。带 ?reset=令牌 打开页面就显示重置表单。
+ */
+function authForms(which) {
+  for (const [id, on] of [["loginForm", which === "login"], ["registerForm", which === "register"], ["recoverForm", which === "recover"], ["resetForm", which === "reset"]]) {
+    $(id).hidden = !on;
+  }
+  $("toLogin").parentElement.hidden = which === "recover" || which === "reset";
+}
+$("toRecover").onclick = () => {
+  authForms("recover");
+  $("recEmail").focus();
+};
+$("recBack").onclick = () => authForms("login");
+$("recoverForm").onsubmit = async (e) => {
+  e.preventDefault();
+  state.base = serverBase();
+  try {
+    const r = await api("/auth/recover", { method: "POST", body: JSON.stringify({ email: $("recEmail").value.trim() }) });
+    authForms("login");
+    loginNotice(
+      r.delivery === "none"
+        ? "已记录申请,但这个服务器还没接邮件通道:请找组织管理员在「编制」页为你签发重置链接。"
+        : "如果邮箱存在,重置链接已发到邮箱,30 分钟内有效。",
+    );
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+};
+$("resetForm").onsubmit = async (e) => {
+  e.preventDefault();
+  if ($("rstPw").value !== $("rstPw2").value) return toast("两次口令不一致", true);
+  const token = new URLSearchParams(location.search).get("reset") || "";
+  state.base = serverBase();
+  try {
+    const r = await api("/auth/reset", { method: "POST", body: JSON.stringify({ token, new_password: $("rstPw").value }) });
+    history.replaceState(null, "", location.pathname);
+    authForms("login");
+    $("account").value = r.id;
+    loginNotice(`口令已重置,用 ${r.id} 和新口令登录。`);
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+};
+
+/* ---------------------------------------------------------------- 个人资料 */
+let providerOptions = [];
+async function loadProfile() {
+  try {
+    const p = await api("/me/profile");
+    $("pfName").value = p.display_name || "";
+    $("pfEmail").value = p.email || "";
+    $("pfDept").value = p.department || "";
+    $("pfTitle").value = p.title || "";
+    $("pfBio").value = p.bio || "";
+    const last = p.last_login_ms ? `最近登录 ${new Date(p.last_login_ms).toLocaleString()}${p.last_login_ip ? " · " + p.last_login_ip : ""}` : "";
+    $("profileMeta").textContent = [p.id, last].filter(Boolean).join(" · ");
+    $("avatarInitial").textContent = [...(p.display_name || p.id)][0] || "?";
+    if (p.avatar_url) {
+      // 头像接口要令牌,<img src> 带不了 Authorization,拉成 blob 再显示
+      const r = await fetch(state.base + p.avatar_url, { headers: { authorization: "Bearer " + state.token } });
+      if (r.ok) {
+        $("avatarImg").src = URL.createObjectURL(await r.blob());
+        $("avatarImg").style.display = "";
+        $("avatarInitial").style.display = "none";
+      }
+    } else {
+      $("avatarImg").style.display = "none";
+      $("avatarInitial").style.display = "flex";
+    }
+    try {
+      const cat = await api("/providers/catalog");
+      providerOptions = Object.entries(cat.providers || {}).map(([id, c]) => ({ id, name: c.display_name || id, locality: c.locality }));
+    } catch {
+      providerOptions = [];
+    }
+    const sel = $("pfProvider");
+    sel.innerHTML = '<option value="">跟组织默认</option>' + providerOptions.map((o) => `<option value="${escapeHtml(o.id)}">${escapeHtml(o.name)}${o.locality === "cloud" ? "(云端)" : "(本地)"}</option>`).join("");
+    sel.value = p.preferred_provider || "";
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+}
+$("profileBtn").onclick = async () => {
+  $("profileCard").hidden = !$("profileCard").hidden;
+  if (!$("profileCard").hidden) await loadProfile();
+};
+$("profileForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const p = await api("/me/profile", {
+      method: "PUT",
+      body: JSON.stringify({
+        display_name: $("pfName").value,
+        email: $("pfEmail").value,
+        department: $("pfDept").value,
+        title: $("pfTitle").value,
+        bio: $("pfBio").value,
+        preferred_provider: $("pfProvider").value,
+      }),
+    });
+    state.me = p.display_name;
+    $("who").textContent = p.display_name;
+    $("profileSaved").textContent = "已保存";
+    setTimeout(() => ($("profileSaved").textContent = ""), 3000);
+  } catch (err) {
+    toast(String(err.message || err), true);
+  }
+};
+$("avatarFile").onchange = async () => {
+  const f = $("avatarFile").files[0];
+  if (!f) return;
+  if (f.size > 512 * 1024) return toast("头像最大 512 KiB", true);
+  try {
+    const r = await fetch(state.base + "/me/avatar", { method: "POST", headers: { authorization: "Bearer " + state.token, "content-type": f.type || "application/octet-stream" }, body: f });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    toast("头像已更新");
+    await loadProfile();
+  } catch (err) {
+    toast(String(err.message || err), true);
+  } finally {
+    $("avatarFile").value = "";
   }
 };
 
@@ -877,6 +1011,12 @@ $("leaveBtn").onclick = () => {
 (function boot() {
   $("server").value = location.origin;
   syncRegisterEntry();
+  // 带着重置链接进来:直接显示重置表单,不管有没有旧会话
+  if (new URLSearchParams(location.search).get("reset")) {
+    show("login");
+    authForms("reset");
+    return;
+  }
   const raw = localStorage.getItem("muster.session");
   if (!raw) return show("login");
   try {

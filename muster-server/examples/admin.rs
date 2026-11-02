@@ -23,6 +23,9 @@
 //! muster-admin disable bob / enable bob
 //! muster-admin approve bob                  # 批准自助注册的账号(授 member@org)
 //! muster-admin register-mode [closed|approval|open]   # 看 / 改注册模式(缺省 approval)
+//! muster-admin profile bob                   # 资料 + 最近登录
+//! muster-admin logins bob [n]                # 登录流水
+//! muster-admin reset-link bob                # 签发找回口令的一次性链接(30 分钟),转交本人
 //! muster-admin team-add platform 平台组
 //! muster-admin channel-add platform-main platform 主频道 internal
 //! muster-admin nodes                         # 列节点(待批准的带设备码)
@@ -210,6 +213,36 @@ fn main() {
                     v["pending"]
                 );
             }
+        }
+        "profile" => {
+            need(rest, 1, "profile <账号>");
+            let v = call("GET", &format!("/accounts/{}/profile", rest[0]), None, true);
+            let p = &v["profile"];
+            println!("{} · {} · {}{}", p["id"].as_str().unwrap_or("?"), p["display_name"].as_str().unwrap_or("?"), p["kind"].as_str().unwrap_or("?"),
+                if p["disabled"] == true { " · 已停用" } else if p["pending"] == true { " · 待批准" } else { "" });
+            for (k, label) in [("email", "邮箱"), ("department", "部门"), ("title", "职位"), ("bio", "简介"), ("preferred_provider", "偏好通道"), ("avatar_url", "头像")] {
+                if let Some(s) = p[k].as_str() { println!("  {label}:{s}"); }
+            }
+            if let Some(ms) = p["last_login_ms"].as_i64() { println!("  最近登录:{ms}(ms)· {}", p["last_login_ip"].as_str().unwrap_or("?")); }
+            println!("  连续失败:{}", p["failed_logins"]);
+            for e in v["logins"].as_array().cloned().unwrap_or_default() {
+                println!("  {} {} {} {}", e["ts_ms"], if e["ok"] == true { "✓" } else { "✗" }, e["ip"].as_str().unwrap_or("-"), e["reason"].as_str().unwrap_or(""));
+            }
+        }
+        "logins" => {
+            need(rest, 1, "logins <账号> [n]");
+            let n = rest.get(1).cloned().unwrap_or_else(|| "50".into());
+            let v = call("GET", &format!("/accounts/{}/logins?limit={n}", rest[0]), None, true);
+            for e in v.as_array().cloned().unwrap_or_default() {
+                println!("{} {} {} {} {}", e["ts_ms"], if e["ok"] == true { "✓" } else { "✗" }, e["ip"].as_str().unwrap_or("-"), e["reason"].as_str().unwrap_or(""), e["user_agent"].as_str().unwrap_or(""));
+            }
+        }
+        "reset-link" => {
+            need(rest, 1, "reset-link <账号>");
+            let v = call("POST", &format!("/accounts/{}/reset-link", rest[0]), None, true);
+            let public = std::env::var("MUSTER_PUBLIC_URL").unwrap_or_else(|_| base());
+            println!("✓ 已签发,{} 分钟内有效,只显示这一次,转交本人:", v["ttl_secs"].as_i64().unwrap_or(1800) / 60);
+            println!("  {}/web?reset={}", public.trim_end_matches('/'), v["token"].as_str().unwrap_or("?"));
         }
         "team-add" => {
             need(rest, 2, "team-add <id> <名称>");

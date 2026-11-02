@@ -74,6 +74,16 @@ pub struct RemoteAccount {
     pub pending: bool,
     pub created_ms: i64,
     #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub last_login_ms: Option<i64>,
+    #[serde(default)]
+    pub failed_logins: i32,
+    #[serde(default)]
     pub node_id: Option<String>,
     #[serde(default)]
     pub node_online: Option<bool>,
@@ -85,6 +95,44 @@ pub struct RemoteRegistration {
     pub mode: String,
     #[serde(default)]
     pub pending: i64,
+}
+
+/// 用户资料(`GET /me/profile`,2026-11-03)。
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RemoteProfile {
+    pub id: String,
+    pub display_name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub preferred_provider: Option<String>,
+    #[serde(default)]
+    pub last_login_ms: Option<i64>,
+    #[serde(default)]
+    pub last_login_ip: Option<String>,
+    #[serde(default)]
+    pub failed_logins: i32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RemoteLoginEvent {
+    pub ok: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub ip: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    pub ts_ms: i64,
 }
 
 /// 注册结果。approval 模式只建号、不发令牌。
@@ -174,6 +222,9 @@ impl Remote {
         id: &str,
         password: &str,
         display_name: &str,
+        email: Option<&str>,
+        department: Option<&str>,
+        title: Option<&str>,
     ) -> Result<(RegisterOutcome, Option<Self>), String> {
         let base = base.trim_end_matches('/').to_string();
         let client = reqwest::Client::builder()
@@ -182,7 +233,10 @@ impl Remote {
             .map_err(|e| format!("http 客户端创建失败:{e}"))?;
         let resp = client
             .post(format!("{base}/auth/register"))
-            .json(&serde_json::json!({ "id": id, "password": password, "display_name": display_name }))
+            .json(&serde_json::json!({
+                "id": id, "password": password, "display_name": display_name,
+                "email": email, "department": department, "title": title,
+            }))
             .send()
             .await
             .map_err(|e| format!("连不上服务端 {base}:{e}"))?;
@@ -229,6 +283,118 @@ impl Remote {
             .await
             .map_err(|e| format!("响应无法解析:{e}"))?;
         Ok(v["mode"].as_str().unwrap_or("closed").to_string())
+    }
+
+    /// provider 目录原样(个人资料页选偏好通道用)。
+    pub async fn catalog_json(&self) -> Result<serde_json::Value, String> {
+        self.get("/providers/catalog").await
+    }
+
+    pub async fn profile(&self) -> Result<RemoteProfile, String> {
+        self.get("/me/profile").await
+    }
+
+    /// 字段给了就改(空串 = 清空),没给的不动——与服务端同一语义。
+    pub async fn update_profile(&self, patch: &serde_json::Value) -> Result<RemoteProfile, String> {
+        let resp = self
+            .client
+            .put(format!("{}/me/profile", self.base))
+            .bearer_auth(&self.token)
+            .json(patch)
+            .send()
+            .await
+            .map_err(|e| format!("请求 /me/profile 失败:{e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(msg);
+        }
+        serde_json::from_str(&text).map_err(|e| format!("/me/profile 响应无法解析:{e}"))
+    }
+
+    pub async fn upload_avatar(&self, bytes: Vec<u8>) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(format!("{}/me/avatar", self.base))
+            .bearer_auth(&self.token)
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|e| format!("上传头像失败:{e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(msg);
+        }
+        Ok(())
+    }
+
+    /// 头像字节;没有头像返回 None。
+    pub async fn avatar(&self, account: &str) -> Result<Option<Vec<u8>>, String> {
+        let resp = self
+            .client
+            .get(format!("{}/avatars/{account}", self.base))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| format!("取头像失败:{e}"))?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(format!("取头像:HTTP {}", resp.status()));
+        }
+        Ok(Some(resp.bytes().await.map_err(|e| e.to_string())?.to_vec()))
+    }
+
+    pub async fn my_logins(&self, limit: u32) -> Result<Vec<RemoteLoginEvent>, String> {
+        self.get(&format!("/me/logins?limit={limit}")).await
+    }
+
+    pub async fn account_profile(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.get(&format!("/accounts/{id}/profile")).await
+    }
+
+    pub async fn account_logins(&self, id: &str, limit: u32) -> Result<Vec<RemoteLoginEvent>, String> {
+        self.get(&format!("/accounts/{id}/logins?limit={limit}")).await
+    }
+
+    /// 管理员签发找回口令的一次性链接;返回 {token, expires_ms, ttl_secs}。
+    pub async fn reset_link(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.post_json(&format!("/accounts/{id}/reset-link"), &serde_json::json!({})).await
+    }
+
+    /// 凭邮箱申请找回口令(免鉴权);返回 {ok, delivery}。
+    pub async fn recover(base: &str, email: &str) -> Result<serde_json::Value, String> {
+        let base = base.trim_end_matches('/');
+        let resp = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("http 客户端创建失败:{e}"))?
+            .post(format!("{base}/auth/recover"))
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .map_err(|e| format!("连不上服务端 {base}:{e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let msg = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("HTTP {status}"));
+            return Err(msg);
+        }
+        serde_json::from_str(&text).map_err(|e| format!("响应无法解析:{e}"))
     }
 
     /// 我在服务端是谁、能做什么(`can.manage_members` 决定要不要显示成员管理)。

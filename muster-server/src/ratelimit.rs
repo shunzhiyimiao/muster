@@ -45,6 +45,9 @@ pub const MAX_PER_ACCOUNT: usize = 10;
 pub const MAX_PER_IP: usize = 60;
 /// 自助注册按 IP:5 次 / 5 分钟。注册比登录贵得多(建号 + Argon2),也更没有正当的高频理由。
 pub const MAX_REGISTER_PER_IP: usize = 5;
+/// 找回口令的申请与重置,按 IP。
+pub const MAX_RECOVER_PER_IP: usize = 5;
+pub const MAX_RESET_PER_IP: usize = 10;
 /// 滑动窗口长度。
 const WINDOW: Duration = Duration::from_secs(5 * 60);
 

@@ -182,13 +182,31 @@
             <label style="margin-top:8px"><span>服务器地址(不带 /web 等路径)</span><input id="server" /></label>
           </details>
           <button class="primary" type="submit">登录</button>
-          <div class="links"><span>忘了口令?找组织管理员重置。</span></div>
+          <div class="links"><span>忘了口令?</span><button type="button" id="toRecover">凭邮箱找回</button></div>
+        </form>
+        <!-- 找回口令:凭邮箱申请(邮件通道未接时提示找管理员);带 ?reset=令牌 进来时显示重置表单 -->
+        <form id="recoverForm" hidden>
+          <div class="hint">填注册时留的邮箱。邮件通道接上后会收到重置链接;现在还没接,请找管理员在「编制」页签发链接。</div>
+          <label><span>邮箱</span><input id="recEmail" type="email" autocomplete="email" /></label>
+          <button class="primary" type="submit">申请重置</button>
+          <div class="links"><button type="button" id="recBack">返回登录</button></div>
+        </form>
+        <form id="resetForm" hidden>
+          <div class="hint">设置新口令(至少 8 位)。链接 30 分钟内有效,只能用一次。</div>
+          <label><span>新口令</span><input id="rstPw" type="password" autocomplete="new-password" /></label>
+          <label><span>再输一次</span><input id="rstPw2" type="password" autocomplete="new-password" /></label>
+          <button class="primary" type="submit">重置口令</button>
         </form>
         <!-- 自助注册:服务端 /auth/registration 说开放才显示页签;待批准模式下注册完要等管理员 -->
         <form id="registerForm" hidden>
           <div class="hint">账号 id 只能用小写字母、数字和 . _ -(3 到 32 位),以后改不了;口令至少 8 位。</div>
           <label><span>账号 id</span><input id="regId" autocomplete="username" placeholder="例如 zhangwei" /></label>
           <label><span>显示名</span><input id="regName" placeholder="例如 张伟" /></label>
+          <label><span>邮箱(可选,用于找回口令)</span><input id="regEmail" type="email" autocomplete="email" placeholder="name@example.com" /></label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <label><span>部门(可选)</span><input id="regDept" placeholder="平台组" /></label>
+            <label><span>职位(可选)</span><input id="regTitle" placeholder="工程师" /></label>
+          </div>
           <label><span>口令</span><input id="regPw" type="password" autocomplete="new-password" /></label>
           <label><span>再输一次</span><input id="regPw2" type="password" autocomplete="new-password" /></label>
           <button class="primary" type="submit">注册</button>
@@ -203,6 +221,7 @@
       <div class="bar">
         <h1 style="flex:1">会议</h1>
         <span class="dim">已登录 <b id="who"></b></span>
+        <button id="profileBtn" title="头像、邮箱、部门、简介、偏好通道" style="font-size:11px;padding:5px 10px">个人资料</button>
         <button id="pwBtn" title="改自己的口令" style="font-size:11px;padding:5px 10px">改口令</button>
       </div>
       <div class="bar" style="margin-top:14px">
@@ -216,6 +235,27 @@
     <div class="card">
       <b style="font-size:13px">进行中</b>
       <div id="meetings" style="margin-top:8px"></div>
+      <section id="profileCard" hidden style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+        <div class="bar"><b>个人资料</b><span id="profileMeta" class="dim" style="margin-left:auto"></span></div>
+        <div style="display:flex;gap:16px;align-items:flex-start;margin-top:10px">
+          <div style="text-align:center">
+            <img id="avatarImg" alt="" style="width:72px;height:72px;border-radius:50%;object-fit:cover;background:var(--panel);display:none" />
+            <div id="avatarInitial" style="width:72px;height:72px;border-radius:50%;background:var(--indigo);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:26px"></div>
+            <label style="margin-top:8px;font-size:11px;color:var(--indigo);cursor:pointer">换头像<input id="avatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden /></label>
+          </div>
+          <form id="profileForm" style="flex:1;min-width:0">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <label><span>显示名</span><input id="pfName" /></label>
+              <label><span>邮箱</span><input id="pfEmail" type="email" /></label>
+              <label><span>部门</span><input id="pfDept" /></label>
+              <label><span>职位</span><input id="pfTitle" /></label>
+            </div>
+            <label><span>简介</span><textarea id="pfBio" rows="2" style="width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);outline:none;font:inherit"></textarea></label>
+            <label><span>偏好的模型通道(空 = 跟组织默认)</span><select id="pfProvider"><option value="">跟组织默认</option></select></label>
+            <div class="bar"><button class="primary" type="submit">保存</button><span id="profileSaved" class="dim"></span></div>
+          </form>
+        </div>
+      </section>
       <form id="pwForm" hidden style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
         <b>改口令</b>
         <label><span>原口令</span><input id="pwOld" type="password" autocomplete="current-password" /></label>

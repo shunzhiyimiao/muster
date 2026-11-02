@@ -1,6 +1,6 @@
 //! 路由装配。
 //!
-//! 只有 `/health`、`/auth/login`、`/auth/register`、`/auth/registration` 免鉴权;其余 handler 的参数表里都有
+//! 只有 `/health`、`/auth/login`、`/auth/register`、`/auth/registration`、`/auth/recover`、`/auth/reset` 免鉴权;其余 handler 的参数表里都有
 //! [`crate::auth::Identity`]——**忘了写就拿不到身份**,让"忘记鉴权"在类型上
 //! 尽量难发生,而不是靠中间件配置对不对。
 
@@ -9,7 +9,7 @@ use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::ratelimit::LoginLimiter;
-use crate::{action, events, meeting, message, node, org, provider, recording, signup, ws, Db};
+use crate::{action, events, meeting, message, node, org, profile, provider, recording, signup, ws, Db};
 
 pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
     let with_hub = (db.clone(), hub.clone());
@@ -22,6 +22,16 @@ pub fn app(db: Db, hub: ws::Hub, audit: crate::audit::Audit) -> Router {
         .route("/me/password", post(signup::change_password))
         .route("/org/registration", get(signup::registration_get).post(signup::registration_set))
         .route("/accounts/:aid/approve", post(signup::approve))
+        // 用户资料、登录流水、找回口令(2026-11-03,profile.rs)
+        .route("/me/profile", get(profile::me).put(profile::update_me))
+        .route("/me/avatar", post(profile::upload_avatar))
+        .route("/me/logins", get(profile::my_logins))
+        .route("/avatars/:aid", get(profile::get_avatar))
+        .route("/accounts/:aid/profile", get(profile::admin_profile))
+        .route("/accounts/:aid/logins", get(profile::admin_logins))
+        .route("/accounts/:aid/reset-link", post(profile::admin_reset_link))
+        .route("/auth/recover", post(profile::recover))
+        .route("/auth/reset", post(profile::reset))
         // Provider 目录:读只要已认证(每个跑模型的节点都要),
         // 写要 ChangePolicy(见 provider.rs 模块文档)
         .route("/providers/catalog", get(provider::catalog))
