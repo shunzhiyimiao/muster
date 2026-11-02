@@ -92,35 +92,109 @@
   .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .note { font-size:11.5px; color:var(--sub); background:var(--panel);
           padding:10px 12px; border-radius:12px; margin-top:12px; line-height:1.7; }
+  /* 登录页(2026-11-03):整页两栏,左品牌右表单;与官网同一套深色 + 靛蓝。手机竖屏叠成一栏。 */
+  #login { position:fixed; inset:0; display:grid; grid-template-columns:minmax(0,5fr) minmax(0,6fr); background:#111113; z-index:5; }
+  #login[hidden] { display:none; }
+  .brand { color:#F5F5F7; padding:48px 56px; display:flex; flex-direction:column; justify-content:space-between;
+           background:radial-gradient(1200px 600px at -10% -20%, rgba(91,91,245,.35), transparent 60%), #111113; }
+  .brand .mark { display:flex; align-items:center; gap:12px; font-weight:800; font-size:17px; letter-spacing:-.01em; }
+  .brand .mark i { width:38px; height:38px; border-radius:12px; background:var(--indigo); color:#fff; display:inline-flex;
+                   align-items:center; justify-content:center; font-style:normal; font-weight:800; font-size:18px; }
+  .brand h2 { font-size:clamp(28px,3.2vw,40px); line-height:1.15; letter-spacing:-.015em; margin:0 0 14px; font-weight:700; }
+  .brand p { color:#A1A1AA; font-size:14px; line-height:1.75; margin:0; max-width:440px; }
+  .brand ul { list-style:none; padding:0; margin:28px 0 0; display:grid; gap:12px; max-width:440px; }
+  .brand li { display:flex; gap:12px; align-items:flex-start; font-size:13px; color:#D4D4D8; line-height:1.6; }
+  .brand li b { color:#F5F5F7; font-weight:600; display:block; }
+  .brand li i { flex:none; width:8px; height:8px; border-radius:50%; background:var(--indigo); margin-top:7px; font-style:normal; }
+  .brand .foot { font-size:12px; color:#71717A; }
+  .brand .foot a { color:#A1A1AA; text-decoration:none; }
+  .pane { background:#F5F5F7; display:flex; align-items:center; justify-content:center; padding:32px 24px; overflow-y:auto; }
+  .auth { width:100%; max-width:420px; background:#fff; border:1px solid var(--line); border-radius:20px; padding:28px 28px 24px;
+          box-shadow:0 20px 60px rgba(17,18,28,.08); }
+  .auth h1 { font-size:20px; margin:0; letter-spacing:-.01em; }
+  .auth .dim { margin-top:4px; }
+  .tabs { display:flex; gap:4px; margin:18px 0 16px; background:var(--panel); padding:4px; border-radius:12px; }
+  .tabs button { flex:1; padding:8px 0; border-radius:9px; background:transparent; color:var(--sub); font-size:13px; }
+  .tabs button.on { background:#fff; color:var(--ink); box-shadow:0 1px 3px rgba(17,18,28,.08); }
+  .tabs button[hidden] { display:none; }
+  .auth form { margin:0; }
+  .auth label { margin-bottom:12px; }
+  .auth input { padding:11px 13px; border-radius:12px; font-size:14px; background:#fff; }
+  .auth input:focus { border-color:var(--indigo); box-shadow:0 0 0 3px rgba(91,91,245,.15); }
+  .auth button.primary { width:100%; padding:12px; font-size:14px; border-radius:12px; margin-top:4px; }
+  .auth details { margin:4px 0 12px; }
+  .auth summary { font-size:12px; color:var(--faint); cursor:pointer; list-style:none; }
+  .auth summary::before { content:"▸ "; }
+  .auth details[open] summary::before { content:"▾ "; }
+  .notice { font-size:12.5px; line-height:1.6; padding:10px 12px; border-radius:12px; margin-bottom:12px; }
+  .notice.ok { background:#E7F7EE; color:#0E7A3C; }
+  .notice.warn { background:#FFF4E5; color:#B45309; }
+  .notice[hidden] { display:none; }
+  .auth .hint { font-size:11.5px; color:var(--faint); line-height:1.6; margin:-4px 0 12px; }
+  .auth .links { display:flex; justify-content:space-between; margin-top:14px; font-size:12px; color:var(--faint); }
+  .auth .links button { padding:0; background:none; color:var(--indigo); font-weight:600; }
+  .pane, .brand { min-width:0; }
+  .auth { min-width:0; }
+  .tabs.single { display:none; }
+  @media (max-width:820px) {
+    #login { grid-template-columns:minmax(0,1fr); grid-template-rows:auto 1fr; overflow-y:auto; }
+    .brand { padding:24px 24px 20px; gap:14px; }
+    .brand ul, .brand p { display:none; }
+    .brand h2 { font-size:22px; margin:0; }
+    .pane { padding:20px 16px 32px; align-items:flex-start; }
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-  <section id="login" class="card" hidden>
-    <h1>Muster 智能协作平台 · 参会</h1>
-    <div class="dim">用浏览器加入团队会议。开麦说话由会议 Agent 走本地转写,音频不出内网。</div>
-    <form id="loginForm" style="margin-top:16px">
-      <label><span>服务器地址</span><input id="server" /></label>
-      <label><span>账号</span><input id="account" autocomplete="username" /></label>
-      <label><span>口令</span><input id="password" type="password" autocomplete="current-password" /></label>
-      <button class="primary" type="submit">连接</button>
-      <button type="button" id="toRegister" hidden style="margin-left:8px">没有账号?注册一个</button>
-    </form>
-    <!-- 自助注册(2026-11-03):服务端 /auth/registration 说开放才显示入口;待批准模式下注册完要等管理员 -->
-    <form id="registerForm" hidden style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
-      <b>注册新账号</b>
-      <div class="dim" style="margin-top:4px;font-size:11px">账号 id 只能用小写字母、数字和 . _ -(3 到 32 位);口令至少 8 位。</div>
-      <label><span>账号 id</span><input id="regId" autocomplete="username" placeholder="例如 zhangwei" /></label>
-      <label><span>显示名</span><input id="regName" placeholder="例如 张伟" /></label>
-      <label><span>口令</span><input id="regPw" type="password" autocomplete="new-password" /></label>
-      <label><span>再输一次</span><input id="regPw2" type="password" autocomplete="new-password" /></label>
-      <button class="primary" type="submit">注册</button>
-      <button type="button" id="toLogin" style="margin-left:8px">返回登录</button>
-    </form>
-    <div class="note">
-      这个页面只用来<b>参会</b>:发消息、开会、看纪要。<br />
-      跑任务、审批、能力库需要本地 Runner 与本地审计链,浏览器里做不了——那些在桌面壳里。
+  <!-- 登录页(2026-11-03):整页。左品牌(与官网同一套深色),右登录 / 注册。
+       id 一个没改:server / account / password / loginForm / registerForm / regId / regName / regPw / regPw2 / toRegister / toLogin,
+       main.js 照旧。 -->
+  <section id="login" hidden>
+    <div class="brand">
+      <div class="mark"><i>M</i> Muster 智能协作平台</div>
+      <div>
+        <h2>可完全本地部署的<br />AI 原生团队协作</h2>
+        <p>频道、会议、Agent 与审计链跑在你们自己的服务器上。会议音频在内网转写,模型调用按密级路由,每一次外发都有账可查。</p>
+        <ul>
+          <li><i></i><div><b>会议转写不出内网</b>受限级会议只走本地引擎,字幕、翻译、回顾由值班 Agent 完成</div></li>
+          <li><i></i><div><b>密级只升不降</b>云端模型只在允许的密级下使用,绝不静默升云</div></li>
+          <li><i></i><div><b>审计只存哈希</b>谁做了什么有链可查,正文不进链</div></li>
+        </ul>
+      </div>
+      <div class="foot"><a href="/">← 返回官网</a> · 文档与源码见 GitHub</div>
+    </div>
+    <div class="pane">
+      <div class="auth">
+        <h1>欢迎回来</h1>
+        <div class="dim">登录后进入团队频道与会议室。</div>
+        <div class="tabs">
+          <button type="button" id="toLogin" class="on">登录</button>
+          <button type="button" id="toRegister" hidden>注册</button>
+        </div>
+        <div id="loginNotice" class="notice ok" hidden></div>
+        <form id="loginForm">
+          <label><span>账号</span><input id="account" autocomplete="username" placeholder="账号 id" /></label>
+          <label><span>口令</span><input id="password" type="password" autocomplete="current-password" /></label>
+          <details>
+            <summary>高级:服务器地址</summary>
+            <label style="margin-top:8px"><span>服务器地址(不带 /web 等路径)</span><input id="server" /></label>
+          </details>
+          <button class="primary" type="submit">登录</button>
+          <div class="links"><span>忘了口令?找组织管理员重置。</span></div>
+        </form>
+        <!-- 自助注册:服务端 /auth/registration 说开放才显示页签;待批准模式下注册完要等管理员 -->
+        <form id="registerForm" hidden>
+          <div class="hint">账号 id 只能用小写字母、数字和 . _ -(3 到 32 位),以后改不了;口令至少 8 位。</div>
+          <label><span>账号 id</span><input id="regId" autocomplete="username" placeholder="例如 zhangwei" /></label>
+          <label><span>显示名</span><input id="regName" placeholder="例如 张伟" /></label>
+          <label><span>口令</span><input id="regPw" type="password" autocomplete="new-password" /></label>
+          <label><span>再输一次</span><input id="regPw2" type="password" autocomplete="new-password" /></label>
+          <button class="primary" type="submit">注册</button>
+          <div class="links"><span id="regModeHint">注册后需要管理员批准才能登录。</span></div>
+        </form>
+      </div>
     </div>
   </section>
 

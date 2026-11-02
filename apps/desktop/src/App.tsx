@@ -69,6 +69,8 @@ export default function App() {
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [remoteChans, setRemoteChans] = useState<Channel[]>([]);
   const [loginOpen, setLoginOpen] = useState(false);
+  /** 启动登录页(2026-11-03):没连上服务端就先停在整屏登录页;「先以单机模式进入」只管这一次运行 */
+  const [offlineChosen, setOfflineChosen] = useState(() => sessionStorage.getItem("muster.offline") === "1");
   /* C3:当前所在的会议(null = 不在会里);转写由 SSE 推来 */
   const [meeting, setMeeting] = useState<RemoteMeeting | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
@@ -502,6 +504,30 @@ export default function App() {
   }
 
   const personalMsgs = chat.msgs["personal"] ?? [];
+
+  // 启动登录页:还在探(remote 为 null)或没连上且没选单机,都停在整屏登录页。
+  // 连上了、或人明确选了单机模式,才进主界面——会议、频道本来就是连上才有的东西。
+  if (!remote?.connected && !offlineChosen) {
+    return (
+      <LoginDialog
+        variant="page"
+        probing={remote === null}
+        current={remote}
+        onClose={() => {
+          sessionStorage.setItem("muster.offline", "1");
+          setOfflineChosen(true);
+        }}
+        onDone={(r) => {
+          setRemote(r);
+          setLoginOpen(false);
+          if (r.connected) {
+            setNotice(`已连接 ${r.base}`);
+            refreshAll();
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="w-full h-screen overflow-hidden" style={{ background: T.canvas }}>
@@ -1187,10 +1213,16 @@ function LoginDialog({
   current,
   onClose,
   onDone,
+  variant = "dialog",
+  probing = false,
 }: {
   current: RemoteStatus | null;
   onClose: () => void;
   onDone: (r: RemoteStatus) => void;
+  /** dialog = 主界面里弹出的小卡;page = 启动时的整屏登录页(左品牌右表单,与网页端同一套) */
+  variant?: "dialog" | "page";
+  /** 正在恢复上次连接 */
+  probing?: boolean;
 }) {
   const [base, setBase] = useState(current?.base ?? "http://localhost:8787");
   const [id, setId] = useState(current?.account_id ?? "");
@@ -1278,14 +1310,58 @@ function LoginDialog({
       .finally(() => setBusy(false));
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
-      <Card className="w-[420px] p-6">
-        <b className="text-sm">连接团队服务器</b>
-        <div className="text-[11.5px] mt-1.5 leading-relaxed" style={{ color: T.sub }}>
-          连上之后,团队频道与消息来自服务端;<b>私有会话仍然只存在这台机器上</b>。
-          任务执行、审计链、worktree 也都留在本机——服务端不持有源码。
+  const page = variant === "page";
+  const brand = page && (
+    <div
+      className="flex flex-col justify-between p-12 text-white"
+      style={{ background: "radial-gradient(1000px 520px at -10% -20%, rgba(91,91,245,.38), transparent 60%), #111113" }}
+    >
+      <div className="flex items-center gap-3 font-extrabold text-[17px]" style={{ letterSpacing: "-.01em" }}>
+        <span className="w-9 h-9 rounded-xl inline-flex items-center justify-center text-lg" style={{ background: T.indigo }}>M</span>
+        Muster 智能协作平台
+      </div>
+      <div>
+        <div className="font-bold leading-[1.15]" style={{ fontSize: 34, letterSpacing: "-.015em" }}>
+          可完全本地部署的<br />AI 原生团队协作
         </div>
+        <div className="mt-3.5 text-[13.5px] leading-relaxed max-w-[420px]" style={{ color: "#A1A1AA" }}>
+          频道、会议、Agent 与审计链跑在你们自己的服务器上。会议音频在内网转写,模型调用按密级路由,每一次外发都有账可查。
+        </div>
+        <ul className="mt-7 grid gap-3 max-w-[420px] text-[13px]" style={{ color: "#D4D4D8" }}>
+          {[
+            ["会议转写不出内网", "受限级会议只走本地引擎,字幕、翻译、回顾由值班 Agent 完成"],
+            ["密级只升不降", "云端模型只在允许的密级下使用,绝不静默升云"],
+            ["审计只存哈希", "谁做了什么有链可查,正文不进链"],
+          ].map(([t, d]) => (
+            <li key={t} className="flex gap-3 items-start leading-relaxed">
+              <span className="flex-none w-2 h-2 rounded-full mt-[7px]" style={{ background: T.indigo }} />
+              <span><b className="block font-semibold text-white">{t}</b>{d}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="text-xs" style={{ color: "#71717A" }}>单机模式下任务执行、审计链、worktree 都留在本机;连上服务端才有团队频道与会议室。</div>
+    </div>
+  );
+
+  const card = (
+      <Card className={page ? "w-full max-w-[440px] p-7" : "w-[420px] p-6"}>
+        {page ? (
+          <>
+            <b className="text-[20px]" style={{ letterSpacing: "-.01em" }}>{probing ? "正在恢复连接…" : tab === "login" ? "欢迎回来" : "注册新账号"}</b>
+            <div className="text-[11.5px] mt-1 leading-relaxed" style={{ color: T.sub }}>
+              {probing ? "上次连过的服务器还在探,一会儿就好。" : "登录后进入团队频道与会议室;私有会话仍然只存在这台机器上。"}
+            </div>
+          </>
+        ) : (
+          <>
+            <b className="text-sm">连接团队服务器</b>
+            <div className="text-[11.5px] mt-1.5 leading-relaxed" style={{ color: T.sub }}>
+              连上之后,团队频道与消息来自服务端;<b>私有会话仍然只存在这台机器上</b>。
+              任务执行、审计链、worktree 也都留在本机——服务端不持有源码。
+            </div>
+          </>
+        )}
 
         {current?.connected ? (
           <div className="mt-4">
@@ -1365,7 +1441,7 @@ function LoginDialog({
             <div className="flex gap-2 mt-4 items-center">
               {tab === "login" ? (
                 <>
-                  <button disabled={busy} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                  <button disabled={busy || probing} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
                     style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
                     {busy ? "连接中…" : "连接"}
                   </button>
@@ -1385,12 +1461,25 @@ function LoginDialog({
                 </>
               )}
               <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs ml-auto" style={{ background: T.soft, color: T.sub }}>
-                取消
+                {page ? "先以单机模式进入" : "取消"}
               </button>
             </div>
           </>
         )}
       </Card>
+  );
+
+  if (page) {
+    return (
+      <div className="w-full h-screen overflow-hidden grid" style={{ gridTemplateColumns: "minmax(0,5fr) minmax(0,6fr)", background: "#111113" }}>
+        {brand}
+        <div className="flex items-center justify-center p-8 overflow-y-auto" style={{ background: "#F5F5F7" }}>{card}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(23,24,28,.35)" }}>
+      {card}
     </div>
   );
 }

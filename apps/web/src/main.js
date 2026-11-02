@@ -69,9 +69,12 @@ $("loginForm").onsubmit = async (e) => {
     state.token = r.token;
     state.me = r.display_name;
     localStorage.setItem("muster.session", JSON.stringify({ base: state.base, token: r.token, me: r.display_name }));
+    loginNotice("");
     await enterLobby();
   } catch (err) {
-    toast(String(err.message || err), true);
+    const msg = String(err.message || err);
+    if (msg.includes("批准")) loginNotice(msg, true);
+    else toast(msg, true);
   }
 };
 
@@ -82,23 +85,41 @@ $("loginForm").onsubmit = async (e) => {
  */
 const serverBase = () => $("server").value.trim().replace(/\/$/, "") || location.origin;
 
+let regMode = "closed";
 async function syncRegisterEntry() {
   try {
     const r = await fetch(serverBase() + "/auth/registration");
     const j = r.ok ? await r.json() : null;
-    $("toRegister").hidden = !j || j.mode === "closed";
+    regMode = j?.mode ?? "closed";
   } catch {
-    $("toRegister").hidden = true;
+    regMode = "closed";
   }
+  $("toRegister").hidden = regMode === "closed";
+  // 只有「登录」一个页签时整条页签都不显示
+  $("toLogin").parentElement.classList.toggle("single", regMode === "closed");
+  $("regModeHint").textContent =
+    regMode === "open" ? "注册即可登录。" : "注册后需要管理员批准才能登录。";
+  if (regMode === "closed") authTab("login");
 }
 $("server").addEventListener("change", syncRegisterEntry);
-$("toRegister").onclick = () => {
-  $("registerForm").hidden = false;
-  $("regId").focus();
-};
-$("toLogin").onclick = () => {
-  $("registerForm").hidden = true;
-};
+
+/** 登录 / 注册页签。 */
+function authTab(which) {
+  const reg = which === "register";
+  $("registerForm").hidden = !reg;
+  $("loginForm").hidden = reg;
+  $("toRegister").classList.toggle("on", reg);
+  $("toLogin").classList.toggle("on", !reg);
+  (reg ? $("regId") : $("account")).focus();
+}
+function loginNotice(text, warn = false) {
+  const n = $("loginNotice");
+  n.textContent = text || "";
+  n.className = "notice " + (warn ? "warn" : "ok");
+  n.hidden = !text;
+}
+$("toRegister").onclick = () => authTab("register");
+$("toLogin").onclick = () => authTab("login");
 $("registerForm").onsubmit = async (e) => {
   e.preventDefault();
   if ($("regPw").value !== $("regPw2").value) return toast("两次口令不一致", true);
@@ -109,15 +130,16 @@ $("registerForm").onsubmit = async (e) => {
       body: JSON.stringify({ id: $("regId").value.trim(), password: $("regPw").value, display_name: $("regName").value.trim() }),
     });
     if (r.pending) {
-      toast(`已提交注册 ${r.id}。等管理员批准后,用这个账号和口令登录。`);
       $("account").value = r.id;
-      $("registerForm").hidden = true;
+      $("password").value = "";
+      authTab("login");
+      loginNotice(`已提交注册 ${r.id}。管理员批准后,用这个账号和口令登录。`);
       return;
     }
     state.token = r.token;
     state.me = r.display_name;
     localStorage.setItem("muster.session", JSON.stringify({ base: state.base, token: r.token, me: r.display_name }));
-    $("registerForm").hidden = true;
+    loginNotice("");
     await enterLobby();
   } catch (err) {
     toast(String(err.message || err), true);
