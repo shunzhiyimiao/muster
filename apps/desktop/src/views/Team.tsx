@@ -389,26 +389,26 @@ function ServerAccountsCard() {
       <div className="mt-3 divide-y" style={{ borderColor: T.line }}>
         {humans.map((a) => (
           <div key={a.id} className="py-2 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold truncate" style={{ minWidth: 120 }}>{a.display_name}</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold truncate shrink-0" style={{ maxWidth: 160 }}>{a.display_name}</span>
             <span className="truncate" style={{ color: T.faint }}>{a.id}{a.email ? ` · ${a.email}` : ""}{a.department ? ` · ${a.department}` : ""}</span>
-            <span className="ml-auto text-[10.5px]" style={{ color: a.disabled ? T.red : a.pending ? T.amber : T.green }}>
+            <span className="ml-auto text-[10.5px] whitespace-nowrap shrink-0" style={{ color: a.disabled ? T.red : a.pending ? T.amber : T.green }}>
               {a.disabled ? "已停用" : a.pending ? "待批准" : "正常"}
             </span>
-            <span className="text-[10.5px]" style={{ color: T.faint }} title="最近一次成功登录">
+            <span className="text-[10.5px] whitespace-nowrap shrink-0" style={{ color: T.faint }} title="最近一次成功登录">
               {a.last_login_ms ? fmtTime(a.last_login_ms) : "未登录过"}{a.failed_logins > 0 ? ` · 连续失败 ${a.failed_logins}` : ""}
             </span>
-            <button onClick={() => showLogins(a.id)} className="px-2 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>记录</button>
+            <button onClick={() => showLogins(a.id)} className="px-2 py-1 rounded-lg text-[11px] whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>记录</button>
             {!a.disabled && !a.pending && (
               <button disabled={busy === a.id} onClick={() => issueLink(a.id)} title="给忘了口令的人签发一次性重置链接(30 分钟),转交本人"
-                className="px-2 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>重置链接</button>
+                className="px-2 py-1 rounded-lg text-[11px] whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>重置链接</button>
             )}
             {a.pending && !a.disabled && (
               <button disabled={busy === a.id} onClick={() => act(a.id, api.remoteAccountApprove(a.id))}
-                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold" style={{ background: T.indigo, color: "#fff" }}>批准</button>
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold whitespace-nowrap shrink-0" style={{ background: T.indigo, color: "#fff" }}>批准</button>
             )}
             <button disabled={busy === a.id} onClick={() => act(a.id, api.remoteAccountDisable(a.id, !a.disabled))}
-              className="px-2.5 py-1 rounded-lg text-[11px]" style={{ background: T.soft, color: T.sub }}>
+              className="px-2.5 py-1 rounded-lg text-[11px] whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>
               {a.disabled ? "启用" : "停用"}
             </button>
           </div>

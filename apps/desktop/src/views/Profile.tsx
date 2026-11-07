@@ -159,7 +159,7 @@ export function ProfileView() {
               </label>
             </div>
             <div className="flex items-center gap-3 mt-4">
-              <button onClick={save} disabled={busy} className="px-4 py-2 rounded-xl text-xs font-semibold" style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
+              <button onClick={save} disabled={busy} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0" style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
                 保存
               </button>
               {msg && <span className="text-[11.5px]" style={{ color: msg.ok ? T.green : T.red }}>{msg.text}</span>}

@@ -1408,7 +1408,7 @@ function LoginDialog({
                   className="flex-1 px-3 py-2 rounded-xl text-xs outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
                 <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="新口令(至少 8 位)" autoComplete="new-password"
                   className="flex-1 px-3 py-2 rounded-xl text-xs outline-none" style={{ background: T.panel, border: `1px solid ${T.line}` }} />
-                <button disabled={busy} onClick={submitPassword} className="px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: T.indigoSoft, color: T.indigoDeep }}>改</button>
+                <button disabled={busy} onClick={submitPassword} className="px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0" style={{ background: T.indigoSoft, color: T.indigoDeep }}>改</button>
               </div>
               {info && <div className="mt-2 text-[11.5px]" style={{ color: T.green }}>{info}</div>}
               {err && <div className="mt-2 text-[11.5px]" style={{ color: T.red }}>{err}</div>}
@@ -1478,7 +1478,7 @@ function LoginDialog({
                 {err}
               </div>
             )}
-            <div className="flex gap-2 mt-4 items-center">
+            <div className="flex gap-2 mt-4 items-center flex-wrap [&>button]:whitespace-nowrap [&>*>button]:whitespace-nowrap">
               {tab === "login" ? (
                 <>
                   <button disabled={busy || probing} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
@@ -1488,7 +1488,7 @@ function LoginDialog({
                   <button disabled={busy} onClick={goRegister} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
                     没有账号?注册
                   </button>
-                  <button disabled={busy} onClick={() => { setTab("recover"); setErr(null); setInfo(null); }} className="px-2 py-2 text-xs" style={{ color: T.sub }}>
+                  <button disabled={busy} onClick={() => { setTab("recover"); setErr(null); setInfo(null); }} className="px-2 py-2 text-xs whitespace-nowrap" style={{ color: T.sub }}>
                     忘了口令
                   </button>
                 </>
@@ -1513,7 +1513,7 @@ function LoginDialog({
                   </button>
                 </>
               )}
-              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs ml-auto" style={{ background: T.soft, color: T.sub }}>
+              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs ml-auto whitespace-nowrap" style={{ background: T.soft, color: T.sub }}>
                 {page ? "先以单机模式进入" : "取消"}
               </button>
             </div>

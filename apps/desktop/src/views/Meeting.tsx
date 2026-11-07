@@ -721,7 +721,7 @@ export function MeetingRoom({
                   <button
                     onClick={() => setMaxed((m) => !m)}
                     title={maxed ? "还原(双击画面也行)" : "放大到整个窗口(双击画面也行)"}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px]"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] whitespace-nowrap shrink-0"
                     style={{ background: maxed ? "#333" : T.soft, color: maxed ? "#fff" : T.sub }}
                   >
                     {maxed ? <Minimize2 size={11} /> : <Maximize2 size={11} />} {maxed ? "还原" : "放大"}
@@ -729,7 +729,7 @@ export function MeetingRoom({
                   <button
                     onClick={unfocus}
                     title="收回到席位格子"
-                    className="px-2 py-0.5 rounded-md text-[10.5px]"
+                    className="px-2 py-0.5 rounded-md text-[10.5px] whitespace-nowrap shrink-0"
                     style={{ background: maxed ? "#333" : T.soft, color: maxed ? "#fff" : T.sub }}
                   >
                     收起
@@ -1086,8 +1086,8 @@ export function MeetingRoom({
                           <input value={assignee} onChange={(e) => setAssignee(e.target.value)} placeholder="人员账号 id(不能是 Agent 工牌)"
                             className="flex-1 px-2.5 py-1 rounded-lg text-[11px] outline-none" style={{ background: T.panel, border: `1px solid ${T.line}`, minWidth: 140 }} />
                         )}
-                        <button onClick={() => assign(t.id)} disabled={!assignee.trim()} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.indigo, color: "#fff", opacity: assignee.trim() ? 1 : 0.45 }}>指派</button>
-                        <button onClick={() => { setAssigning(null); setAssigneeOther(false); }} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg" style={{ background: T.soft, color: T.sub }}>取消</button>
+                        <button onClick={() => assign(t.id)} disabled={!assignee.trim()} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg whitespace-nowrap shrink-0" style={{ background: T.indigo, color: "#fff", opacity: assignee.trim() ? 1 : 0.45 }}>指派</button>
+                        <button onClick={() => { setAssigning(null); setAssigneeOther(false); }} className="text-[11px] font-semibold px-2.5 py-1 rounded-lg whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>取消</button>
                       </div>
                     )}
                     {pending && !t.assignee && !isHost && (
