@@ -1478,45 +1478,36 @@ function LoginDialog({
                 {err}
               </div>
             )}
-            <div className="flex gap-2 mt-4 items-center flex-wrap">
-              {tab === "login" ? (
-                <>
-                  <button disabled={busy || probing} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
-                    style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
-                    {busy ? "连接中…" : "连接"}
-                  </button>
-                  <button disabled={busy} onClick={goRegister} className="px-4 py-2 rounded-xl text-xs whitespace-nowrap shrink-0" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
-                    没有账号?注册
-                  </button>
-                  <button disabled={busy} onClick={() => { setTab("recover"); setErr(null); setInfo(null); }} className="px-2 py-2 text-xs whitespace-nowrap" style={{ color: T.sub }}>
-                    忘了口令
-                  </button>
-                </>
-              ) : tab === "recover" ? (
-                <>
-                  <button disabled={busy} onClick={submitRecover} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
-                    style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
-                    {busy ? "提交中…" : "申请重置"}
-                  </button>
-                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>
-                    返回登录
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button disabled={busy} onClick={submitRegister} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
-                    style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
-                    {busy ? "提交中…" : "注册"}
-                  </button>
-                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>
-                    返回登录
-                  </button>
-                </>
-              )}
-              <button onClick={onClose} className="px-4 py-2 rounded-xl text-xs ml-auto whitespace-nowrap" style={{ background: T.soft, color: T.sub }}>
-                {page ? "先以单机模式进入" : "取消"}
-              </button>
-            </div>
+            {/* 两排按钮(用户 2026-11-08 定):第一排 主动作 + 次动作,第二排 注册 + 单机 / 取消。
+                每个按钮占半行,文字不换行——一排塞四个在 420px 的卡里必挤。 */}
+            {(() => {
+              const btn = (label: string, onClick: () => void, primary = false, disabled = false) => (
+                <button
+                  disabled={disabled}
+                  onClick={onClick}
+                  className="w-full px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap"
+                  style={{ background: primary ? T.indigo : T.soft, color: primary ? "#fff" : T.sub, opacity: disabled ? 0.5 : 1 }}
+                >
+                  {label}
+                </button>
+              );
+              const first =
+                tab === "login"
+                  ? [btn(busy ? "连接中…" : "连接", submit, true, busy || probing), btn("忘了口令", () => { setTab("recover"); setErr(null); setInfo(null); }, false, busy)]
+                  : tab === "recover"
+                    ? [btn(busy ? "提交中…" : "申请重置", submitRecover, true, busy), btn("返回登录", () => { setTab("login"); setErr(null); }, false, busy)]
+                    : [btn(busy ? "提交中…" : "注册", submitRegister, true, busy), btn("返回登录", () => { setTab("login"); setErr(null); }, false, busy)];
+              const second = [
+                tab === "login" ? btn("没有账号?注册", goRegister, false, busy) : <span key="sp" />,
+                btn(page ? "先以单机模式进入" : "取消", onClose),
+              ];
+              return (
+                <div className="mt-4 space-y-2">
+                  <div className="grid grid-cols-2 gap-2">{first.map((b, i) => <span key={i}>{b}</span>)}</div>
+                  <div className="grid grid-cols-2 gap-2">{second.map((b, i) => <span key={i}>{b}</span>)}</div>
+                </div>
+              );
+            })()}
           </>
         )}
       </Card>
