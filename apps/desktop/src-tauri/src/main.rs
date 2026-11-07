@@ -4979,7 +4979,8 @@ mod skill_root_tests {
     #[test]
     fn skill_roots_follow_codex_layout_in_order() {
         let roots = skill_roots("/w", "/home/u");
-        let shown: Vec<String> = roots.iter().map(|p| p.display().to_string()).collect();
+        // Windows 的 join 用反斜杠:比较前统一成 /,别让一个显示细节在 CI 上把 Windows 那一跑打红
+        let shown: Vec<String> = roots.iter().map(|p| p.display().to_string().replace('\\', "/")).collect();
         assert_eq!(shown, vec!["/w/.agents/skills", "/w/.codex/skills", "/home/u/.muster/skills", "/home/u/.agents/skills"]);
         assert_eq!(skill_origin(&roots[0], &roots), "workspace");
         assert_eq!(skill_origin(&roots[1], &roots), "workspace");
