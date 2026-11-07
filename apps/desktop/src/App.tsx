@@ -1199,13 +1199,13 @@ function TopBar({
 function ConnBar({ remote, onClick }: { remote: RemoteStatus | null; onClick: () => void }) {
   const on = !!remote?.connected;
   return (
-    <button onClick={onClick} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-xl mb-1 text-left"
+    <button onClick={onClick} className="w-full min-w-0 flex items-center gap-2 px-2.5 py-2 rounded-xl mb-1 text-left"
       style={{ background: on ? T.greenSoft : T.soft }}>
       <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: on ? T.green : T.faint }} />
-      <span className="text-[11.5px] font-semibold" style={{ color: on ? T.green : T.sub }}>
+      <span className="text-[11.5px] font-semibold whitespace-nowrap shrink-0" style={{ color: on ? T.green : T.sub }}>
         {on ? "已连接团队服务器" : "单机模式"}
       </span>
-      <span className="ml-auto text-[10px] truncate" style={{ color: T.faint, maxWidth: 90 }}>
+      <span className="ml-auto text-[10px] truncate min-w-0" style={{ color: T.faint, maxWidth: 72 }}>
         {on ? remote?.display_name : "点此连接"}
       </span>
     </button>
@@ -1420,7 +1420,7 @@ function LoginDialog({
                     onDone({ connected: false, base: null, account_id: null, display_name: null })
                   )
                 }
-                className="px-4 py-2 rounded-xl text-xs font-semibold"
+                className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap"
                 style={{ background: T.redSoft, color: T.red }}
               >
                 断开,回到单机模式
@@ -1478,14 +1478,14 @@ function LoginDialog({
                 {err}
               </div>
             )}
-            <div className="flex gap-2 mt-4 items-center flex-wrap [&>button]:whitespace-nowrap [&>*>button]:whitespace-nowrap">
+            <div className="flex gap-2 mt-4 items-center flex-wrap">
               {tab === "login" ? (
                 <>
-                  <button disabled={busy || probing} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                  <button disabled={busy || probing} onClick={submit} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
                     style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
                     {busy ? "连接中…" : "连接"}
                   </button>
-                  <button disabled={busy} onClick={goRegister} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
+                  <button disabled={busy} onClick={goRegister} className="px-4 py-2 rounded-xl text-xs whitespace-nowrap shrink-0" style={{ background: T.indigoSoft, color: T.indigoDeep }}>
                     没有账号?注册
                   </button>
                   <button disabled={busy} onClick={() => { setTab("recover"); setErr(null); setInfo(null); }} className="px-2 py-2 text-xs whitespace-nowrap" style={{ color: T.sub }}>
@@ -1494,21 +1494,21 @@ function LoginDialog({
                 </>
               ) : tab === "recover" ? (
                 <>
-                  <button disabled={busy} onClick={submitRecover} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                  <button disabled={busy} onClick={submitRecover} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
                     style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
                     {busy ? "提交中…" : "申请重置"}
                   </button>
-                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>
                     返回登录
                   </button>
                 </>
               ) : (
                 <>
-                  <button disabled={busy} onClick={submitRegister} className="px-4 py-2 rounded-xl text-xs font-semibold"
+                  <button disabled={busy} onClick={submitRegister} className="px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0"
                     style={{ background: T.indigo, color: "#fff", opacity: busy ? 0.5 : 1 }}>
                     {busy ? "提交中…" : "注册"}
                   </button>
-                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs" style={{ background: T.soft, color: T.sub }}>
+                  <button disabled={busy} onClick={() => { setTab("login"); setErr(null); }} className="px-4 py-2 rounded-xl text-xs whitespace-nowrap shrink-0" style={{ background: T.soft, color: T.sub }}>
                     返回登录
                   </button>
                 </>
