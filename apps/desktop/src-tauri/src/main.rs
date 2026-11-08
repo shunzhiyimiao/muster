@@ -812,6 +812,18 @@ mod remote;
 /// `locality`,不该由被路由的这台机器自己声明。
 const BUILTIN_PROVIDERS: &str = include_str!("../../providers.toml");
 
+/// 自带的 provider 目录(单机模式用)。缺密钥的通道跳过并在 stderr 点名——
+/// 2026-11-08 Windows 首装因为没有 KIMI_API_KEY 直接"provider 注册表加载失败"起不来,那是错的:
+/// 自带目录只是单机兜底,连上服务端就被换掉,不该拦着应用启动。
+fn builtin_registry() -> Result<ProviderRegistry, String> {
+    let (registry, skipped) =
+        ProviderRegistry::from_toml_str_lenient(BUILTIN_PROVIDERS).map_err(|e| format!("provider 注册表加载失败:{e}"))?;
+    if !skipped.is_empty() {
+        eprintln!("[warn] 自带目录里这些通道没有密钥,单机模式下不可用:{}", skipped.join("、"));
+    }
+    Ok(registry)
+}
+
 /// 用一份 provider 配置重建路由器。
 ///
 /// `policy` 从现有 router 继承——目录换的是"有哪些通道",不是"什么密级能上云",
@@ -1491,8 +1503,9 @@ fn bootstrap(state: State<'_, AppState>) -> Result<BootstrapInfo, String> {
     if guard.is_none() {
         // 启动时先用自带那份(单机模式)。连上服务端后会被下发的目录整个换掉,
         // 见 adopt_remote_catalog——**连着服务端时,locality 由服务端说了算**。
-        let registry = ProviderRegistry::from_toml_str(BUILTIN_PROVIDERS)
-            .map_err(|e| format!("provider 注册表加载失败:{e}"))?;
+        // 宽松装载:新机器上没有任何密钥变量(Windows 首装就是这样),缺密钥的通道跳过、
+        // 应用照常起;严格的"缺失即失败"留给服务端与网关
+        let registry = builtin_registry()?;
         let policy = OrgPolicy::new(Sensitivity::Internal).map_err(|e| format!("组织策略非法:{e:?}"))?;
         let router = Arc::new(Router::from_registry(&registry, policy.clone()));
 
@@ -4467,8 +4480,7 @@ fn remote_logout(state: State<'_, AppState>) -> Result<(), String> {
     // 退回自带那份:回到单机模式,行为与从未连过一致。
     // 留着服务端下发的目录会更"省事",但那份目录是组织的策略,
     // 断开之后它凭什么还管着这台机器
-    let registry = ProviderRegistry::from_toml_str(BUILTIN_PROVIDERS)
-        .map_err(|e| format!("provider 注册表加载失败:{e}"))?;
+    let registry = builtin_registry()?;
     b.router = Arc::new(Router::from_registry(&registry, b.policy.clone()));
     remote::Remote::clear_session();
     Ok(())

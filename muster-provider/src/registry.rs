@@ -81,6 +81,38 @@ impl ProviderRegistry {
         Self::from_config(cfg)
     }
 
+    /// Lenient variant for a **client's built-in catalog**: a provider whose
+    /// `api_key_env` is unset is skipped (and named in the returned list) instead
+    /// of failing the whole registry. A fresh Windows install has none of the
+    /// key variables, and the desktop shell must still start — the built-in
+    /// catalog is only the stand-alone fallback; the organisation's catalog is
+    /// adopted from the server once connected. Servers and the gateway keep
+    /// the strict [`from_config`]: there a missing key is a deployment mistake
+    /// that must surface loudly.
+    pub fn from_toml_str_lenient(toml_text: &str) -> Result<(Self, Vec<String>), ProviderError> {
+        let cfg: RegistryConfig =
+            toml::from_str(toml_text).map_err(|e| ProviderError::Config(format!("config parse: {e}")))?;
+        Self::from_config_lenient(cfg)
+    }
+
+    pub fn from_config_lenient(mut cfg: RegistryConfig) -> Result<(Self, Vec<String>), ProviderError> {
+        let mut skipped = Vec::new();
+        cfg.providers.retain(|id, pc| match pc {
+            ProviderConfig::OpenaiCompat { api_key_env: Some(var), .. } if std::env::var(var).is_err() => {
+                skipped.push(format!("{id}(环境变量 {var} 未设置)"));
+                false
+            }
+            _ => true,
+        });
+        if let Some(d) = &cfg.default {
+            if !cfg.providers.contains_key(d) {
+                cfg.default = None;
+            }
+        }
+        skipped.sort();
+        Ok((Self::from_config(cfg)?, skipped))
+    }
+
     pub fn from_config(cfg: RegistryConfig) -> Result<Self, ProviderError> {
         let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
         for (id, pc) in cfg.providers {
@@ -204,6 +236,31 @@ api_key_env = "MUSTER_TEST_DEEPSEEK_KEY"
         let ds = reg.get("deepseek").unwrap();
         assert_eq!(ds.metadata().locality, Locality::Cloud);
         assert_eq!(ds.metadata().display_name, "云端·DeepSeek");
+    }
+
+    /// 客户端自带目录用宽松装载:没密钥的通道跳过并点名,剩下的照常;默认位指向被跳过的就清空。
+    #[test]
+    fn lenient_load_skips_providers_without_keys_instead_of_failing() {
+        let toml = r#"
+default = "cloud"
+[providers.cloud]
+kind = "openai_compat"
+base_url = "https://x/v1"
+model = "m"
+locality = "cloud"
+api_key_env = "MUSTER_TEST_SURELY_MISSING_KEY"
+[providers.local]
+kind = "openai_compat"
+base_url = "http://127.0.0.1:11434/v1"
+model = "q"
+locality = "local"
+"#;
+        assert!(ProviderRegistry::from_toml_str(toml).is_err(), "严格装载仍然要失败");
+        let (reg, skipped) = ProviderRegistry::from_toml_str_lenient(toml).unwrap();
+        assert_eq!(reg.ids(), vec!["local".to_string()]);
+        assert!(reg.default_provider().is_none(), "默认位指向被跳过的通道 ⇒ 清空,不报错");
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].contains("cloud") && skipped[0].contains("MUSTER_TEST_SURELY_MISSING_KEY"), "{skipped:?}");
     }
 
     #[test]
