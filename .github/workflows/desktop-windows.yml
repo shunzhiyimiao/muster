@@ -60,10 +60,27 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo test
 
-      # 显式指定 nsis:targets 里还有 app/dmg,那是 macOS 的
+      # Tauri 打包时要从 GitHub release 下载 NSIS 与 nsis_tauri_utils.dll,放在 %LOCALAPPDATA%\tauri。
+      # 2026-11-08 那个下载通道整晚间歇 504,三次重跑都倒在这一步——缓存一次,以后不再依赖它
+      - name: 缓存 Tauri 的 NSIS 工具
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-nsis-${{ runner.os }}-v1
+
+      # 显式指定 nsis:targets 里还有 app/dmg,那是 macOS 的。
+      # 带重试:失败几乎都是下载 NSIS 资源的网络问题,编译产物还在,重试只是再下一次
       - name: 打安装包
         working-directory: apps/desktop
-        run: pnpm tauri build --bundles nsis
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if pnpm tauri build --bundles nsis; then exit 0; fi
+            echo "::warning::打包第 $i 次失败(多半是下载 NSIS 资源 504),90 秒后重试"
+            sleep 90
+          done
+          echo "::error::打包连续 6 次失败"
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
