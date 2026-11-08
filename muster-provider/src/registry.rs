@@ -98,7 +98,7 @@ impl ProviderRegistry {
     pub fn from_config_lenient(mut cfg: RegistryConfig) -> Result<(Self, Vec<String>), ProviderError> {
         let mut skipped = Vec::new();
         cfg.providers.retain(|id, pc| match pc {
-            ProviderConfig::OpenaiCompat { api_key_env: Some(var), .. } if std::env::var(var).is_err() => {
+            ProviderConfig::OpenaiCompat { api_key_env: Some(var), .. } if std::env::var(var.as_str()).is_err() => {
                 skipped.push(format!("{id}(环境变量 {var} 未设置)"));
                 false
             }
